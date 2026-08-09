@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using PolyType;
 using PolyType.Abstractions;
@@ -67,7 +68,9 @@ internal static class IndexValueConverterProvider
 {
     private static readonly ConcurrentDictionary<Type, ConverterResolution> Cache = new();
 
-    public static bool TryGetConverter(Type type, out IndexValueConverter? converter)
+    public static bool TryGetConverter(
+        Type type,
+        [NotNullWhen(true)] out IndexValueConverter? converter)
     {
         ArgumentNullException.ThrowIfNull(type);
 
