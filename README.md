@@ -80,6 +80,18 @@ var salaryRange = await search.RangeAsync<VacancyState, int>(
 
 The provider name identifies a storage namespace. Using another name selects a separate, initially empty namespace, so renaming a provider requires an explicit migration. `PartitionCount` and storage-format version are validated within that namespace and must not change without migration. Index names, kinds, and property types are also persisted schema: adding an index does not backfill existing records, and changing or renaming one requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime` values must use `DateTimeKind.Utc`.
 
+## Run the API sample
+
+The runnable sample co-hosts an ASP.NET Core minimal API and an Orleans silo:
+
+```bash
+dotnet run --project samples/Orleans.SearchableStorage.ApiSample
+```
+
+Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies, read one by id, search the hash index by city, search the range index by salary, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md) follows each request from HTTP through the application grain, searchable provider, storage-partition grain, and physical provider.
+
+The one-process topology and in-memory physical storage keep the sample easy to run; neither is a library requirement.
+
 ## Backend validation
 
 The test suite defines one reusable storage contract. It currently runs against Orleans in-memory persistence configured with `JsonGrainStorageSerializer` through a two-silo `TestCluster`, forces storage-partition reactivation, and injects failures before commit and after commit but before acknowledgement.

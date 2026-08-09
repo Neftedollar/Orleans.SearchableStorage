@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="samples/Orleans.SearchableStorage.ApiSample/Orleans.SearchableStorage.ApiSample.csproj" />
   <Project Path="src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj" />
   <Project Path="tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj" />
 </Solution>

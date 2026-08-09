@@ -10,6 +10,12 @@ Each searchable provider owns one `StorageLayoutGrain` and a fixed set of `Stora
 
 `SearchableStorageClient` derives index metadata from a typed property selector, sends the query to every partition, and returns a sorted, distinct set of `GrainId` values.
 
+## Sample topology
+
+`Orleans.SearchableStorage.ApiSample` co-hosts an ASP.NET Core minimal API and one Orleans silo only to provide a zero-infrastructure executable walkthrough. HTTP writes call an application grain, its normal `IPersistentState<T>` uses `SearchableGrainStorage`, and the provider routes the serialized record plus extracted index entries to one storage-partition grain. HTTP search endpoints use the named `ISearchableStorageClient` and fan out over the same partition set.
+
+This co-hosting is not an architectural constraint. An API can run in another process as an Orleans client and construct a `SearchableStorageClient` with the same provider namespace and partition count. The sample deliberately uses in-memory physical persistence, so process termination removes its data; backend durability is covered by the reusable provider contract rather than by the sample.
+
 ## Identity and partitioning
 
 A record key contains the state name and the raw Orleans grain type and key bytes encoded as hexadecimal. Partition placement uses `GrainId.GetUniformHashCode()`, which Orleans defines as uniform and stable.
