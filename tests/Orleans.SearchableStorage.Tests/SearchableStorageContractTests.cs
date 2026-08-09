@@ -763,6 +763,39 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
     }
 
     [Fact]
+    public async Task StoragePartitionTopologyDoesNotFollowLaterOptionsMutation()
+    {
+        var providerName = $"stable-partitions-{Guid.NewGuid():N}";
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var configuredOptions = silo.ServiceProvider
+            .GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+            .Get(VacancyGrain.StorageProviderName);
+        var options = new SearchableStorageOptions
+        {
+            PartitionCount = Fixture.PartitionCount,
+            GrainStorageSerializer = configuredOptions.GrainStorageSerializer,
+        };
+        var storage = ActivatorUtilities.CreateInstance<SearchableGrainStorage>(
+            silo.ServiceProvider,
+            providerName,
+            options);
+        var grainId = CreateGrainIdInUpperHalf(Fixture.PartitionCount * 2);
+        var state = new GrainState<VacancyState>
+        {
+            State = new VacancyState { City = "stable", Salary = 10 },
+        };
+
+        options.PartitionCount *= 2;
+        await storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+
+        var loaded = new GrainState<VacancyState>();
+        await storage.ReadStateAsync(VacancyGrain.StateName, grainId, loaded);
+        loaded.State.Should().BeEquivalentTo(state.State);
+
+        await storage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
+    }
+
+    [Fact]
     public async Task LayoutInitializationCanRetryAfterPhysicalFailure()
     {
         var providerName = $"layout-retry-{Guid.NewGuid():N}";
@@ -806,5 +839,20 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         var exception = await action.Should().ThrowAsync<OrleansException>();
         exception.Which.InnerException.Should().BeOfType<InvalidOperationException>()
             .Which.Message.Should().Be("Injected physical write failure.");
+    }
+
+    private GrainId CreateGrainIdInUpperHalf(int partitionCount)
+    {
+        for (var attempt = 0; attempt < 10_000; attempt++)
+        {
+            var grainId = CreateGrain().GetGrainId();
+            var partitionIndex = (int)((uint)grainId.GetUniformHashCode() % (uint)partitionCount);
+            if (partitionIndex >= partitionCount / 2)
+            {
+                return grainId;
+            }
+        }
+
+        throw new InvalidOperationException("Could not create a grain id in the upper half of the requested partition range.");
     }
 }

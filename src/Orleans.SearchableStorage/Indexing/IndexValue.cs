@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace Orleans.SearchableStorage.Indexing;
 
 [GenerateSerializer]
@@ -34,46 +32,13 @@ internal sealed class IndexValue : IComparable<IndexValue>, IEquatable<IndexValu
 
     public static bool IsSupported(Type type)
     {
-        type = Nullable.GetUnderlyingType(type) ?? type;
-        return type.IsEnum
-            || type == typeof(string)
-            || type == typeof(char)
-            || type == typeof(sbyte)
-            || type == typeof(short)
-            || type == typeof(int)
-            || type == typeof(long)
-            || type == typeof(byte)
-            || type == typeof(ushort)
-            || type == typeof(uint)
-            || type == typeof(ulong)
-            || type == typeof(decimal)
-            || type == typeof(float)
-            || type == typeof(double)
-            || type == typeof(DateTime)
-            || type == typeof(DateTimeOffset)
-            || type == typeof(Guid)
-            || type == typeof(bool);
+        return IndexValueConverterProvider.TryGetConverter(type, out _);
     }
 
     public static bool IsRangeSupported(Type type)
     {
-        type = Nullable.GetUnderlyingType(type) ?? type;
-        return type.IsEnum
-            || type == typeof(string)
-            || type == typeof(char)
-            || type == typeof(sbyte)
-            || type == typeof(short)
-            || type == typeof(int)
-            || type == typeof(long)
-            || type == typeof(byte)
-            || type == typeof(ushort)
-            || type == typeof(uint)
-            || type == typeof(ulong)
-            || type == typeof(decimal)
-            || type == typeof(float)
-            || type == typeof(double)
-            || type == typeof(DateTime)
-            || type == typeof(DateTimeOffset);
+        return IndexValueConverterProvider.TryGetConverter(type, out var converter)
+            && converter.SupportsRange;
     }
 
     public static IndexValue Create(object value)
@@ -81,36 +46,13 @@ internal sealed class IndexValue : IComparable<IndexValue>, IEquatable<IndexValu
         ArgumentNullException.ThrowIfNull(value);
 
         var type = value.GetType();
-        if (type.IsEnum)
+        if (!IndexValueConverterProvider.TryGetConverter(type, out var converter))
         {
-            var underlyingType = Enum.GetUnderlyingType(type);
-            return IsUnsignedInteger(underlyingType)
-                ? FromUnsignedInteger(Convert.ToUInt64(value, CultureInfo.InvariantCulture))
-                : FromSignedInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture));
+            throw new NotSupportedException($"Values of type '{type}' cannot be indexed.");
         }
 
-        return value switch
-        {
-            string text => new IndexValue { Kind = IndexValueKind.String, Text = text },
-            char character => new IndexValue { Kind = IndexValueKind.String, Text = character.ToString() },
-            sbyte number => FromSignedInteger(number),
-            short number => FromSignedInteger(number),
-            int number => FromSignedInteger(number),
-            long number => FromSignedInteger(number),
-            byte number => FromUnsignedInteger(number),
-            ushort number => FromUnsignedInteger(number),
-            uint number => FromUnsignedInteger(number),
-            ulong number => FromUnsignedInteger(number),
-            decimal number => new IndexValue { Kind = IndexValueKind.Decimal, Decimal = number },
-            float number when !float.IsNaN(number) => new IndexValue { Kind = IndexValueKind.FloatingPoint, FloatingPoint = number },
-            double number when !double.IsNaN(number) => new IndexValue { Kind = IndexValueKind.FloatingPoint, FloatingPoint = number },
-            DateTime timestamp when timestamp.Kind == DateTimeKind.Utc => new IndexValue { Kind = IndexValueKind.Timestamp, UtcTicks = timestamp.Ticks },
-            DateTime timestamp => throw new ArgumentException("Indexed DateTime values must use DateTimeKind.Utc.", nameof(value)),
-            DateTimeOffset timestamp => new IndexValue { Kind = IndexValueKind.Timestamp, UtcTicks = timestamp.UtcTicks },
-            Guid guid => new IndexValue { Kind = IndexValueKind.Guid, Guid = guid },
-            bool boolean => new IndexValue { Kind = IndexValueKind.Boolean, Boolean = boolean },
-            _ => throw new NotSupportedException($"Values of type '{type}' cannot be indexed."),
-        };
+        return converter.ConvertObject(value)
+            ?? throw new InvalidOperationException("A non-null index value unexpectedly converted to null.");
     }
 
     public int CompareTo(IndexValue? other)
@@ -166,23 +108,16 @@ internal sealed class IndexValue : IComparable<IndexValue>, IEquatable<IndexValu
         };
     }
 
-    private static IndexValue FromSignedInteger(long value)
+    internal static IndexValue FromSignedInteger(long value)
     {
         return new IndexValue { Kind = IndexValueKind.SignedInteger, SignedInteger = value };
     }
 
-    private static IndexValue FromUnsignedInteger(ulong value)
+    internal static IndexValue FromUnsignedInteger(ulong value)
     {
         return new IndexValue { Kind = IndexValueKind.UnsignedInteger, UnsignedInteger = value };
     }
 
-    private static bool IsUnsignedInteger(Type type)
-    {
-        return type == typeof(byte)
-            || type == typeof(ushort)
-            || type == typeof(uint)
-            || type == typeof(ulong);
-    }
 }
 
 internal enum IndexValueKind

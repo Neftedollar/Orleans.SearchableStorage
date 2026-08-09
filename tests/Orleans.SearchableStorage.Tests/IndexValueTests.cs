@@ -85,7 +85,18 @@ public sealed class IndexValueTests
 
         var action = () => IndexValue.Create(value);
 
-        action.Should().Throw<NotSupportedException>();
+        action.Should().Throw<NotSupportedException>()
+            .WithMessage("*NaN*");
+    }
+
+    [Fact]
+    public void NullableAndEnumShapesReportTheirCapabilities()
+    {
+        IndexValue.IsSupported(typeof(int?)).Should().BeTrue();
+        IndexValue.IsRangeSupported(typeof(int?)).Should().BeTrue();
+        IndexValue.IsSupported(typeof(SignedSample)).Should().BeTrue();
+        IndexValue.IsRangeSupported(typeof(SignedSample)).Should().BeTrue();
+        IndexValue.IsRangeSupported(typeof(Guid?)).Should().BeFalse();
     }
 
     [Fact]

@@ -123,15 +123,16 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
             throw new ArgumentNullException(parameterName, "Null values are not indexed.");
         }
 
-        var expectedType = Nullable.GetUnderlyingType(index.ValueType) ?? index.ValueType;
-        if (value.GetType() != expectedType)
+        var runtimeType = value.GetType();
+        if (runtimeType != index.Converter.RuntimeValueType)
         {
             throw new ArgumentException(
-                $"The query value type '{value.GetType()}' does not match indexed property type '{expectedType}'.",
+                $"The query value type '{runtimeType}' does not match indexed property type '{index.Converter.RuntimeValueType}'.",
                 parameterName);
         }
 
-        return IndexValue.Create(value);
+        return index.Converter.ConvertObject(value)
+            ?? throw new InvalidOperationException("A non-null query value unexpectedly converted to null.");
     }
 
     private async Task<bool> IsLayoutInitializedAsync(CancellationToken cancellationToken)

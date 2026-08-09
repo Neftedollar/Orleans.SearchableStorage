@@ -9,6 +9,8 @@ Orleans.SearchableStorage follows the engineering conventions used by the .NET a
 - Do not add co-author trailers or AI attribution to commit messages.
 - Keep pull requests focused and route every change through a pull request.
 - Add comments for durability, consistency, concurrency, and other non-obvious invariants. Comments should explain intent and trade-offs instead of restating the code.
+- Use PolyType type shapes for runtime inspection, member access, and generic type-driven behavior. Direct reflection is limited to framework boundaries such as reading an expression-tree member identity and must not become an independent metadata path.
+- Native AOT and trimming are not supported; do not add source-generation constraints to application grain-state types solely for this project.
 
 ## Documentation policy
 

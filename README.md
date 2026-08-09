@@ -14,7 +14,7 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - Queries fan out over a fixed number of partitions and return matching `GrainId` values.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
-The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Queries also do not provide a snapshot across partitions. Text search, composite indexes, a query language, online repartitioning, and backend integration suites are not implemented yet.
+The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Bounded range queries currently enumerate ordered keys from the beginning of each partition instead of seeking directly to the lower bound. Queries also do not provide a snapshot across partitions. Text search, composite indexes, a query language, online repartitioning, and backend integration suites are not implemented yet.
 
 ## Example
 
@@ -79,6 +79,8 @@ var salaryRange = await search.RangeAsync<VacancyState, int>(
 `SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and partition count. Its partition count and storage-format version are validated against the persisted layout; a mismatch throws instead of returning partial results.
 
 The provider name identifies a storage namespace. Using another name selects a separate, initially empty namespace, so renaming a provider requires an explicit migration. `PartitionCount` and storage-format version are validated within that namespace and must not change without migration. Index names, kinds, and property types are also persisted schema: adding an index does not backfill existing records, and changing or renaming one requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime` values must use `DateTimeKind.Utc`.
+
+Index declarations and value accessors are resolved through a cached [PolyType](https://github.com/eiriktsarpalis/PolyType) runtime type model. Applications only use `SearchableIndexAttribute`; no PolyType attributes or generated witness types are required. This project uses PolyType's reflection provider and does not support Native AOT or trimming.
 
 ## Run the API sample
 

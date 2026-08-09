@@ -54,6 +54,12 @@ Once a successful write returns, that partition's activation already contains th
 
 Public readable state properties marked with `SearchableIndexAttribute` are indexed. Index scope combines length-prefixed state assembly, full state type name, Orleans state name, and stable index name components. The length prefixes prevent user-controlled names from creating ambiguous boundaries and keep unrelated states from sharing buckets accidentally.
 
+`IndexMetadataProvider` builds one `SearchableTypeModel<TState>` through PolyType's reflection provider and caches each valid model for the process lifetime. The model contains the indexed member identity, index kind, normalized index name, value converter, and a strongly typed PolyType getter delegate. Writes therefore do not call `PropertyInfo.GetValue`; they invoke the cached getter and converter. Failed model construction is not cached so an invalid state declaration continues to produce its direct validation exception.
+
+PolyType usage is contained behind the indexing model. Storage grains and persisted messages do not depend on type-shape objects. Query selectors are still expression trees: the expression boundary reads the selected `PropertyInfo` only to match it to the member identity supplied by PolyType, while value discovery and access remain type-shape operations. The same model is used by writes and queries so future query APIs can share one definition of indexed fields.
+
+The runtime reflection provider is intentional. Orleans `IGrainStorage` accepts unconstrained application state types, and this project does not require consumers to annotate those types for PolyType source generation. Native AOT and trimming are not supported.
+
 Null values are omitted. String ordering is ordinal. `DateTime` values must be UTC so index ordering cannot depend on a silo's local time zone. Floating-point NaN values are rejected because they do not provide a useful total ordering for these indexes.
 
 Index names, index kinds, and indexed property types are persisted schema. Adding an attribute does not backfill records which were written before that index existed. Renaming an index, changing its kind or property type, or changing the index-scope format requires a migration or complete record rewrite.
@@ -76,4 +82,8 @@ The regular suite currently uses Orleans in-memory persistence with `JsonGrainSt
 
 ## Current scaling limit
 
-One physical write serializes the entire owning partition snapshot, and the activation rebuilds its bucket maps from durable record entries after each successful mutation. This deliberately makes the initial consistency boundary small and observable, but produces work and write amplification proportional to partition size. A production-scale layout will need smaller durable units while preserving the record-and-index atomicity described above.
+One physical write serializes the entire owning partition snapshot, and the activation rebuilds its bucket maps from durable record entries after each successful mutation. This deliberately makes the initial consistency boundary small and observable, but produces work and write amplification proportional to partition size.
+
+The current bounded-range implementation also enumerates a partition's `SortedDictionary` from its smallest key and skips values below the requested lower bound. `SortedDictionary` does not expose a seek operation, so a narrow high-end range still performs work proportional to all preceding distinct values while holding the non-reentrant partition grain turn. A production range structure must support logarithmic lower-bound lookup followed by enumeration of only the requested window.
+
+A production-scale layout will need both smaller durable units and seekable range indexes while preserving the record-and-index atomicity described above.

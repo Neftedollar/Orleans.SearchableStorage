@@ -33,6 +33,23 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
+    public void NullableValueTypesUseTheirUnderlyingIndexConverter()
+    {
+        var entries = IndexMetadataProvider.Extract(
+            "state",
+            new NullableNumberState { Optional = 42 });
+        var selected = IndexMetadataProvider.GetSelectedIndex<NullableNumberState, int?>(
+            "state",
+            state => state.Optional);
+
+        entries.Should().ContainSingle();
+        entries[0].Value.Kind.Should().Be(IndexValueKind.SignedInteger);
+        entries[0].Value.SignedInteger.Should().Be(42);
+        selected.Converter.RuntimeValueType.Should().Be(typeof(int));
+        selected.Converter.ConvertObject(42)!.SignedInteger.Should().Be(42);
+    }
+
+    [Fact]
     public void NullStateProducesNoIndexEntries()
     {
         var entries = IndexMetadataProvider.Extract<NullableState>("state", null!);
@@ -60,6 +77,41 @@ public sealed class IndexMetadataProviderTests
 
         action.Should().Throw<ArgumentException>()
             .WithParameterName("expression");
+    }
+
+    [Fact]
+    public void ConvertedSelectorsResolveTheIndexedProperty()
+    {
+        var selected = IndexMetadataProvider.GetSelectedIndex<SelectorState, object>(
+            "state",
+            state => state.Indexed);
+
+        selected.Converter.ValueType.Should().Be(typeof(string));
+    }
+
+    [Fact]
+    public void InheritedIndexAttributesAreResolvedThroughTheTypeShape()
+    {
+        var state = new DerivedState { Score = 17 };
+
+        var entries = IndexMetadataProvider.Extract("state", state);
+        var selected = IndexMetadataProvider.GetSelectedIndex<DerivedState, int>(
+            "state",
+            candidate => candidate.Score);
+
+        entries.Should().ContainSingle();
+        entries[0].Value.SignedInteger.Should().Be(17);
+        selected.Kind.Should().Be(SearchableIndexKind.Range);
+    }
+
+    [Fact]
+    public async Task TypeModelsAreSharedAcrossConcurrentCallers()
+    {
+        var models = await Task.WhenAll(
+            Enumerable.Range(0, 32)
+                .Select(_ => Task.Run(IndexMetadataProvider.GetTypeModel<ConcurrentModelState>)));
+
+        models.All(model => ReferenceEquals(model, models[0])).Should().BeTrue();
     }
 
     [Fact]
@@ -113,6 +165,12 @@ public sealed class IndexMetadataProviderTests
         public string? Optional { get; init; }
     }
 
+    private sealed class NullableNumberState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public int? Optional { get; init; }
+    }
+
     private sealed class SelectorState
     {
         [SearchableIndex(SearchableIndexKind.Hash)]
@@ -154,5 +212,22 @@ public sealed class IndexMetadataProviderTests
                 _values.Add(value);
             }
         }
+    }
+
+    private class BaseState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public virtual int Score { get; init; }
+    }
+
+    private sealed class DerivedState : BaseState
+    {
+        public override int Score { get; init; }
+    }
+
+    private sealed class ConcurrentModelState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string Value { get; init; } = string.Empty;
     }
 }

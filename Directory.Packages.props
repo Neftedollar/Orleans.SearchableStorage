@@ -13,6 +13,7 @@
     <PackageVersion Include="Microsoft.Orleans.Server" Version="10.2.2" />
     <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.2.2" />
     <PackageVersion Include="Microsoft.Orleans.TestingHost" Version="10.2.2" />
+    <PackageVersion Include="PolyType" Version="1.4.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
   </ItemGroup>
