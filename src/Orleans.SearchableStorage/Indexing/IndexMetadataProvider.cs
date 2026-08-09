@@ -58,13 +58,34 @@ internal static class IndexMetadataProvider
         }
 
         var model = GetTypeModel<TState>();
-        var index = model.Indexes.SingleOrDefault(candidate => candidate.MemberInfo.Equals(property))
+        var index = model.Indexes.SingleOrDefault(candidate => IsSameProperty(candidate.MemberInfo, property))
             ?? throw new ArgumentException($"Property '{property.Name}' is not marked with SearchableIndexAttribute.", nameof(expression));
 
         return new SelectedIndex(
             CreateScope(typeof(TState), stateName, index.Name),
             index.Kind,
             index.Converter);
+    }
+
+    private static bool IsSameProperty(MemberInfo indexedMember, PropertyInfo selectedProperty)
+    {
+        if (indexedMember.Equals(selectedProperty))
+        {
+            return true;
+        }
+
+        if (indexedMember is not PropertyInfo indexedProperty)
+        {
+            return false;
+        }
+
+        // PolyType can expose the base property which owns an inherited attribute while an
+        // expression tree exposes its override. Their virtual getters share one base definition.
+        var indexedGetter = indexedProperty.GetMethod;
+        var selectedGetter = selectedProperty.GetMethod;
+        return indexedGetter is not null
+            && selectedGetter is not null
+            && indexedGetter.GetBaseDefinition().Equals(selectedGetter.GetBaseDefinition());
     }
 
     internal static SearchableTypeModel<TState> GetTypeModel<TState>()
