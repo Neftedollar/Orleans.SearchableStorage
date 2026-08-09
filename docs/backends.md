@@ -46,7 +46,7 @@ siloBuilder.AddSearchableGrainStorage(
     options => options.PartitionCount = 32);
 ```
 
-Redis grain-state keys are scoped by the Orleans service id. Keep `ClusterOptions.ServiceId` stable across restarts which must see the same data. The integration contract creates a key through the official provider, verifies the provider's state namespace, and derives its cleanup sentinels from that key so a provider key-format change cannot silently invalidate fixture cleanup.
+Redis grain-state keys are scoped by the Orleans service id. Keep `ClusterOptions.ServiceId` stable across restarts which must see the same data. The integration contract creates two keys through the official provider, verifies the provider's state namespace, and derives its cleanup sentinels from those keys so a provider key-format change cannot silently invalidate fixture cleanup. Cleanup deduplicates keys discovered through all endpoints and pipelines bounded batches of single-key `DEL` commands; it does not issue a cross-slot multi-key command, so connection-string overrides may target Redis Cluster as well as standalone Redis.
 
 ## Azure Blob Storage
 

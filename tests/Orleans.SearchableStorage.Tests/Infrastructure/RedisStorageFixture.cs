@@ -50,20 +50,34 @@ public sealed class RedisStorageFixture : ExternalStorageFixture<RedisSiloConfig
 
 internal sealed class RedisStateKeyManager(string connectionString)
 {
+    internal const int DeleteBatchSize = 128;
+
     public async Task DeleteStateKeysAsync(string serviceId)
     {
         var configuration = ConfigurationOptions.Parse(connectionString);
         await using var multiplexer = await ConnectionMultiplexer.ConnectAsync(configuration);
         var database = multiplexer.GetDatabase();
-        foreach (var endpoint in multiplexer.GetEndPoints())
-        {
-            var keys = multiplexer.GetServer(endpoint)
+        var keys = multiplexer.GetEndPoints()
+            .SelectMany(endpoint => multiplexer.GetServer(endpoint)
                 .Keys(pattern: $"{serviceId}/state/*")
-                .ToArray();
-            if (keys.Length > 0)
-            {
-                await database.KeyDeleteAsync(keys);
-            }
+                .ToArray())
+            .Distinct()
+            .ToArray();
+
+        await DeleteKeysIndividuallyAsync(keys, key => database.KeyDeleteAsync(key));
+    }
+
+    internal static async Task DeleteKeysIndividuallyAsync(
+        IEnumerable<RedisKey> keys,
+        Func<RedisKey, Task<bool>> deleteAsync)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(deleteAsync);
+
+        // A Redis Cluster accepts a multi-key DEL only when every key maps to the same hash slot.
+        foreach (var batch in keys.Distinct().Chunk(DeleteBatchSize))
+        {
+            await Task.WhenAll(batch.Select(deleteAsync));
         }
     }
 }

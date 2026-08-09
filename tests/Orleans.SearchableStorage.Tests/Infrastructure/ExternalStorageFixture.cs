@@ -13,12 +13,14 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
     where TSiloConfigurator : IHostConfigurator, new()
 {
     internal const string CleanupFailureDataKey = "Orleans.SearchableStorage.ExternalFixture.CleanupFailure";
+    internal const string DisposeFailureDataKey = "Orleans.SearchableStorage.ExternalFixture.DisposeFailure";
     internal const string StopFailureDataKey = "Orleans.SearchableStorage.ExternalFixture.StopFailure";
 
     private readonly IExternalStorageClusterFactory _clusterFactory;
     private readonly bool _isEnabled;
     private IExternalStorageCluster? _cluster;
     private bool _cleanupCompleted;
+    private bool _disposeCompleted;
     private bool _stopCompleted;
 
     protected ExternalStorageFixture(string backendName)
@@ -78,28 +80,7 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
             return;
         }
 
-        Exception? failure = null;
-        try
-        {
-            await StopClusterAsync();
-        }
-        catch (Exception exception)
-        {
-            failure = exception;
-        }
-
-        try
-        {
-            await AttemptBackendCleanupAsync();
-        }
-        catch (Exception exception) when (failure is not null)
-        {
-            AttachSecondaryFailure(failure, CleanupFailureDataKey, exception);
-        }
-        catch (Exception exception)
-        {
-            failure = exception;
-        }
+        var failure = await ReleaseResourcesAsync(primaryFailure: null);
 
         if (failure is not null)
         {
@@ -120,34 +101,36 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
 
     private async Task ReleaseAfterInitializationFailureAsync(Exception initializationFailure)
     {
-        try
-        {
-            await StopClusterAsync();
-        }
-        catch (Exception exception)
-        {
-            AttachSecondaryFailure(initializationFailure, StopFailureDataKey, exception);
-        }
+        await ReleaseResourcesAsync(initializationFailure);
+    }
 
-        try
-        {
-            await AttemptBackendCleanupAsync();
-        }
-        catch (Exception exception)
-        {
-            AttachSecondaryFailure(initializationFailure, CleanupFailureDataKey, exception);
-        }
+    private async Task<Exception?> ReleaseResourcesAsync(Exception? primaryFailure)
+    {
+        var failure = await CaptureFailureAsync(StopClusterAsync, primaryFailure, StopFailureDataKey);
+        failure = await CaptureFailureAsync(DisposeClusterAsync, failure, DisposeFailureDataKey);
+        return await CaptureFailureAsync(AttemptBackendCleanupAsync, failure, CleanupFailureDataKey);
     }
 
     private async Task StopClusterAsync()
     {
-        if (_cluster is null || _stopCompleted)
+        if (_cluster is null || _stopCompleted || _disposeCompleted)
         {
             return;
         }
 
         await _cluster.StopAsync();
         _stopCompleted = true;
+    }
+
+    private async Task DisposeClusterAsync()
+    {
+        if (_cluster is null || _disposeCompleted)
+        {
+            return;
+        }
+
+        await _cluster.DisposeAsync();
+        _disposeCompleted = true;
     }
 
     private async Task AttemptBackendCleanupAsync()
@@ -158,7 +141,28 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
         }
 
         await CleanupBackendAsync();
-        _cleanupCompleted = _cluster is null || _stopCompleted;
+        _cleanupCompleted = _cluster is null || _stopCompleted || _disposeCompleted;
+    }
+
+    private static async Task<Exception?> CaptureFailureAsync(
+        Func<Task> operation,
+        Exception? primary,
+        string secondaryFailureKey)
+    {
+        try
+        {
+            await operation();
+        }
+        catch (Exception exception) when (primary is not null)
+        {
+            AttachSecondaryFailure(primary, secondaryFailureKey, exception);
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+
+        return primary;
     }
 
     private static void AttachSecondaryFailure(
@@ -170,7 +174,7 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
     }
 }
 
-internal interface IExternalStorageCluster
+internal interface IExternalStorageCluster : IAsyncDisposable
 {
     TestCluster Cluster { get; }
 
@@ -222,5 +226,10 @@ internal sealed class ExternalStorageCluster(TestCluster cluster) : IExternalSto
     public Task StopAsync()
     {
         return Cluster.StopAllSilosAsync();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return Cluster.DisposeAsync();
     }
 }

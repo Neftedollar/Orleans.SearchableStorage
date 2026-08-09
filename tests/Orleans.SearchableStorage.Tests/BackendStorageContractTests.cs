@@ -101,9 +101,12 @@ public sealed class RedisSearchableStorageContractTests
     {
         var cleanupServiceId = $"{Fixture.ServiceId}-cleanup-{Guid.NewGuid():N}";
         var unrelatedServiceId = $"oss-unrelated-{Guid.NewGuid():N}";
-        var stateName = $"cleanup-probe-{Guid.NewGuid():N}";
-        var grainId = GrainId.Create("redis-cleanup-probe", Guid.NewGuid().ToString("N"));
-        var state = new GrainState<List<string>> { State = ["provider-created"] };
+        var probes = Enumerable.Range(0, 2)
+            .Select(_ => new RedisCleanupProbe(
+                $"cleanup-probe-{Guid.NewGuid():N}",
+                GrainId.Create("redis-cleanup-probe", Guid.NewGuid().ToString("N")),
+                new GrainState<List<string>> { State = ["provider-created"] }))
+            .ToArray();
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
         var storage = silo.ServiceProvider.GetRequiredKeyedService<IGrainStorage>(
             ExternalStorageSiloConfiguration.InnerPhysicalStorageProviderName);
@@ -112,45 +115,54 @@ public sealed class RedisSearchableStorageContractTests
         var database = multiplexer.GetDatabase();
         var keysBeforeWrite = GetRedisKeys(multiplexer, $"{Fixture.ServiceId}/*");
         var cleanupKeys = new List<RedisKey>();
-        var providerStateWritten = false;
+        var writtenProbes = new List<RedisCleanupProbe>();
 
         try
         {
-            await storage.WriteStateAsync(stateName, grainId, state);
-            providerStateWritten = true;
+            foreach (var probe in probes)
+            {
+                await storage.WriteStateAsync(probe.StateName, probe.GrainId, probe.State);
+                writtenProbes.Add(probe);
+            }
 
-            var providerKey = GetRedisKeys(multiplexer, $"{Fixture.ServiceId}/*")
+            var providerKeys = GetRedisKeys(multiplexer, $"{Fixture.ServiceId}/*")
                 .Except(keysBeforeWrite, StringComparer.Ordinal)
-                .Should()
-                .ContainSingle()
-                .Which;
-            providerKey.Should().StartWith($"{Fixture.ServiceId}/state/");
-            var providerKeySuffix = providerKey[Fixture.ServiceId.Length..];
-            RedisKey ownedKey = $"{cleanupServiceId}{providerKeySuffix}";
-            RedisKey unrelatedKey = $"{unrelatedServiceId}{providerKeySuffix}";
-
-            await database.StringSetAsync(ownedKey, "owned");
-            cleanupKeys.Add(ownedKey);
-            await database.StringSetAsync(unrelatedKey, "unrelated");
-            cleanupKeys.Add(unrelatedKey);
+                .ToArray();
+            providerKeys.Should().HaveCount(2);
+            providerKeys.Should().OnlyContain(key => key.StartsWith($"{Fixture.ServiceId}/state/"));
+            var ownedKeys = new List<RedisKey>();
+            var unrelatedKeys = new List<RedisKey>();
+            foreach (var providerKey in providerKeys)
+            {
+                var providerKeySuffix = providerKey[Fixture.ServiceId.Length..];
+                RedisKey ownedKey = $"{cleanupServiceId}{providerKeySuffix}";
+                RedisKey unrelatedKey = $"{unrelatedServiceId}{providerKeySuffix}";
+                ownedKeys.Add(ownedKey);
+                unrelatedKeys.Add(unrelatedKey);
+                cleanupKeys.Add(ownedKey);
+                cleanupKeys.Add(unrelatedKey);
+                await database.StringSetAsync(ownedKey, "owned");
+                await database.StringSetAsync(unrelatedKey, "unrelated");
+            }
 
             await Fixture.StateKeyManager.DeleteStateKeysAsync(cleanupServiceId);
 
-            (await database.KeyExistsAsync(ownedKey)).Should().BeFalse();
-            (await database.KeyExistsAsync(unrelatedKey)).Should().BeTrue();
+            foreach (var ownedKey in ownedKeys)
+            {
+                (await database.KeyExistsAsync(ownedKey)).Should().BeFalse();
+            }
+
+            foreach (var unrelatedKey in unrelatedKeys)
+            {
+                (await database.KeyExistsAsync(unrelatedKey)).Should().BeTrue();
+            }
         }
         finally
         {
-            var cleanupTasks = new List<Task>();
-            if (providerStateWritten)
-            {
-                cleanupTasks.Add(storage.ClearStateAsync(stateName, grainId, state));
-            }
-
-            if (cleanupKeys.Count > 0)
-            {
-                cleanupTasks.Add(database.KeyDeleteAsync([.. cleanupKeys]));
-            }
+            var cleanupTasks = writtenProbes
+                .Select(probe => storage.ClearStateAsync(probe.StateName, probe.GrainId, probe.State))
+                .Concat(cleanupKeys.Select(key => database.KeyDeleteAsync(key)))
+                .ToArray();
 
             await Task.WhenAll(cleanupTasks);
         }
@@ -162,6 +174,61 @@ public sealed class RedisSearchableStorageContractTests
             .SelectMany(endpoint => multiplexer.GetServer(endpoint).Keys(pattern: pattern))
             .Select(static key => key.ToString())
             .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private sealed record RedisCleanupProbe(
+        string StateName,
+        GrainId GrainId,
+        GrainState<List<string>> State);
+}
+
+public sealed class RedisStateKeyManagerTests
+{
+    [Fact]
+    public async Task DeleteKeysIndividuallyDeduplicatesKeysBeforeDispatch()
+    {
+        RedisKey first = "state:{first}:1";
+        RedisKey second = "state:{second}:2";
+        var deletedKeys = new List<string>();
+
+        await RedisStateKeyManager.DeleteKeysIndividuallyAsync(
+            [first, second, first],
+            key =>
+            {
+                deletedKeys.Add(key.ToString());
+                return Task.FromResult(true);
+            });
+
+        deletedKeys.Should().BeEquivalentTo([first.ToString(), second.ToString()]);
+        deletedKeys.Should().OnlyHaveUniqueItems();
+    }
+
+    [Fact]
+    public async Task DeleteKeysIndividuallyWaitsForEachBoundedBatch()
+    {
+        var keys = Enumerable.Range(0, RedisStateKeyManager.DeleteBatchSize + 1)
+            .Select(index => (RedisKey)$"state:{{slot-{index}}}:{index}")
+            .ToArray();
+        var firstBatchRelease = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedKeys = new List<RedisKey>();
+
+        var deleteTask = RedisStateKeyManager.DeleteKeysIndividuallyAsync(
+            keys,
+            key =>
+            {
+                startedKeys.Add(key);
+                return firstBatchRelease.Task;
+            });
+
+        startedKeys.Should().HaveCount(RedisStateKeyManager.DeleteBatchSize);
+        startedKeys.Should().NotContain(keys[^1]);
+
+        firstBatchRelease.SetResult(true);
+        await deleteTask;
+
+        startedKeys.Should().HaveCount(keys.Length);
+        startedKeys.Should().OnlyHaveUniqueItems();
     }
 }
 

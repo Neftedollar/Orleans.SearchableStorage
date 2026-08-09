@@ -55,23 +55,16 @@ public sealed class ExternalStorageFixtureLifecycleTests
     {
         var expected = new InvalidOperationException("deploy failed");
         var cleanupFailure = new IOException("cleanup failed");
+        var disposeFailure = new IOException("dispose failed");
         var stopFailure = new IOException("stop failed");
         var factory = new RecordingClusterFactory();
         factory.Cluster.DeployException = expected;
+        factory.Cluster.DisposeException = disposeFailure;
         factory.Cluster.StopException = stopFailure;
-        var failCleanup = true;
         var fixture = new TestExternalStorageFixture(
             factory,
-            cleanup: () =>
-            {
-                if (failCleanup)
-                {
-                    failCleanup = false;
-                    return Task.FromException(cleanupFailure);
-                }
-
-                return Task.CompletedTask;
-            });
+            cleanup: () => Task.FromException(cleanupFailure),
+            lifecycleEvents: factory.Events);
 
         Func<Task> initialize = fixture.InitializeAsync;
 
@@ -79,122 +72,174 @@ public sealed class ExternalStorageFixtureLifecycleTests
         exception.Which.Should().BeSameAs(expected);
         exception.Which.Data[ExternalStorageFixture<EmptyHostConfigurator>.StopFailureDataKey]
             .Should().BeSameAs(stopFailure);
+        exception.Which.Data[ExternalStorageFixture<EmptyHostConfigurator>.DisposeFailureDataKey]
+            .Should().BeSameAs(disposeFailure);
         exception.Which.Data[ExternalStorageFixture<EmptyHostConfigurator>.CleanupFailureDataKey]
             .Should().BeSameAs(cleanupFailure);
         factory.Cluster.DeployCount.Should().Be(1);
         factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
         fixture.CleanupCount.Should().Be(1);
-
-        factory.Cluster.StopException = null;
-        await fixture.DisposeAsync();
-        factory.Cluster.StopCount.Should().Be(2);
-        fixture.CleanupCount.Should().Be(2);
+        factory.Events.Should().Equal("deploy", "stop", "dispose", "cleanup");
     }
 
     [Fact]
-    public async Task StopFailureStillCleansUpAndRemainsThePrimaryException()
+    public async Task SuccessfulReleaseAfterDeployFailureMakesRunnerTeardownIdempotent()
     {
-        var expected = new InvalidOperationException("stop failed");
-        var cleanupFailure = new IOException("cleanup failed");
+        var expected = new InvalidOperationException("deploy failed");
         var factory = new RecordingClusterFactory();
-        factory.Cluster.StopException = expected;
-        var failCleanup = true;
+        factory.Cluster.DeployException = expected;
         var fixture = new TestExternalStorageFixture(
             factory,
-            cleanup: () =>
-            {
-                if (failCleanup)
-                {
-                    failCleanup = false;
-                    return Task.FromException(cleanupFailure);
-                }
+            lifecycleEvents: factory.Events);
 
-                return Task.CompletedTask;
-            });
+        Func<Task> initialize = fixture.InitializeAsync;
+
+        var exception = await initialize.Should().ThrowAsync<InvalidOperationException>();
+        exception.Which.Should().BeSameAs(expected);
+        factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(1);
+        factory.Events.Should().Equal("deploy", "stop", "dispose", "cleanup");
+
+        await fixture.DisposeAsync();
+
+        factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(1);
+        factory.Events.Should().Equal("deploy", "stop", "dispose", "cleanup");
+    }
+
+    [Fact]
+    public async Task StopFailureStillDisposesAndCleansUpInOneCall()
+    {
+        var expected = new InvalidOperationException("stop failed");
+        var factory = new RecordingClusterFactory();
+        factory.Cluster.StopException = expected;
+        var fixture = new TestExternalStorageFixture(
+            factory,
+            lifecycleEvents: factory.Events);
         await fixture.InitializeAsync();
+        factory.Events.Clear();
 
         Func<Task> dispose = fixture.DisposeAsync;
 
         var exception = await dispose.Should().ThrowAsync<InvalidOperationException>();
         exception.Which.Should().BeSameAs(expected);
-        exception.Which.Data[ExternalStorageFixture<EmptyHostConfigurator>.CleanupFailureDataKey]
-            .Should().BeSameAs(cleanupFailure);
         factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
         fixture.CleanupCount.Should().Be(1);
-
-        factory.Cluster.StopException = null;
-        await fixture.DisposeAsync();
-        factory.Cluster.StopCount.Should().Be(2);
-        fixture.CleanupCount.Should().Be(2);
+        factory.Events.Should().Equal("stop", "dispose", "cleanup");
     }
 
     [Fact]
-    public async Task CleanupFailureAfterSuccessfulStopRetriesOnlyCleanup()
+    public async Task SuccessfulTeardownStopsDisposesAndCleansUpInOrder()
+    {
+        var factory = new RecordingClusterFactory();
+        var fixture = new TestExternalStorageFixture(
+            factory,
+            lifecycleEvents: factory.Events);
+        await fixture.InitializeAsync();
+        factory.Events.Clear();
+
+        await fixture.DisposeAsync();
+
+        factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(1);
+        factory.Events.Should().Equal("stop", "dispose", "cleanup");
+    }
+
+    [Fact]
+    public async Task DisposeFailureStillCleansUpAndRemainsThePrimaryException()
+    {
+        var expected = new InvalidOperationException("dispose failed");
+        var factory = new RecordingClusterFactory();
+        factory.Cluster.DisposeException = expected;
+        var fixture = new TestExternalStorageFixture(
+            factory,
+            lifecycleEvents: factory.Events);
+        await fixture.InitializeAsync();
+        factory.Events.Clear();
+
+        Func<Task> dispose = fixture.DisposeAsync;
+
+        var exception = await dispose.Should().ThrowAsync<InvalidOperationException>();
+        exception.Which.Should().BeSameAs(expected);
+        factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(1);
+        factory.Events.Should().Equal("stop", "dispose", "cleanup");
+    }
+
+    [Fact]
+    public async Task CleanupFailureAfterClusterReleaseRemainsThePrimaryException()
     {
         var expected = new InvalidOperationException("cleanup failed");
         var factory = new RecordingClusterFactory();
-        var failCleanup = true;
         var fixture = new TestExternalStorageFixture(
             factory,
-            cleanup: () =>
-            {
-                if (failCleanup)
-                {
-                    failCleanup = false;
-                    return Task.FromException(expected);
-                }
-
-                return Task.CompletedTask;
-            });
+            cleanup: () => Task.FromException(expected),
+            lifecycleEvents: factory.Events);
         await fixture.InitializeAsync();
+        factory.Events.Clear();
 
-        Func<Task> firstDispose = fixture.DisposeAsync;
+        Func<Task> dispose = fixture.DisposeAsync;
 
-        var exception = await firstDispose.Should().ThrowAsync<InvalidOperationException>();
+        var exception = await dispose.Should().ThrowAsync<InvalidOperationException>();
         exception.Which.Should().BeSameAs(expected);
         factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
         fixture.CleanupCount.Should().Be(1);
-
-        await fixture.DisposeAsync();
-        factory.Cluster.StopCount.Should().Be(1);
-        fixture.CleanupCount.Should().Be(2);
+        factory.Events.Should().Equal("stop", "dispose", "cleanup");
     }
 
     [Fact]
-    public async Task StopFailureRetriesCleanupAfterStopSucceeds()
+    public async Task CombinedTeardownFailuresPreserveStopAsPrimaryAndAttachLaterFailures()
     {
         var expected = new InvalidOperationException("stop failed");
+        var disposeFailure = new IOException("dispose failed");
+        var cleanupFailure = new IOException("cleanup failed");
         var factory = new RecordingClusterFactory();
         factory.Cluster.StopException = expected;
-        var fixture = new TestExternalStorageFixture(factory);
+        factory.Cluster.DisposeException = disposeFailure;
+        var fixture = new TestExternalStorageFixture(
+            factory,
+            cleanup: () => Task.FromException(cleanupFailure),
+            lifecycleEvents: factory.Events);
         await fixture.InitializeAsync();
+        factory.Events.Clear();
 
-        Func<Task> firstDispose = fixture.DisposeAsync;
+        Func<Task> dispose = fixture.DisposeAsync;
 
-        var exception = await firstDispose.Should().ThrowAsync<InvalidOperationException>();
+        var exception = await dispose.Should().ThrowAsync<InvalidOperationException>();
         exception.Which.Should().BeSameAs(expected);
+        exception.Which.Data[ExternalStorageFixture<EmptyHostConfigurator>.DisposeFailureDataKey]
+            .Should().BeSameAs(disposeFailure);
+        exception.Which.Data[ExternalStorageFixture<EmptyHostConfigurator>.CleanupFailureDataKey]
+            .Should().BeSameAs(cleanupFailure);
         factory.Cluster.StopCount.Should().Be(1);
+        factory.Cluster.DisposeCount.Should().Be(1);
         fixture.CleanupCount.Should().Be(1);
-
-        factory.Cluster.StopException = null;
-        await fixture.DisposeAsync();
-        factory.Cluster.StopCount.Should().Be(2);
-        fixture.CleanupCount.Should().Be(2);
+        factory.Events.Should().Equal("stop", "dispose", "cleanup");
     }
 
     private sealed class TestExternalStorageFixture : ExternalStorageFixture<EmptyHostConfigurator>
     {
         private readonly Func<Task> _cleanup;
+        private readonly ICollection<string>? _lifecycleEvents;
         private readonly Func<Task<IReadOnlyDictionary<string, string?>>> _prepare;
 
         public TestExternalStorageFixture(
             IExternalStorageClusterFactory factory,
             Func<Task<IReadOnlyDictionary<string, string?>>>? prepare = null,
-            Func<Task>? cleanup = null)
+            Func<Task>? cleanup = null,
+            ICollection<string>? lifecycleEvents = null)
             : base("lifecycle", isEnabled: true, factory)
         {
             _prepare = prepare ?? (() => Task.FromResult(EmptySettings));
             _cleanup = cleanup ?? (() => Task.CompletedTask);
+            _lifecycleEvents = lifecycleEvents;
         }
 
         public int CleanupCount { get; private set; }
@@ -207,13 +252,21 @@ public sealed class ExternalStorageFixtureLifecycleTests
         protected override Task CleanupBackendAsync()
         {
             CleanupCount++;
+            _lifecycleEvents?.Add("cleanup");
             return _cleanup();
         }
     }
 
     private sealed class RecordingClusterFactory : IExternalStorageClusterFactory
     {
-        public RecordingCluster Cluster { get; } = new();
+        public RecordingClusterFactory()
+        {
+            Cluster = new RecordingCluster(Events);
+        }
+
+        public RecordingCluster Cluster { get; }
+
+        public List<string> Events { get; } = [];
 
         public Exception? BuildException { get; init; }
 
@@ -234,21 +287,26 @@ public sealed class ExternalStorageFixtureLifecycleTests
         }
     }
 
-    private sealed class RecordingCluster : IExternalStorageCluster
+    private sealed class RecordingCluster(ICollection<string> events) : IExternalStorageCluster
     {
         public TestCluster Cluster => throw new NotSupportedException();
 
         public Exception? DeployException { get; set; }
 
+        public Exception? DisposeException { get; set; }
+
         public Exception? StopException { get; set; }
 
         public int DeployCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
 
         public int StopCount { get; private set; }
 
         public Task DeployAsync()
         {
             DeployCount++;
+            events.Add("deploy");
             return DeployException is null
                 ? Task.CompletedTask
                 : Task.FromException(DeployException);
@@ -257,9 +315,19 @@ public sealed class ExternalStorageFixtureLifecycleTests
         public Task StopAsync()
         {
             StopCount++;
+            events.Add("stop");
             return StopException is null
                 ? Task.CompletedTask
                 : Task.FromException(StopException);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+            events.Add("dispose");
+            return DisposeException is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(DisposeException);
         }
     }
 
