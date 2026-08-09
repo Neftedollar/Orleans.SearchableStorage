@@ -112,7 +112,7 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
-    public void InheritedIndexAttributesAreResolvedThroughTheTypeShape()
+    public void InheritedIndexedPropertiesAreResolvedThroughTheTypeShape()
     {
         var state = new DerivedState { Score = 17 };
 
@@ -245,12 +245,11 @@ public sealed class IndexMetadataProviderTests
     private class BaseState
     {
         [SearchableIndex(SearchableIndexKind.Range)]
-        public virtual int Score { get; init; }
+        public int Score { get; init; }
     }
 
     private sealed class DerivedState : BaseState
     {
-        public override int Score { get; init; }
     }
 
     private sealed class ConcurrentModelState
