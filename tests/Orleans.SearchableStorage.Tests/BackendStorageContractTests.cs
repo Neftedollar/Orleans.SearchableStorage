@@ -101,16 +101,38 @@ public sealed class RedisSearchableStorageContractTests
     {
         var cleanupServiceId = $"{Fixture.ServiceId}-cleanup-{Guid.NewGuid():N}";
         var unrelatedServiceId = $"oss-unrelated-{Guid.NewGuid():N}";
-        RedisKey ownedKey = $"{cleanupServiceId}/state/sentinel";
-        RedisKey unrelatedKey = $"{unrelatedServiceId}/state/sentinel";
+        var stateName = $"cleanup-probe-{Guid.NewGuid():N}";
+        var grainId = GrainId.Create("redis-cleanup-probe", Guid.NewGuid().ToString("N"));
+        var state = new GrainState<List<string>> { State = ["provider-created"] };
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var storage = silo.ServiceProvider.GetRequiredKeyedService<IGrainStorage>(
+            ExternalStorageSiloConfiguration.InnerPhysicalStorageProviderName);
         var configuration = ConfigurationOptions.Parse(Fixture.ConnectionString);
         await using var multiplexer = await ConnectionMultiplexer.ConnectAsync(configuration);
         var database = multiplexer.GetDatabase();
+        var keysBeforeWrite = GetRedisKeys(multiplexer, $"{Fixture.ServiceId}/*");
+        var cleanupKeys = new List<RedisKey>();
+        var providerStateWritten = false;
 
         try
         {
+            await storage.WriteStateAsync(stateName, grainId, state);
+            providerStateWritten = true;
+
+            var providerKey = GetRedisKeys(multiplexer, $"{Fixture.ServiceId}/*")
+                .Except(keysBeforeWrite, StringComparer.Ordinal)
+                .Should()
+                .ContainSingle()
+                .Which;
+            providerKey.Should().StartWith($"{Fixture.ServiceId}/state/");
+            var providerKeySuffix = providerKey[Fixture.ServiceId.Length..];
+            RedisKey ownedKey = $"{cleanupServiceId}{providerKeySuffix}";
+            RedisKey unrelatedKey = $"{unrelatedServiceId}{providerKeySuffix}";
+
             await database.StringSetAsync(ownedKey, "owned");
+            cleanupKeys.Add(ownedKey);
             await database.StringSetAsync(unrelatedKey, "unrelated");
+            cleanupKeys.Add(unrelatedKey);
 
             await Fixture.StateKeyManager.DeleteStateKeysAsync(cleanupServiceId);
 
@@ -119,8 +141,27 @@ public sealed class RedisSearchableStorageContractTests
         }
         finally
         {
-            await database.KeyDeleteAsync([ownedKey, unrelatedKey]);
+            var cleanupTasks = new List<Task>();
+            if (providerStateWritten)
+            {
+                cleanupTasks.Add(storage.ClearStateAsync(stateName, grainId, state));
+            }
+
+            if (cleanupKeys.Count > 0)
+            {
+                cleanupTasks.Add(database.KeyDeleteAsync([.. cleanupKeys]));
+            }
+
+            await Task.WhenAll(cleanupTasks);
         }
+    }
+
+    private static HashSet<string> GetRedisKeys(ConnectionMultiplexer multiplexer, string pattern)
+    {
+        return multiplexer.GetEndPoints()
+            .SelectMany(endpoint => multiplexer.GetServer(endpoint).Keys(pattern: pattern))
+            .Select(static key => key.ToString())
+            .ToHashSet(StringComparer.Ordinal);
     }
 }
 

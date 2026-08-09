@@ -1,0 +1,2 @@
+a89d82c557491a2bcb8b0fbc8ff92b7531110a94eb4dc7d662a16e62b3cceb26  tests/Orleans.SearchableStorage.Tests/Infrastructure/PostgreSql/PostgreSQL-Main.sql
+c9c1b9572f63ef33f371c1dad5dfab4dbf4a63519e2908529da3b48ddce314c4  tests/Orleans.SearchableStorage.Tests/Infrastructure/PostgreSql/PostgreSQL-Persistence.sql

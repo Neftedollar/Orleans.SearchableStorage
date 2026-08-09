@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Every backend inherits the shared contract. Memory adds one provider test; external providers add two.
+  SHARED_STORAGE_CONTRACT_TEST_COUNT: "48"
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -22,6 +26,9 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
+
+      - name: Verify vendored Orleans SQL
+        run: sha256sum --check eng/orleans-sql.sha256
 
       - name: Restore
         run: dotnet restore Orleans.SearchableStorage.slnx
@@ -43,7 +50,10 @@ jobs:
           --results-directory artifacts/memory-test-results
 
       - name: Validate memory storage contract
-        run: bash eng/validate-trx.sh artifacts/memory-test-results/memory-test-results.trx 45
+        run: >-
+          bash eng/validate-trx.sh
+          artifacts/memory-test-results/memory-test-results.trx
+          "$((SHARED_STORAGE_CONTRACT_TEST_COUNT + 1))"
 
       - name: Pack
         run: dotnet pack src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj --configuration Release --no-build --no-restore --output artifacts/packages
@@ -118,9 +128,10 @@ jobs:
 
       - name: Validate backend test results
         run: |
-          bash eng/validate-trx.sh artifacts/backend-test-results/postgresql-test-results.trx 46
-          bash eng/validate-trx.sh artifacts/backend-test-results/redis-test-results.trx 46
-          bash eng/validate-trx.sh artifacts/backend-test-results/azure-blob-test-results.trx 46
+          expected_count="$((SHARED_STORAGE_CONTRACT_TEST_COUNT + 2))"
+          bash eng/validate-trx.sh artifacts/backend-test-results/postgresql-test-results.trx "$expected_count"
+          bash eng/validate-trx.sh artifacts/backend-test-results/redis-test-results.trx "$expected_count"
+          bash eng/validate-trx.sh artifacts/backend-test-results/azure-blob-test-results.trx "$expected_count"
 
       - name: Stop physical backends
         if: always()

@@ -142,6 +142,8 @@ The test suite defines one reusable storage contract. It runs through a two-silo
 - Redis: Orleans `Microsoft.Orleans.Persistence.Redis`.
 - Azure Blob Storage: Orleans `Microsoft.Orleans.Persistence.AzureStorage`, exercised against Azurite in CI.
 
+The vendored Orleans 10.2.2 PostgreSQL scripts retain their source and MIT license headers. CI verifies their complete file hashes against `eng/orleans-sql.sha256` before the tests run.
+
 The external backend contract is opt-in locally and runs on every pull request in a dedicated CI job. Start the pinned containers and run it with:
 
 ```bash

@@ -8,7 +8,7 @@ Register exactly one physical provider before the searchable provider.
 
 ## PostgreSQL
 
-Reference `Microsoft.Orleans.Persistence.AdoNet` and the Npgsql ADO.NET driver. Install the official Orleans [`PostgreSQL-Main.sql`](https://github.com/dotnet/orleans/blob/v10.2.2/src/AdoNet/Shared/PostgreSQL-Main.sql) and [`PostgreSQL-Persistence.sql`](https://github.com/dotnet/orleans/blob/v10.2.2/src/AdoNet/Orleans.Persistence.AdoNet/PostgreSQL-Persistence.sql) scripts in the target database. The operational SQL copied into this repository retains its pinned source URL and the full upstream MIT notice inline.
+Reference `Microsoft.Orleans.Persistence.AdoNet` and the Npgsql ADO.NET driver. Install the official Orleans [`PostgreSQL-Main.sql`](https://github.com/dotnet/orleans/blob/v10.2.2/src/AdoNet/Shared/PostgreSQL-Main.sql) and [`PostgreSQL-Persistence.sql`](https://github.com/dotnet/orleans/blob/v10.2.2/src/AdoNet/Orleans.Persistence.AdoNet/PostgreSQL-Persistence.sql) scripts in the target database. The operational SQL copied into this repository retains its pinned source URL and the full upstream MIT notice inline. The repository-wide `eng/orleans-sql.sha256` manifest pins each complete vendored file, including that provenance and license header, and CI checks the manifest before restoring dependencies.
 
 ```csharp
 siloBuilder.AddAdoNetGrainStorage(
@@ -46,7 +46,7 @@ siloBuilder.AddSearchableGrainStorage(
     options => options.PartitionCount = 32);
 ```
 
-Redis grain-state keys are scoped by the Orleans service id. Keep `ClusterOptions.ServiceId` stable across restarts which must see the same data.
+Redis grain-state keys are scoped by the Orleans service id. Keep `ClusterOptions.ServiceId` stable across restarts which must see the same data. The integration contract creates a key through the official provider, verifies the provider's state namespace, and derives its cleanup sentinels from that key so a provider key-format change cannot silently invalidate fixture cleanup.
 
 ## Azure Blob Storage
 
