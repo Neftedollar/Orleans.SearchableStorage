@@ -45,7 +45,7 @@ public sealed class IndexMetadataProviderTests
         entries.Should().ContainSingle();
         entries[0].Value.Kind.Should().Be(IndexValueKind.SignedInteger);
         entries[0].Value.SignedInteger.Should().Be(42);
-        selected.Converter.RuntimeValueType.Should().Be(typeof(int));
+        selected.Converter.RuntimeValueType.Should().Be<int>();
         selected.Converter.ConvertObject(42)!.SignedInteger.Should().Be(42);
     }
 
@@ -86,7 +86,7 @@ public sealed class IndexMetadataProviderTests
             "state",
             state => state.Indexed);
 
-        selected.Converter.ValueType.Should().Be(typeof(string));
+        selected.Converter.ValueType.Should().Be<string>();
     }
 
     [Fact]
