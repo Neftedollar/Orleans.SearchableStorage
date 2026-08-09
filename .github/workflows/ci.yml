@@ -48,6 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      EXPECTED_BACKEND_TEST_COUNT: "135"
       ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS: "true"
 
     steps:
@@ -79,10 +80,26 @@ jobs:
           --logger "trx;LogFileName=backend-test-results.trx"
           --results-directory artifacts/backend-test-results
 
-      - name: Reject skipped backend tests
-        run: >-
-          if grep --recursive --quiet 'outcome="NotExecuted"' artifacts/backend-test-results;
-          then echo "The enabled backend contract contained skipped tests." >&2; exit 1; fi
+      - name: Validate backend test results
+        shell: bash
+        run: |
+          result="artifacts/backend-test-results/backend-test-results.trx"
+          if [[ ! -f "$result" ]]; then
+            echo "The backend test result was not produced." >&2
+            exit 1
+          fi
+
+          if grep --quiet 'outcome="NotExecuted"' "$result"; then
+            echo "The enabled backend contract contained skipped tests." >&2
+            exit 1
+          fi
+
+          expected="<Counters total=\"${EXPECTED_BACKEND_TEST_COUNT}\" executed=\"${EXPECTED_BACKEND_TEST_COUNT}\" passed=\"${EXPECTED_BACKEND_TEST_COUNT}\" failed=\"0\""
+          if ! grep --fixed-strings --quiet "$expected" "$result"; then
+            echo "Expected ${EXPECTED_BACKEND_TEST_COUNT} executed and passing backend tests." >&2
+            grep '<Counters ' "$result" >&2 || true
+            exit 1
+          fi
 
       - name: Stop physical backends
         if: always()

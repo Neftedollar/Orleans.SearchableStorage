@@ -287,7 +287,9 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await wrongCity.SetAsync($"nested-other-{Guid.NewGuid():N}", offset + 6);
         var lowerBound = offset + 5;
         var upperBound = offset + 8;
-        var client = CreateClient();
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var client = silo.ServiceProvider.GetRequiredKeyedService<ISearchableStorageQueryClient>(
+            VacancyGrain.StorageProviderName);
 
         var matches = await client
             .Query<VacancyState>(VacancyGrain.StateName)

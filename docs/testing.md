@@ -34,7 +34,7 @@ partition-grain execution.
 
 ### Storage contract tests
 
-The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range primitives, nested `IQueryable` intersection and union, empty plans, nullable indexed values, compiler-promoted byte and enum queries through real Orleans serialization, inclusive and exclusive one-sided and equal bounds, deterministic sorted deduplication, cancellation, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, malformed wire-plan rejection followed by a healthy call, protection against boolean mutation of live index buckets, and physical-write failure boundaries. Every supported physical provider must run the same contract.
+The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range primitives, nested `IQueryable` intersection and union, empty plans, nullable indexed values, compiler-promoted byte and enum queries through real Orleans serialization, inclusive and exclusive one-sided and equal bounds, deterministic sorted deduplication, cancellation, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, malformed wire-plan rejection followed by a healthy call, protection against boolean mutation of live index buckets, and physical-write failure boundaries. Its nested-plan case resolves the keyed `ISearchableStorageQueryClient` and dispatches the recursive `PartitionQueryPlan` through real Orleans grains. Every supported physical provider must run the same contract.
 
 Serializer and API contract tests freeze the required non-null fields and IDs of the existing
 bounded range message, the IDs and nullable bounds of the new non-persisted query plan, and a nested
@@ -54,7 +54,7 @@ Provider fixtures add environment setup, cleanup, serializer selection, and regi
 
 The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
 
-The dedicated CI job starts the pinned images from `tests/backends.compose.yml`, runs only tests tagged `BackendIntegration`, rejects a result containing skipped backend tests, uploads its TRX and coverage artifacts, and removes the volumes even after failure. For local execution and connection-string overrides, see [physical storage backends](backends.md).
+The dedicated CI job starts the pinned images from `tests/backends.compose.yml`, runs only tests tagged `BackendIntegration`, uploads its TRX and coverage artifacts, and removes the volumes even after failure. Its result gate requires exactly 45 executed and passing cases for each external provider (135 total) and rejects missing results, skipped tests, empty filters, partial discovery, and failures. When the shared contract gains or loses a data row, update `EXPECTED_BACKEND_TEST_COUNT` in the workflow in the same change. For local execution and connection-string overrides, see [physical storage backends](backends.md).
 
 ### Executable sample tests
 
