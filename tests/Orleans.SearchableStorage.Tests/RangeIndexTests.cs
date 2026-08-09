@@ -42,6 +42,23 @@ public sealed class RangeIndexTests
         matches.Should().ContainSingle().Which.Should().Be("record-2");
     }
 
+    [Fact]
+    public void ReversedBoundsAreRejected()
+    {
+        var index = new RangeIndex(CreateBuckets(4));
+        var matches = new HashSet<string>(StringComparer.Ordinal);
+
+        var action = () => index.UnionRange(
+            IndexValue.FromSignedInteger(3),
+            IndexValue.FromSignedInteger(1),
+            includeLowerBound: true,
+            includeUpperBound: true,
+            destination: matches);
+
+        action.Should().Throw<ArgumentException>()
+            .WithParameterName("lowerBound");
+    }
+
     private static Dictionary<IndexValue, HashSet<string>> CreateBuckets(int count)
     {
         return Enumerable.Range(0, count)

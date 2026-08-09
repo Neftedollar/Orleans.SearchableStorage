@@ -52,6 +52,18 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
+    public void ArrayTypeIdentitiesEncodeShapeAndElementType()
+    {
+        var integerVector = IndexMetadataProvider.CreateTypeIdentity(typeof(int[]));
+        var integerMatrix = IndexMetadataProvider.CreateTypeIdentity(typeof(int[,]));
+        var longVector = IndexMetadataProvider.CreateTypeIdentity(typeof(long[]));
+
+        integerVector.Should().NotContain("Version=");
+        integerVector.Should().NotBe(integerMatrix);
+        integerVector.Should().NotBe(longVector);
+    }
+
+    [Fact]
     public void NullIndexedValuesAreOmitted()
     {
         var entries = IndexMetadataProvider.Extract("state", new NullableState());
