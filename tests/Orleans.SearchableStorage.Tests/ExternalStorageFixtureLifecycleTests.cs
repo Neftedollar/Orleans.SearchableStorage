@@ -128,6 +128,60 @@ public sealed class ExternalStorageFixtureLifecycleTests
         fixture.CleanupCount.Should().Be(2);
     }
 
+    [Fact]
+    public async Task CleanupFailureAfterSuccessfulStopRetriesOnlyCleanup()
+    {
+        var expected = new InvalidOperationException("cleanup failed");
+        var factory = new RecordingClusterFactory();
+        var failCleanup = true;
+        var fixture = new TestExternalStorageFixture(
+            factory,
+            cleanup: () =>
+            {
+                if (failCleanup)
+                {
+                    failCleanup = false;
+                    return Task.FromException(expected);
+                }
+
+                return Task.CompletedTask;
+            });
+        await fixture.InitializeAsync();
+
+        Func<Task> firstDispose = fixture.DisposeAsync;
+
+        var exception = await firstDispose.Should().ThrowAsync<InvalidOperationException>();
+        exception.Which.Should().BeSameAs(expected);
+        factory.Cluster.StopCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(1);
+
+        await fixture.DisposeAsync();
+        factory.Cluster.StopCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task StopFailureAfterSuccessfulCleanupRetriesOnlyStop()
+    {
+        var expected = new InvalidOperationException("stop failed");
+        var factory = new RecordingClusterFactory();
+        factory.Cluster.StopException = expected;
+        var fixture = new TestExternalStorageFixture(factory);
+        await fixture.InitializeAsync();
+
+        Func<Task> firstDispose = fixture.DisposeAsync;
+
+        var exception = await firstDispose.Should().ThrowAsync<InvalidOperationException>();
+        exception.Which.Should().BeSameAs(expected);
+        factory.Cluster.StopCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(1);
+
+        factory.Cluster.StopException = null;
+        await fixture.DisposeAsync();
+        factory.Cluster.StopCount.Should().Be(2);
+        fixture.CleanupCount.Should().Be(1);
+    }
+
     private sealed class TestExternalStorageFixture : ExternalStorageFixture<EmptyHostConfigurator>
     {
         private readonly Func<Task> _cleanup;
