@@ -117,12 +117,13 @@ public sealed class IndexMetadataProviderTests
         var state = new DerivedState { Score = 17 };
 
         var entries = IndexMetadataProvider.Extract("state", state);
+        entries.Should().ContainSingle();
+        entries[0].Value.SignedInteger.Should().Be(17);
+
         var selected = IndexMetadataProvider.GetSelectedIndex<DerivedState, int>(
             "state",
             candidate => candidate.Score);
 
-        entries.Should().ContainSingle();
-        entries[0].Value.SignedInteger.Should().Be(17);
         selected.Kind.Should().Be(SearchableIndexKind.Range);
     }
 
