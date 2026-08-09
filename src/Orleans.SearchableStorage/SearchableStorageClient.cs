@@ -195,7 +195,7 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
 
             return initialized;
         }
-        catch (OperationCanceledException) when (!validationTask.IsCompleted)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             ResetLayoutValidation(validationTask);
             _ = ObserveCompletionAsync(validationTask);
@@ -237,7 +237,7 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         {
             return await aggregate.WaitAsync(cancellationToken);
         }
-        catch (OperationCanceledException) when (!aggregate.IsCompleted)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Orleans calls do not accept this local cancellation token. Observe their eventual
             // completion so a later transport or partition failure cannot become unobserved.
