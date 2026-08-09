@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Orleans-native persistent storage with searchable secondary indexes.</Description>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Authors>Orleans.SearchableStorage contributors</Authors>
+    <PackageId>Orleans.SearchableStorage</PackageId>
+    <PackageTags>orleans;storage;indexing;distributed-systems</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/Neftedollar/Orleans.SearchableStorage</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Orleans.Runtime" />
+    <PackageReference Include="Microsoft.Orleans.Sdk" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../CONTRIBUTING.md" Pack="true" PackagePath="/" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../docs/architecture.md" Pack="true" PackagePath="/docs/" />
+  </ItemGroup>
+</Project>
