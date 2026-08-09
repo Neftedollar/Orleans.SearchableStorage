@@ -31,6 +31,8 @@ Every pull request also requires an explicit test-sufficiency review. This is a 
 
 The pull request must record intentional test gaps and explain why they are deferred. See [docs/testing.md](docs/testing.md) for the review checklist and test layers.
 
+Every actionable review comment must have an explicit disposition before merge. When feedback is addressed, reply in the original discussion with the pull request or commit which contains the fix and the validation which supports it, then resolve the thread. If the fix is implemented in a later pull request, link that pull request from the original discussion as well. Do not leave an addressed thread open or mark an unimplemented change as resolved.
+
 ## Validation
 
 Run the following before requesting review:
