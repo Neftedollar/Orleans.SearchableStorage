@@ -90,7 +90,7 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
 
         try
         {
-            await CompleteBackendCleanupAsync();
+            await AttemptBackendCleanupAsync();
         }
         catch (Exception exception) when (failure is not null)
         {
@@ -131,7 +131,7 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
 
         try
         {
-            await CompleteBackendCleanupAsync();
+            await AttemptBackendCleanupAsync();
         }
         catch (Exception exception)
         {
@@ -150,7 +150,7 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
         _stopCompleted = true;
     }
 
-    private async Task CompleteBackendCleanupAsync()
+    private async Task AttemptBackendCleanupAsync()
     {
         if (_cleanupCompleted)
         {
@@ -158,7 +158,7 @@ public abstract class ExternalStorageFixture<TSiloConfigurator> : ISearchableSto
         }
 
         await CleanupBackendAsync();
-        _cleanupCompleted = true;
+        _cleanupCompleted = _cluster is null || _stopCompleted;
     }
 
     private static void AttachSecondaryFailure(

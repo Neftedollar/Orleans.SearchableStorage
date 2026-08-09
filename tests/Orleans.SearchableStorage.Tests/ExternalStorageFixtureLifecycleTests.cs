@@ -161,7 +161,7 @@ public sealed class ExternalStorageFixtureLifecycleTests
     }
 
     [Fact]
-    public async Task StopFailureAfterSuccessfulCleanupRetriesOnlyStop()
+    public async Task StopFailureRetriesCleanupAfterStopSucceeds()
     {
         var expected = new InvalidOperationException("stop failed");
         var factory = new RecordingClusterFactory();
@@ -179,7 +179,7 @@ public sealed class ExternalStorageFixtureLifecycleTests
         factory.Cluster.StopException = null;
         await fixture.DisposeAsync();
         factory.Cluster.StopCount.Should().Be(2);
-        fixture.CleanupCount.Should().Be(1);
+        fixture.CleanupCount.Should().Be(2);
     }
 
     private sealed class TestExternalStorageFixture : ExternalStorageFixture<EmptyHostConfigurator>
