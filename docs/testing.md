@@ -50,7 +50,7 @@ Provider fixtures add environment setup, cleanup, serializer selection, and regi
 
 - PostgreSQL uses `Microsoft.Orleans.Persistence.AdoNet` with Npgsql. The fixture creates an isolated schema and applies operational SQL copied from the Orleans 10.2.2 source tag under the full upstream MIT notice retained inline; the SQL body is unchanged apart from its source and license header.
 - Redis uses `Microsoft.Orleans.Persistence.Redis` with a unique Orleans service id.
-- Azure Blob uses `Microsoft.Orleans.Persistence.AzureStorage` with a unique container and runs against Azurite in CI.
+- Azure Blob uses `Microsoft.Orleans.Persistence.AzureStorage` with a unique container and runs against Azurite in CI. Azure.Storage.Blobs 12.27.0 defaults to API `2026-02-06`, while pinned Azurite 3.36.0 implements `2025-11-05`; native support is tracked in [Azure/Azurite#2623](https://github.com/Azure/Azurite/issues/2623). The emulator therefore starts with `--skipApiVersionCheck`. The complete contract still validates the implemented Blob operations; this flag skips only the emulator's request-version allow-list check and must be removed after the pinned emulator supports `2026-02-06`.
 
 Each external fixture also runs one resource-isolation cleanup case without starting another cluster. PostgreSQL removes a populated owned schema while a populated foreign schema survives, Redis removes only the selected service id's state keys, and Azure Blob removes only the selected container. `try`/`finally` cleanup removes every sentinel even when an assertion fails.
 

@@ -30,6 +30,8 @@ services:
     command:
       - azurite
       - --silent
+      # Remove this after the pinned Azurite version accepts API 2026-02-06 natively.
+      - --skipApiVersionCheck
       - --blobHost
       - 0.0.0.0
       - --blobPort

@@ -113,7 +113,7 @@ External fixture initialization treats backend preparation, cluster construction
 
 Provider cleanup is deliberately namespace-scoped and tested against unrelated sentinels. PostgreSQL drops only its quoted schema, Redis deletes only keys under the selected Orleans service id's `state` prefix, and Azure Blob deletes only its generated container. These checks run against the real external service already used by the fixture and do not deploy a second Orleans cluster.
 
-Azurite validates the Azure Blob provider protocol and storage semantics used by the searchable layer, but it is not a substitute for Azure service-level performance, identity, network, redundancy, or disaster-recovery testing. Likewise, passing the common contract does not equate the operational characteristics of PostgreSQL, Redis, and Blob Storage.
+Azurite validates the Azure Blob provider protocol and storage semantics used by the searchable layer, but it is not a substitute for Azure service-level performance, identity, network, redundancy, or disaster-recovery testing. The pinned emulator uses `--skipApiVersionCheck` so a newer Azure SDK service-version header reaches the implemented operations; this does not enable unsupported service behavior or weaken the storage assertions. Likewise, passing the common contract does not equate the operational characteristics of PostgreSQL, Redis, and Blob Storage.
 
 Every change is also evaluated using the mandatory test-sufficiency review described in [testing.md](testing.md). That review verifies behavioral, failure, durability, distributed, serialization, and sample coverage rather than relying on a raw test count.
 
