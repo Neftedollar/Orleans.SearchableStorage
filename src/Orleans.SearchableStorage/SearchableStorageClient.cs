@@ -152,6 +152,11 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             return [];
         }
 
+        if (plan is EmptyQueryPlan)
+        {
+            return [];
+        }
+
         var partitionPlan = PartitionQueryPlanFactory.Create(plan);
         var tasks = _partitions.Select(partition => partition.QueryAsync(partitionPlan));
         var results = await WaitForFanoutAsync(tasks, cancellationToken);

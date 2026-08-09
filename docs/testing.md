@@ -22,18 +22,19 @@ Missing coverage must be called out explicitly in the pull request with a reason
 
 ### Value and metadata tests
 
-Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, open and bounded range traversal, query expression translation, deferred captured values, reversed operands, all equal-bound inclusivity combinations, bound combination, unsupported syntax, and query-plan simplification.
+Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, open and bounded range traversal, query expression translation, deferred captured values, reversed operands, compiler-generated integral, decimal, enum, and BCL-operator promotions, rejected semantic-changing conversions and custom comparison methods, fractional and adjacent floating-point bounds, NaN and infinity, out-of-domain numeric bounds, all equal-bound inclusivity combinations, bound combination, unsupported syntax, and query-plan simplification. Boundary tests use the production plan constants to cover accepted and rejected depth and node counts, conversion-chain limits, balanced and chained predicates, order-preserving AND/OR rebalancing, semantic and wire cycles or shared subtrees, hidden child graphs, and payload on the wrong wire node kind.
 
 Client execution tests use a narrow internal constructor with controlled `IStoragePartitionGrain`
 implementations. This seam deterministically proves one complete request per partition, sorted and
-deduplicated merge behavior, no fail-fast partial result, observation of immediate and late
-partition failures, and cancellation while calls are blocked. It is intentionally limited to the
+deduplicated merge behavior, empty-plan short-circuiting after layout validation, rejection before
+fan-out when expression limits are exceeded, no fail-fast partial result, observation of immediate
+and late partition failures, and cancellation while calls are blocked. It is intentionally limited to the
 fan-out boundary; real `TestCluster` tests cover Orleans dispatch, generated serialization, and
 partition-grain execution.
 
 ### Storage contract tests
 
-The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range primitives, nested `IQueryable` intersection and union, empty plans, nullable indexed values, inclusive and exclusive one-sided and equal bounds, deterministic sorted deduplication, cancellation, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, and physical-write failure boundaries. Every supported physical provider must run the same contract.
+The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range primitives, nested `IQueryable` intersection and union, empty plans, nullable indexed values, compiler-promoted byte and enum queries through real Orleans serialization, inclusive and exclusive one-sided and equal bounds, deterministic sorted deduplication, cancellation, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, malformed wire-plan rejection followed by a healthy call, protection against boolean mutation of live index buckets, and physical-write failure boundaries. Every supported physical provider must run the same contract.
 
 Serializer and API contract tests freeze the required non-null fields and IDs of the existing
 bounded range message, the IDs and nullable bounds of the new non-persisted query plan, and a nested

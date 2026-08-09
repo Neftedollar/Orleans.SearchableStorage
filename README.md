@@ -16,7 +16,7 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - One complete boolean query plan is evaluated in one non-reentrant call per partition.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
-The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Queries do not provide a snapshot across partitions. Text search, composite indexes, arbitrary LINQ, online repartitioning, and backend integration suites are not implemented yet.
+The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Every query still contacts every partition, and `ToGrainIdsAsync` currently has no `Take`, pagination, or result-size limit. Increasing `PartitionCount` spreads ownership and writes but does not reduce read fan-out. Queries do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes, arbitrary LINQ, online repartitioning, and backend integration suites are not implemented yet.
 
 ## Example
 
@@ -81,11 +81,19 @@ The focused query layer accepts direct indexed-property comparisons using `==`, 
 and `>=`. Comparisons can be combined with `&&` and `||`, and additional `Where` calls are treated
 as `&&`. The other side of a comparison must be a constant or captured value; method calls and
 calculations inside the expression are rejected. Relational operators require a range index.
+Compiler-generated integral and enum promotions are accepted only when they preserve every indexed
+value exactly. Conversions of the indexed property which box, narrow, invoke user code, or lose
+numeric information are rejected instead of being translated with different CLR semantics. Built-in
+conversions on the closed value side are interpreted; user-defined value conversions are rejected.
+Supported query traversal and semantic and serialized plans are limited to 64 levels and 256
+visited nodes, while property and state-parameter conversion chains are independently capped at 64.
 `ToGrainIdsAsync` is the only execution operation: synchronous enumeration, projections, ordering,
 grouping, joins, and other general LINQ operators throw `NotSupportedException` with a diagnostic.
 Execution sends the complete translated predicate to each partition once. AND and OR are evaluated
 against one serially consistent view inside that partition, then the client merges the partition-local
 results into a sorted, distinct list. The merge is not a snapshot across partitions.
+Because the result is currently unbounded, callers must use this API only where the expected match
+set is operationally bounded by the application until a bounded result protocol is added.
 
 `FindAsync` and `RangeAsync` remain available as lower-level compatibility APIs for callers which
 already express one exact lookup or one bounded range directly. They remain on

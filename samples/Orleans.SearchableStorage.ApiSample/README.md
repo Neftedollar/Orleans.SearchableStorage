@@ -32,8 +32,11 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 
 The city endpoint demonstrates an exact hash-index comparison. The salary endpoint builds two
 `Where` clauses dynamically so all four inclusive/exclusive bound combinations use the same public
-query surface. This `IQueryable` is deliberately not a general LINQ provider: it returns grain ids,
-does not load state objects, and does not support synchronous enumeration, projections, or ordering.
+query surface. This `IQueryable` is a deliberately focused, partial query provider which will expand
+in later releases: it returns grain ids, does not load state objects, and does not currently support
+synchronous enumeration, projections, ordering, pagination, or result limits. Every execution fans
+out to all storage partitions, so the sample endpoints are suitable for learning and bounded test
+data rather than as an unmodified production search API.
 ASP.NET Core passes request cancellation to both search handlers, and each handler forwards it to
 `ToGrainIdsAsync`.
 

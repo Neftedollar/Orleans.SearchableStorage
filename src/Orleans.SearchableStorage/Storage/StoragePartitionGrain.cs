@@ -1,6 +1,7 @@
 using System.Globalization;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Querying;
 using Orleans.Storage;
 
 namespace Orleans.SearchableStorage.Storage;
@@ -98,8 +99,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     public Task<GrainId[]> RangeAsync(RangeIndexQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
-        ArgumentNullException.ThrowIfNull(query.LowerBound);
-        ArgumentNullException.ThrowIfNull(query.UpperBound);
+        if (query.LowerBound is null || query.UpperBound is null)
+        {
+            throw new ArgumentException(
+                "A bounded range query requires both lower and upper bounds.",
+                nameof(query));
+        }
 
         if (query.LowerBound.CompareTo(query.UpperBound) > 0)
         {
@@ -125,6 +130,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     public Task<GrainId[]> QueryAsync(PartitionQueryPlan query)
     {
         ArgumentNullException.ThrowIfNull(query);
+        QueryPlanValidator.Validate(query);
 
         // StoragePartitionGrain is non-reentrant. Evaluating the complete plan synchronously in
         // this call gives AND and OR one serially consistent partition-local view.
@@ -136,7 +142,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         return query.Operation switch
         {
-            PartitionQueryOperation.Empty => [],
+            PartitionQueryOperation.Empty => new HashSet<string>(StringComparer.Ordinal),
             PartitionQueryOperation.Exact => EvaluateExactQuery(query),
             PartitionQueryOperation.Range => EvaluateRangeQuery(query),
             PartitionQueryOperation.And => EvaluateAndQuery(query),
@@ -163,6 +169,8 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 query.IndexKind,
                 "Unknown index kind."),
         };
+        // Index lookup methods return live buckets. Every boolean node mutates its own fresh set,
+        // so copying here prevents an intersection or union from corrupting the derived indexes.
         return new HashSet<string>(records, StringComparer.Ordinal);
     }
 
@@ -281,7 +289,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             return bucket;
         }
 
-        return [];
+        return new HashSet<string>(StringComparer.Ordinal);
     }
 
     private HashSet<string> FindRangeEntries(string scope, IndexValue value)
@@ -292,7 +300,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             return bucket;
         }
 
-        return [];
+        return new HashSet<string>(StringComparer.Ordinal);
     }
 
     private GrainId[] ResolveGrainIds(IEnumerable<string> recordKeys)
@@ -300,7 +308,6 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         return recordKeys
             .Select(recordKey => _state.State.Records[recordKey].GrainId)
             .Distinct()
-            .Order()
             .ToArray();
     }
 

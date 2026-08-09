@@ -12,16 +12,21 @@ internal static class QueryTranslator
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
         ArgumentNullException.ThrowIfNull(expression);
 
-        var plan = TranslateQueryExpression<TState>(stateName, expression);
-        return plan
+        var budget = new TranslationBudget();
+        var plan = TranslateQueryExpression<TState>(stateName, expression, budget, depth: 1)
             ?? throw new NotSupportedException(
                 "A searchable storage query must contain at least one Where predicate.");
+        QueryPlanValidator.Validate(plan);
+        return plan;
     }
 
     private static QueryPlan? TranslateQueryExpression<TState>(
         string stateName,
-        Expression expression)
+        Expression expression,
+        TranslationBudget budget,
+        int depth)
     {
+        budget.Visit(depth);
         if (expression is ConstantExpression { Value: IQueryable<TState> })
         {
             return null;
@@ -41,8 +46,17 @@ internal static class QueryTranslator
                 "Only Queryable.Where predicates with one state parameter are supported.");
         }
 
-        var sourcePlan = TranslateQueryExpression<TState>(stateName, methodCall.Arguments[0]);
-        var predicatePlan = TranslatePredicate<TState>(stateName, predicate.Body, predicate.Parameters[0]);
+        var sourcePlan = TranslateQueryExpression<TState>(
+            stateName,
+            methodCall.Arguments[0],
+            budget,
+            depth + 1);
+        var predicatePlan = TranslatePredicate<TState>(
+            stateName,
+            predicate.Body,
+            predicate.Parameters[0],
+            budget,
+            depth: 1);
         return sourcePlan is null
             ? predicatePlan
             : QueryPlanBuilder.And(sourcePlan, predicatePlan);
@@ -51,24 +65,31 @@ internal static class QueryTranslator
     private static QueryPlan TranslatePredicate<TState>(
         string stateName,
         Expression expression,
-        ParameterExpression parameter)
+        ParameterExpression parameter,
+        TranslationBudget budget,
+        int depth)
     {
+        budget.Visit(depth);
         return expression.NodeType switch
         {
             ExpressionType.AndAlso when expression is BinaryExpression binary =>
                 QueryPlanBuilder.And(
-                    TranslatePredicate<TState>(stateName, binary.Left, parameter),
-                    TranslatePredicate<TState>(stateName, binary.Right, parameter)),
+                    TranslatePredicate<TState>(stateName, binary.Left, parameter, budget, depth + 1),
+                    TranslatePredicate<TState>(stateName, binary.Right, parameter, budget, depth + 1)),
             ExpressionType.OrElse when expression is BinaryExpression binary =>
                 QueryPlanBuilder.Or(
-                    TranslatePredicate<TState>(stateName, binary.Left, parameter),
-                    TranslatePredicate<TState>(stateName, binary.Right, parameter)),
+                    TranslatePredicate<TState>(stateName, binary.Left, parameter, budget, depth + 1),
+                    TranslatePredicate<TState>(stateName, binary.Right, parameter, budget, depth + 1)),
             ExpressionType.Equal or
             ExpressionType.LessThan or
             ExpressionType.LessThanOrEqual or
             ExpressionType.GreaterThan or
             ExpressionType.GreaterThanOrEqual when expression is BinaryExpression comparison =>
-                TranslateComparison<TState>(stateName, comparison, parameter),
+                TranslateComparison<TState>(stateName, comparison, parameter, budget),
+            ExpressionType.NotEqual or ExpressionType.Not =>
+                throw new NotSupportedException(
+                    "Predicate negation is not supported because it requires a partition-wide set complement. " +
+                    "Use positive indexed comparisons combined with && or ||."),
             _ => throw new NotSupportedException(
                 $"Predicate expression '{expression.NodeType}' is not supported. " +
                 "Use indexed comparisons combined with && or ||."),
@@ -78,7 +99,8 @@ internal static class QueryTranslator
     private static QueryPlan TranslateComparison<TState>(
         string stateName,
         BinaryExpression comparison,
-        ParameterExpression parameter)
+        ParameterExpression parameter,
+        TranslationBudget budget)
     {
         var leftIsProperty = TryGetDirectProperty(comparison.Left, parameter, out var leftProperty);
         var rightIsProperty = TryGetDirectProperty(comparison.Right, parameter, out var rightProperty);
@@ -88,7 +110,8 @@ internal static class QueryTranslator
                 "Each comparison must contain exactly one direct state property and one captured or constant value.");
         }
 
-        var property = leftIsProperty ? leftProperty! : rightProperty!;
+        var propertyAccess = leftIsProperty ? leftProperty : rightProperty;
+        var property = propertyAccess.Property;
         var valueExpression = leftIsProperty ? comparison.Right : comparison.Left;
         var comparisonType = leftIsProperty
             ? comparison.NodeType
@@ -109,84 +132,102 @@ internal static class QueryTranslator
                 exception);
         }
 
-        var value = EvaluateClosedValue(valueExpression, parameter);
-        var indexValue = ConvertValue(index, value);
-        if (comparisonType == ExpressionType.Equal)
-        {
-            return new ExactQueryPlan(index, indexValue);
-        }
+        QueryComparisonPlanFactory.ValidatePropertyConversions(
+            index,
+            property.Name,
+            propertyAccess.Conversions);
+        QueryComparisonPlanFactory.ValidateComparisonMethod(index, comparison.NodeType, comparison.Method);
+        var value = EvaluateClosedValue(valueExpression, parameter, budget);
 
-        if (index.Kind != SearchableIndexKind.Range)
+        if (comparisonType != ExpressionType.Equal
+            && index.Kind != SearchableIndexKind.Range)
         {
             throw new NotSupportedException(
                 $"Comparison '{comparisonType}' requires a range index, but property '{property.Name}' uses a hash index.");
         }
 
-        return comparisonType switch
-        {
-            ExpressionType.GreaterThan => new RangeQueryPlan(
-                index,
-                indexValue,
-                IncludeLowerBound: false,
-                UpperBound: null,
-                IncludeUpperBound: false),
-            ExpressionType.GreaterThanOrEqual => new RangeQueryPlan(
-                index,
-                indexValue,
-                IncludeLowerBound: true,
-                UpperBound: null,
-                IncludeUpperBound: false),
-            ExpressionType.LessThan => new RangeQueryPlan(
-                index,
-                LowerBound: null,
-                IncludeLowerBound: false,
-                indexValue,
-                IncludeUpperBound: false),
-            ExpressionType.LessThanOrEqual => new RangeQueryPlan(
-                index,
-                LowerBound: null,
-                IncludeLowerBound: false,
-                indexValue,
-                IncludeUpperBound: true),
-            _ => throw new UnreachableException(),
-        };
+        return QueryComparisonPlanFactory.Create(index, comparisonType, value);
     }
 
     private static bool TryGetDirectProperty(
         Expression expression,
         ParameterExpression parameter,
-        out PropertyInfo? property)
+        out PropertyAccess propertyAccess)
     {
-        expression = StripConvert(expression);
+        var conversions = new List<QueryPropertyConversion>();
+        while (expression is UnaryExpression
+               {
+                   NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+               } conversion)
+        {
+            if (conversions.Count == QueryPlanLimits.MaximumDepth)
+            {
+                throw new NotSupportedException(
+                    $"An indexed-property conversion chain exceeds the maximum supported depth of " +
+                    $"{QueryPlanLimits.MaximumDepth}.");
+            }
+
+            conversions.Add(new QueryPropertyConversion(conversion.Type, conversion.Method));
+            expression = conversion.Operand;
+        }
+
+        conversions.Reverse();
         if (expression is MemberExpression
             {
                 Member: PropertyInfo selectedProperty,
                 Expression: not null,
             } member
-            && StripConvert(member.Expression) == parameter)
+            && IsStateParameter(member.Expression, parameter))
         {
-            property = selectedProperty;
+            propertyAccess = new PropertyAccess(selectedProperty, conversions);
             return true;
         }
 
-        property = null;
+        propertyAccess = default;
         return false;
+    }
+
+    private static bool IsStateParameter(Expression expression, ParameterExpression parameter)
+    {
+        var conversionCount = 0;
+        while (expression is UnaryExpression
+               {
+                   NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+                   Method: null,
+               } conversion
+               && conversion.Type.IsAssignableFrom(parameter.Type))
+        {
+            if (conversionCount == QueryPlanLimits.MaximumDepth)
+            {
+                throw new NotSupportedException(
+                    $"A state-parameter conversion chain exceeds the maximum supported depth of " +
+                    $"{QueryPlanLimits.MaximumDepth}.");
+            }
+
+            conversionCount++;
+            expression = conversion.Operand;
+        }
+
+        return expression == parameter;
     }
 
     private static object? EvaluateClosedValue(
         Expression expression,
-        ParameterExpression parameter)
+        ParameterExpression parameter,
+        TranslationBudget budget)
     {
-        ValidateClosedValueExpression(expression, parameter);
-
+        ValidateClosedValueExpression(expression, parameter, budget, depth: 1);
         var boxed = Expression.Convert(expression, typeof(object));
-        return Expression.Lambda<Func<object?>>(boxed).Compile()();
+        return Expression.Lambda<Func<object?>>(boxed).Compile(preferInterpretation: true)();
     }
 
     private static void ValidateClosedValueExpression(
         Expression expression,
-        ParameterExpression parameter)
+        ParameterExpression parameter,
+        TranslationBudget budget,
+        int depth)
     {
+        budget.Visit(depth);
         if (expression == parameter)
         {
             throw new NotSupportedException("A query value cannot depend on the state parameter.");
@@ -199,12 +240,22 @@ internal static class QueryTranslator
             case MemberExpression { Member: FieldInfo or PropertyInfo } member:
                 if (member.Expression is not null)
                 {
-                    ValidateClosedValueExpression(member.Expression, parameter);
+                    ValidateClosedValueExpression(member.Expression, parameter, budget, depth + 1);
                 }
 
                 return;
-            case UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary:
-                ValidateClosedValueExpression(unary.Operand, parameter);
+            case UnaryExpression
+            {
+                NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+            } unary:
+                if (!QueryComparisonPlanFactory.IsBuiltInConversion(unary.Method))
+                {
+                    throw new NotSupportedException(
+                        $"Query value expression '{expression.NodeType}' is not supported. " +
+                        "Use a constant or captured value without user-defined conversions.");
+                }
+
+                ValidateClosedValueExpression(unary.Operand, parameter, budget, depth + 1);
                 return;
             default:
                 throw new NotSupportedException(
@@ -213,44 +264,11 @@ internal static class QueryTranslator
         }
     }
 
-    private static IndexValue ConvertValue(SelectedIndex index, object? value)
-    {
-        if (value is null)
-        {
-            throw new NotSupportedException(
-                $"Null comparisons are not supported because property '{index.PropertyName}' does not index null values.");
-        }
-
-        var runtimeType = value.GetType();
-        if (runtimeType != index.Converter.RuntimeValueType)
-        {
-            throw new NotSupportedException(
-                $"Comparison value type '{runtimeType}' does not match indexed property " +
-                $"'{index.PropertyName}' type '{index.Converter.RuntimeValueType}'.");
-        }
-
-        return index.Converter.ConvertObject(value)
-            ?? throw new InvalidOperationException("A non-null query value unexpectedly converted to null.");
-    }
-
     private static Expression StripQuote(Expression expression)
     {
         return expression is UnaryExpression { NodeType: ExpressionType.Quote } quote
             ? quote.Operand
             : expression;
-    }
-
-    private static Expression StripConvert(Expression expression)
-    {
-        while (expression is UnaryExpression
-               {
-                   NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
-               } conversion)
-        {
-            expression = conversion.Operand;
-        }
-
-        return expression;
     }
 
     private static ExpressionType Reverse(ExpressionType comparisonType)
@@ -272,7 +290,34 @@ internal static class QueryTranslator
             ? methodCall.Method.Name
             : expression.NodeType.ToString();
         return new NotSupportedException(
-            $"LINQ operator '{operatorName}' is not supported. " +
+            $"LINQ operator '{operatorName}' is not supported by the current query stage. " +
             "Use Where followed by ToGrainIdsAsync.");
+    }
+
+    private readonly record struct PropertyAccess(
+        PropertyInfo Property,
+        IReadOnlyList<QueryPropertyConversion> Conversions);
+
+    private sealed class TranslationBudget
+    {
+        private int _nodeCount;
+
+        public void Visit(int depth)
+        {
+            if (depth > QueryPlanLimits.MaximumDepth)
+            {
+                throw new NotSupportedException(
+                    $"The query expression exceeds the maximum supported depth of " +
+                    $"{QueryPlanLimits.MaximumDepth}.");
+            }
+
+            _nodeCount++;
+            if (_nodeCount > QueryPlanLimits.MaximumNodeCount)
+            {
+                throw new NotSupportedException(
+                    $"The query expression exceeds the maximum supported node count of " +
+                    $"{QueryPlanLimits.MaximumNodeCount}.");
+            }
+        }
     }
 }

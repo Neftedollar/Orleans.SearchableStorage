@@ -45,7 +45,9 @@ internal static class QueryPlanBuilder
             }
         }
 
-        return normalized.Aggregate(static (current, next) => new AndQueryPlan(current, next));
+        return BuildBalanced(
+            normalized,
+            static (leftPlan, rightPlan) => new AndQueryPlan(leftPlan, rightPlan));
     }
 
     public static QueryPlan Or(QueryPlan left, QueryPlan right)
@@ -53,17 +55,15 @@ internal static class QueryPlanBuilder
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
 
-        if (left is EmptyQueryPlan)
-        {
-            return right;
-        }
-
-        if (right is EmptyQueryPlan)
-        {
-            return left;
-        }
-
-        return new OrQueryPlan(left, right);
+        var alternatives = new List<QueryPlan>();
+        AddAssociativePlans(left, alternatives, static plan => plan is OrQueryPlan);
+        AddAssociativePlans(right, alternatives, static plan => plan is OrQueryPlan);
+        alternatives.RemoveAll(static plan => plan is EmptyQueryPlan);
+        return alternatives.Count == 0
+            ? EmptyQueryPlan.Instance
+            : BuildBalanced(
+                alternatives,
+                static (leftPlan, rightPlan) => new OrQueryPlan(leftPlan, rightPlan));
     }
 
     private static bool TryCombineSameIndex(
@@ -98,14 +98,59 @@ internal static class QueryPlanBuilder
 
     private static void AddConjuncts(QueryPlan plan, List<QueryPlan> destination)
     {
-        if (plan is AndQueryPlan and)
+        AddAssociativePlans(plan, destination, static candidate => candidate is AndQueryPlan);
+    }
+
+    private static void AddAssociativePlans(
+        QueryPlan plan,
+        List<QueryPlan> destination,
+        Func<QueryPlan, bool> isAssociativeNode)
+    {
+        var pending = new Stack<QueryPlan>();
+        pending.Push(plan);
+        while (pending.TryPop(out var current))
         {
-            AddConjuncts(and.Left, destination);
-            AddConjuncts(and.Right, destination);
-            return;
+            if (isAssociativeNode(current))
+            {
+                var (left, right) = current switch
+                {
+                    AndQueryPlan and => (and.Left, and.Right),
+                    OrQueryPlan or => (or.Left, or.Right),
+                    _ => throw new UnreachableException(),
+                };
+                pending.Push(right);
+                pending.Push(left);
+                continue;
+            }
+
+            destination.Add(current);
+        }
+    }
+
+    private static QueryPlan BuildBalanced(
+        List<QueryPlan> plans,
+        Func<QueryPlan, QueryPlan, QueryPlan> combine)
+    {
+        if (plans.Count == 0)
+        {
+            throw new ArgumentException("At least one query plan is required.", nameof(plans));
         }
 
-        destination.Add(plan);
+        var currentLevel = plans.ToList();
+        while (currentLevel.Count > 1)
+        {
+            var nextLevel = new List<QueryPlan>((currentLevel.Count + 1) / 2);
+            for (var index = 0; index < currentLevel.Count; index += 2)
+            {
+                nextLevel.Add(index + 1 < currentLevel.Count
+                    ? combine(currentLevel[index], currentLevel[index + 1])
+                    : currentLevel[index]);
+            }
+
+            currentLevel = nextLevel;
+        }
+
+        return currentLevel[0];
     }
 
     private static SelectedIndex? GetLeafIndex(QueryPlan plan)

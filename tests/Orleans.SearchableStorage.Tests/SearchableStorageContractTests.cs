@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using Orleans.Configuration;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
 using Orleans.SearchableStorage.Tests.Infrastructure;
 using Orleans.SearchableStorage.Tests.TestGrains;
@@ -220,6 +221,54 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         GetPartitionIndex(first.GetGrainId()).Should().NotBe(GetPartitionIndex(second.GetGrainId()));
 
         await ClearAsync(first, second, outside);
+    }
+
+    [Fact]
+    public async Task CompoundQueriesDoNotMutateBackingIndexBuckets()
+    {
+        var city = $"bucket-a-{Guid.NewGuid():N}";
+        var otherCity = $"bucket-b-{Guid.NewGuid():N}";
+        var offset = Random.Shared.Next(6_000_000, 7_000_000);
+        var insideRange = CreateGrainInPartition(0);
+        var outsideRange = CreateGrainInPartition(0);
+        var other = CreateGrainInPartition(0);
+        try
+        {
+            await insideRange.SetAsync(city, offset + 1);
+            await outsideRange.SetAsync(city, offset + 9);
+            await other.SetAsync(otherCity, offset + 1);
+            var client = CreateClient();
+            var upperBound = offset + 5;
+
+            var intersection = await client
+                .Query<VacancyState>(VacancyGrain.StateName)
+                .Where(state => state.City == city && state.Salary < upperBound)
+                .ToGrainIdsAsync();
+            var cityAfterIntersection = await client.FindAsync<VacancyState, string>(
+                VacancyGrain.StateName,
+                state => state.City,
+                city);
+            var union = await client
+                .Query<VacancyState>(VacancyGrain.StateName)
+                .Where(state => state.City == city || state.City == otherCity)
+                .ToGrainIdsAsync();
+            var cityAfterUnion = await client.FindAsync<VacancyState, string>(
+                VacancyGrain.StateName,
+                state => state.City,
+                city);
+
+            intersection.Should().ContainSingle().Which.Should().Be(insideRange.GetGrainId());
+            cityAfterIntersection.Should().BeEquivalentTo(
+                [insideRange.GetGrainId(), outsideRange.GetGrainId()]);
+            union.Should().BeEquivalentTo(
+                [insideRange.GetGrainId(), outsideRange.GetGrainId(), other.GetGrainId()]);
+            cityAfterUnion.Should().BeEquivalentTo(
+                [insideRange.GetGrainId(), outsideRange.GetGrainId()]);
+        }
+        finally
+        {
+            await ClearAsync(insideRange, outsideRange, other);
+        }
     }
 
     [Fact]
@@ -582,6 +631,134 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [Fact]
+    public async Task CompilerPromotedValuesRoundTripThroughStorageAndQueryableExecution()
+    {
+        var stateName = $"promoted-{Guid.NewGuid():N}";
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var storage = silo.ServiceProvider.GetRequiredKeyedService<IGrainStorage>(
+            VacancyGrain.StorageProviderName);
+        var matchId = CreateGrain().GetGrainId();
+        var ageFailureId = CreateGrain().GetGrainId();
+        var statusFailureId = CreateGrain().GetGrainId();
+        var optionalStatusFailureId = CreateGrain().GetGrainId();
+        var match = CreatePromotedState(21, PromotionStatus.Active, PromotionStatus.Active);
+        var ageFailure = CreatePromotedState(17, PromotionStatus.Active, PromotionStatus.Active);
+        var statusFailure = CreatePromotedState(21, PromotionStatus.Inactive, PromotionStatus.Active);
+        var optionalStatusFailure = CreatePromotedState(21, PromotionStatus.Active, PromotionStatus.Inactive);
+
+        try
+        {
+            await Task.WhenAll(
+                storage.WriteStateAsync(stateName, matchId, match),
+                storage.WriteStateAsync(stateName, ageFailureId, ageFailure),
+                storage.WriteStateAsync(stateName, statusFailureId, statusFailure),
+                storage.WriteStateAsync(stateName, optionalStatusFailureId, optionalStatusFailure));
+            var minimumAge = (byte)18;
+            var expectedStatus = PromotionStatus.Active;
+            PromotionStatus? expectedOptionalStatus = PromotionStatus.Active;
+
+            var client = CreateClient();
+            var matches = await client
+                .Query<PromotedQueryState>(stateName)
+                .Where(state => state.Age >= minimumAge
+                    && state.Status == expectedStatus
+                    && state.OptionalStatus == expectedOptionalStatus)
+                .ToGrainIdsAsync();
+            var ageMatches = await client
+                .Query<PromotedQueryState>(stateName)
+                .Where(state => state.Age >= minimumAge)
+                .ToGrainIdsAsync();
+            var statusMatches = await client
+                .Query<PromotedQueryState>(stateName)
+                .Where(state => state.Status == expectedStatus)
+                .ToGrainIdsAsync();
+            var optionalStatusMatches = await client
+                .Query<PromotedQueryState>(stateName)
+                .Where(state => state.OptionalStatus == expectedOptionalStatus)
+                .ToGrainIdsAsync();
+
+            matches.Should().ContainSingle().Which.Should().Be(matchId);
+            ageMatches.Should().BeEquivalentTo(
+                [matchId, statusFailureId, optionalStatusFailureId]);
+            statusMatches.Should().BeEquivalentTo(
+                [matchId, ageFailureId, optionalStatusFailureId]);
+            optionalStatusMatches.Should().BeEquivalentTo(
+                [matchId, ageFailureId, statusFailureId]);
+        }
+        finally
+        {
+            await Task.WhenAll(
+                storage.ClearStateAsync(stateName, matchId, match),
+                storage.ClearStateAsync(stateName, ageFailureId, ageFailure),
+                storage.ClearStateAsync(stateName, statusFailureId, statusFailure),
+                storage.ClearStateAsync(stateName, optionalStatusFailureId, optionalStatusFailure));
+        }
+    }
+
+    [Fact]
+    public async Task MalformedWirePlansAreRejectedWithoutPoisoningThePartition()
+    {
+        var partition = GetPartition(CreateGrain().GetGrainId());
+        var overDepth = CreateWirePlanAtDepth(QueryPlanLimits.MaximumDepth + 1);
+        var missingChild = new PartitionQueryPlan
+        {
+            Operation = PartitionQueryOperation.And,
+            Left = new PartitionQueryPlan { Operation = PartitionQueryOperation.Empty },
+        };
+        var unknownOperation = new PartitionQueryPlan
+        {
+            Operation = (PartitionQueryOperation)int.MaxValue,
+        };
+
+        Func<Task> sendOverDepth = async () => await partition.QueryAsync(overDepth);
+        Func<Task> sendMissingChild = async () => await partition.QueryAsync(missingChild);
+        Func<Task> sendUnknownOperation = async () => await partition.QueryAsync(unknownOperation);
+
+        await sendOverDepth.Should().ThrowAsync<ArgumentException>()
+            .WithMessage($"*maximum supported depth of {QueryPlanLimits.MaximumDepth}*");
+        await sendMissingChild.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*requires both child plans*");
+        await sendUnknownOperation.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithMessage("*Unknown partition query operation*");
+        (await partition.QueryAsync(new PartitionQueryPlan
+        {
+            Operation = PartitionQueryOperation.Empty,
+        })).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task MalformedBoundedRangeQueriesAreRejectedWithoutPoisoningThePartition()
+    {
+        var partition = GetPartition(CreateGrain().GetGrainId());
+        var missingLower = new RangeIndexQuery
+        {
+            Scope = "scope",
+            LowerBound = null!,
+            UpperBound = IndexValue.Create(2),
+        };
+        var missingUpper = new RangeIndexQuery
+        {
+            Scope = "scope",
+            LowerBound = IndexValue.Create(1),
+            UpperBound = null!,
+        };
+
+        Func<Task> sendMissingLower = async () => await partition.RangeAsync(missingLower);
+        Func<Task> sendMissingUpper = async () => await partition.RangeAsync(missingUpper);
+
+        await sendMissingLower.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*bounded range query requires both lower and upper bounds*");
+        await sendMissingUpper.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*bounded range query requires both lower and upper bounds*");
+        (await partition.RangeAsync(new RangeIndexQuery
+        {
+            Scope = "scope",
+            LowerBound = IndexValue.Create(1),
+            UpperBound = IndexValue.Create(2),
+        })).Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task GrainStorageBridgeIncrementsETagsAndRejectsStaleClear()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
@@ -903,6 +1080,38 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     protected static Task ClearAsync(params IVacancyGrain[] grains)
     {
         return Task.WhenAll(grains.Select(static grain => grain.ClearAsync()));
+    }
+
+    private static PartitionQueryPlan CreateWirePlanAtDepth(int depth)
+    {
+        var plan = new PartitionQueryPlan { Operation = PartitionQueryOperation.Empty };
+        for (var currentDepth = 1; currentDepth < depth; currentDepth++)
+        {
+            plan = new PartitionQueryPlan
+            {
+                Operation = PartitionQueryOperation.Or,
+                Left = new PartitionQueryPlan { Operation = PartitionQueryOperation.Empty },
+                Right = plan,
+            };
+        }
+
+        return plan;
+    }
+
+    private static GrainState<PromotedQueryState> CreatePromotedState(
+        byte age,
+        PromotionStatus status,
+        PromotionStatus? optionalStatus)
+    {
+        return new GrainState<PromotedQueryState>
+        {
+            State = new PromotedQueryState
+            {
+                Age = age,
+                Status = status,
+                OptionalStatus = optionalStatus,
+            },
+        };
     }
 }
 

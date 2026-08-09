@@ -7,7 +7,13 @@ internal static class PartitionQueryPlanFactory
     public static PartitionQueryPlan Create(QueryPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        QueryPlanValidator.Validate(plan);
 
+        return CreateCore(plan);
+    }
+
+    private static PartitionQueryPlan CreateCore(QueryPlan plan)
+    {
         return plan switch
         {
             EmptyQueryPlan => new PartitionQueryPlan
@@ -33,14 +39,14 @@ internal static class PartitionQueryPlanFactory
             AndQueryPlan and => new PartitionQueryPlan
             {
                 Operation = PartitionQueryOperation.And,
-                Left = Create(and.Left),
-                Right = Create(and.Right),
+                Left = CreateCore(and.Left),
+                Right = CreateCore(and.Right),
             },
             OrQueryPlan or => new PartitionQueryPlan
             {
                 Operation = PartitionQueryOperation.Or,
-                Left = Create(or.Left),
-                Right = Create(or.Right),
+                Left = CreateCore(or.Left),
+                Right = CreateCore(or.Right),
             },
             _ => throw new InvalidOperationException($"Unknown query plan '{plan.GetType()}'."),
         };
