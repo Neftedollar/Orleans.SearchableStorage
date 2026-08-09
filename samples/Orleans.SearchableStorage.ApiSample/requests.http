@@ -1,0 +1,53 @@
+@host = http://localhost:5000
+
+GET {{host}}/
+Accept: application/json
+
+### Store three vacancies
+
+PUT {{host}}/vacancies/helsinki-6
+Content-Type: application/json
+
+{
+  "city": "Helsinki",
+  "salary": 6
+}
+
+###
+
+PUT {{host}}/vacancies/helsinki-7
+Content-Type: application/json
+
+{
+  "city": "Helsinki",
+  "salary": 7
+}
+
+###
+
+PUT {{host}}/vacancies/tampere-9
+Content-Type: application/json
+
+{
+  "city": "Tampere",
+  "salary": 9
+}
+
+### Read one vacancy
+
+GET {{host}}/vacancies/helsinki-6
+Accept: application/json
+
+### Exact hash-index lookup
+
+GET {{host}}/vacancies/search/by-city?city=Helsinki
+Accept: application/json
+
+### Range-index lookup: values greater than 5 and less than 8
+
+GET {{host}}/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false
+Accept: application/json
+
+### Remove one vacancy and its index entries
+
+DELETE {{host}}/vacancies/helsinki-6

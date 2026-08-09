@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Orleans.SearchableStorage.slnx
+
+      - name: Build
+        run: dotnet build Orleans.SearchableStorage.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test Orleans.SearchableStorage.slnx --configuration Release --no-build --no-restore --collect "XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx"
+
+      - name: Pack
+        run: dotnet pack src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj --configuration Release --no-build --no-restore --output artifacts/packages
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: "**/TestResults/**"
+          if-no-files-found: ignore
