@@ -3,16 +3,20 @@ using System.Net.Http.Json;
 using System.Text;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Orleans.SearchableStorage.ApiSample.Tests;
 
 [Collection(ApiSampleTestGroup.Name)]
 public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program>>
 {
+    private readonly WebApplicationFactory<Program> _factory;
     private readonly HttpClient _client;
 
     public ApiSampleTests(WebApplicationFactory<Program> factory)
     {
+        _factory = factory;
         _client = factory.CreateClient();
     }
 
@@ -25,7 +29,21 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         var description = await response.Content.ReadFromJsonAsync<ApiDescription>();
         description.Should().NotBeNull();
         description!.Name.Should().Be("Orleans.SearchableStorage API sample");
+        description.Storage.Should().Be("Journaled Orleans storage over in-memory physical persistence");
         description.Endpoints.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public void HostUsesThePersistenceSettingsDocumentedByTheSample()
+    {
+        var options = _factory.Services
+            .GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+            .Get(VacancyGrain.StorageProviderName);
+
+        options.PartitionCount.Should().Be(8);
+        options.JournalSegmentCapacity.Should().Be(16);
+        options.MaximumJournalReplayEntries.Should().Be(256);
+        options.CompactionThreshold.Should().Be(64);
     }
 
     [Fact]

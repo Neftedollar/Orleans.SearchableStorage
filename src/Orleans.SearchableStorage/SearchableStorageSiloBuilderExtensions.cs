@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Orleans.Hosting;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Storage;
 using Orleans.Storage;
 
 namespace Orleans.SearchableStorage;
@@ -55,6 +56,21 @@ public static class SearchableStorageSiloBuilderExtensions
 
         options
             .Validate(static value => value.PartitionCount > 0, "PartitionCount must be greater than zero.")
+            .Validate(
+                static value => value.JournalSegmentCapacity > 0,
+                "JournalSegmentCapacity must be greater than zero.")
+            .Validate(
+                static value => value.MaximumJournalReplayEntries > 0,
+                "MaximumJournalReplayEntries must be greater than zero.")
+            .Validate(
+                static value => IsJournalLayoutAddressable(value),
+                "JournalSegmentCapacity and MaximumJournalReplayEntries must produce an addressable journal ring.")
+            .Validate(
+                static value => value.CompactionThreshold > 0,
+                "CompactionThreshold must be greater than zero.")
+            .Validate(
+                static value => value.CompactionThreshold <= value.MaximumJournalReplayEntries,
+                "CompactionThreshold must not exceed MaximumJournalReplayEntries.")
             .ValidateOnStart();
 
         services.AddTransient<
@@ -83,6 +99,27 @@ public static class SearchableStorageSiloBuilderExtensions
             (serviceProvider, _) => serviceProvider.GetRequiredKeyedService<ISearchableStorageQueryClient>(providerName));
 
         return services;
+    }
+
+    private static bool IsJournalLayoutAddressable(SearchableStorageOptions options)
+    {
+        if (options.JournalSegmentCapacity <= 0 || options.MaximumJournalReplayEntries <= 0)
+        {
+            // The dedicated validators produce the more specific messages for non-positive values.
+            return true;
+        }
+
+        try
+        {
+            StoragePersistence.ValidateOptions(
+                options.JournalSegmentCapacity,
+                options.MaximumJournalReplayEntries);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
     }
 }
 

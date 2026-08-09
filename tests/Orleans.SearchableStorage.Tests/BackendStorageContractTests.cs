@@ -14,7 +14,7 @@ namespace Orleans.SearchableStorage.Tests;
 [Trait("Category", "BackendIntegration")]
 [Trait("Backend", "PostgreSQL")]
 public sealed class PostgreSqlSearchableStorageContractTests
-    : FaultInjectingSearchableStorageContractTests<PostgreSqlStorageFixture>
+    : JournaledPersistenceContractTests<PostgreSqlStorageFixture>
 {
     public PostgreSqlSearchableStorageContractTests(PostgreSqlStorageFixture fixture)
         : base(fixture)
@@ -71,7 +71,7 @@ public sealed class PostgreSqlSearchableStorageContractTests
 [Trait("Category", "BackendIntegration")]
 [Trait("Backend", "Redis")]
 public sealed class RedisSearchableStorageContractTests
-    : FaultInjectingSearchableStorageContractTests<RedisStorageFixture>
+    : JournaledPersistenceContractTests<RedisStorageFixture>
 {
     public RedisSearchableStorageContractTests(RedisStorageFixture fixture)
         : base(fixture)
@@ -235,7 +235,7 @@ public sealed class RedisStateKeyManagerTests
 [Trait("Category", "BackendIntegration")]
 [Trait("Backend", "AzureBlob")]
 public sealed class AzureBlobSearchableStorageContractTests
-    : FaultInjectingSearchableStorageContractTests<AzureBlobStorageFixture>
+    : JournaledPersistenceContractTests<AzureBlobStorageFixture>
 {
     public AzureBlobSearchableStorageContractTests(AzureBlobStorageFixture fixture)
         : base(fixture)

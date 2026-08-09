@@ -9,7 +9,13 @@ builder.Host.UseOrleans(siloBuilder =>
     siloBuilder.AddMemoryGrainStorage(SearchableStorageConstants.PhysicalStorageProviderName);
     siloBuilder.AddSearchableGrainStorage(
         VacancyGrain.StorageProviderName,
-        options => options.PartitionCount = 8);
+        options =>
+        {
+            options.PartitionCount = 8;
+            options.JournalSegmentCapacity = 16;
+            options.MaximumJournalReplayEntries = 256;
+            options.CompactionThreshold = 64;
+        });
 });
 
 var app = builder.Build();
@@ -87,7 +93,7 @@ internal static class SampleMetadata
 {
     public static ApiDescription Description { get; } = new(
         "Orleans.SearchableStorage API sample",
-        "Orleans in-memory persistence",
+        "Journaled Orleans storage over in-memory physical persistence",
         [
             "PUT /vacancies/{id}",
             "GET /vacancies/{id}",

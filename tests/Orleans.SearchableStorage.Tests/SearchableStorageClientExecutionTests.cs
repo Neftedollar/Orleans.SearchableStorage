@@ -286,6 +286,41 @@ public sealed class SearchableStorageClientExecutionTests
     }
 
     [Fact]
+    public async Task LayoutFailurePreventsEveryPartitionQueryApi()
+    {
+        var layoutFailure = new InvalidOperationException("legacy layout");
+        var partition = new ControlledPartition(
+            _ => Task.FromException<GrainId[]>(new InvalidOperationException("must not be called")));
+        var client = CreateClient(
+            () => Task.FromException<bool>(layoutFailure),
+            partition);
+
+        Func<Task> find = () => client.FindAsync<QueryState, string>(
+            "state",
+            state => state.City,
+            "Helsinki");
+        Func<Task> range = () => client.RangeAsync<QueryState, int>(
+            "state",
+            state => state.Salary,
+            5,
+            8);
+        Func<Task> query = () => client
+            .Query<QueryState>("state")
+            .Where(state => state.City == "Helsinki")
+            .ToGrainIdsAsync();
+
+        (await find.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Should().BeSameAs(layoutFailure);
+        (await range.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Should().BeSameAs(layoutFailure);
+        (await query.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Should().BeSameAs(layoutFailure);
+        partition.FindCallCount.Should().Be(0);
+        partition.RangeCallCount.Should().Be(0);
+        partition.QueryCallCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task WhereChainAtTheDepthBoundaryIsAcceptedAndTheNextLevelIsRejected()
     {
         var acceptedPartition = new ControlledPartition(_ => Task.FromResult(Array.Empty<GrainId>()));
@@ -576,7 +611,17 @@ public sealed class SearchableStorageClientExecutionTests
             throw new NotSupportedException();
         }
 
-        public Task ClearAsync(string recordKey, string? expectedETag)
+        public Task ClearAsync(StorageClearRequest request)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task CompactAsync()
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<StoragePartitionPersistenceInfo> GetPersistenceInfoAsync()
         {
             throw new NotSupportedException();
         }

@@ -33,9 +33,9 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(partitionCount);
 
         _providerName = providerName;
-        var layout = StorageLayout.CreateDescriptor(providerName, partitionCount);
+        var layout = StorageLayout.CreateIdentity(providerName, partitionCount);
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
-        _validateLayout = () => layoutGrain.ValidateAsync(layout);
+        _validateLayout = () => layoutGrain.ValidateIdentityAsync(layout);
         _partitions = new IStoragePartitionGrain[partitionCount];
         for (var index = 0; index < partitionCount; index++)
         {

@@ -8,11 +8,15 @@ internal interface IStoragePartitionGrain : IGrainWithStringKey
 
     Task<string> WriteAsync(StorageWriteRequest request);
 
-    Task ClearAsync(string recordKey, string? expectedETag);
+    Task ClearAsync(StorageClearRequest request);
 
     Task<GrainId[]> FindAsync(ExactIndexQuery query);
 
     Task<GrainId[]> RangeAsync(RangeIndexQuery query);
 
     Task<GrainId[]> QueryAsync(PartitionQueryPlan query);
+
+    Task CompactAsync();
+
+    Task<StoragePartitionPersistenceInfo> GetPersistenceInfoAsync();
 }
