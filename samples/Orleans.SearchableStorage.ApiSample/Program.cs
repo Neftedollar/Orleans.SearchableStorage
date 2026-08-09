@@ -140,3 +140,8 @@ internal static class SampleMetadata
             "GET /vacancies/search/by-salary?lower={value}&upper={value}",
         ]);
 }
+
+/// <summary>
+/// Provides the entry point used by ASP.NET Core integration tests.
+/// </summary>
+public partial class Program;

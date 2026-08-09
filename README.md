@@ -94,12 +94,14 @@ The one-process topology and in-memory physical storage keep the sample easy to 
 
 ## Backend validation
 
-The test suite defines one reusable storage contract. It currently runs against Orleans in-memory persistence configured with `JsonGrainStorageSerializer` through a two-silo `TestCluster`, forces storage-partition reactivation, and injects failures before commit and after commit but before acknowledgement.
+The test suite defines one reusable storage contract. It currently runs against Orleans in-memory persistence configured with `JsonGrainStorageSerializer` through a two-silo `TestCluster`, forces storage-partition reactivation, and injects failures before commit and after commit but before acknowledgement. The API sample is also exercised through an in-process HTTP server.
 
 - In-memory: implemented in the regular test suite.
 - PostgreSQL: required integration target.
 - Redis: required integration target.
 - Azure Blob Storage or an S3-compatible backend: planned for a separately configured integration environment.
+
+Every pull request requires a dedicated test-sufficiency review in addition to general and domain-specific reviews. See the [testing strategy](docs/testing.md) for the behavioral checklist and test layers.
 
 ## Build
 
@@ -108,7 +110,7 @@ The repository pins .NET 10 in `global.json` and Orleans dependencies centrally.
 ```bash
 dotnet restore Orleans.SearchableStorage.slnx
 dotnet build Orleans.SearchableStorage.slnx --no-restore
-dotnet test Orleans.SearchableStorage.slnx --no-build
+dotnet test Orleans.SearchableStorage.slnx --no-build --collect "XPlat Code Coverage"
 ```
 
 ## Prior art

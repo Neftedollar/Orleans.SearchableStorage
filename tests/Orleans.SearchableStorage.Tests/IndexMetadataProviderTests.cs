@@ -24,6 +24,80 @@ public sealed class IndexMetadataProviderTests
         firstScope.Should().NotBe(secondScope);
     }
 
+    [Fact]
+    public void NullIndexedValuesAreOmitted()
+    {
+        var entries = IndexMetadataProvider.Extract("state", new NullableState());
+
+        entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void NullStateProducesNoIndexEntries()
+    {
+        var entries = IndexMetadataProvider.Extract<NullableState>("state", null!);
+
+        entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UnmarkedPropertiesCannotBeSelected()
+    {
+        var action = () => IndexMetadataProvider.GetSelectedIndex<SelectorState, string>(
+            "state",
+            state => state.Unindexed);
+
+        action.Should().Throw<ArgumentException>()
+            .WithParameterName("expression");
+    }
+
+    [Fact]
+    public void NestedPropertySelectorsAreRejected()
+    {
+        var action = () => IndexMetadataProvider.GetSelectedIndex<SelectorState, int>(
+            "state",
+            state => state.Indexed.Length);
+
+        action.Should().Throw<ArgumentException>()
+            .WithParameterName("expression");
+    }
+
+    [Fact]
+    public void DuplicateIndexNamesAreRejected()
+    {
+        var action = () => IndexMetadataProvider.Extract("state", new DuplicateNameState());
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*duplicate index name*");
+    }
+
+    [Fact]
+    public void UnsupportedIndexTypesAreRejected()
+    {
+        var action = () => IndexMetadataProvider.Extract("state", new UnsupportedState());
+
+        action.Should().Throw<NotSupportedException>()
+            .WithMessage("*unsupported type*");
+    }
+
+    [Fact]
+    public void UnorderedTypesCannotUseRangeIndexes()
+    {
+        var action = () => IndexMetadataProvider.Extract("state", new UnorderedRangeState());
+
+        action.Should().Throw<NotSupportedException>()
+            .WithMessage("*unordered type*");
+    }
+
+    [Fact]
+    public void IndexedPropertiesMustBeReadable()
+    {
+        var action = () => IndexMetadataProvider.Extract("state", new WriteOnlyState());
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*readable instance property*");
+    }
+
     private sealed class DelimiterState
     {
         [SearchableIndex(SearchableIndexKind.Hash, Name = "b\u001fc")]
@@ -31,5 +105,54 @@ public sealed class IndexMetadataProviderTests
 
         [SearchableIndex(SearchableIndexKind.Hash, Name = "c")]
         public string Second { get; init; } = string.Empty;
+    }
+
+    private sealed class NullableState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string? Optional { get; init; }
+    }
+
+    private sealed class SelectorState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string Indexed { get; init; } = string.Empty;
+
+        public string Unindexed { get; init; } = string.Empty;
+    }
+
+    private sealed class DuplicateNameState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash, Name = "duplicate")]
+        public string First { get; init; } = string.Empty;
+
+        [SearchableIndex(SearchableIndexKind.Hash, Name = "duplicate")]
+        public string Second { get; init; } = string.Empty;
+    }
+
+    private sealed class UnsupportedState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public TimeSpan Duration { get; init; }
+    }
+
+    private sealed class UnorderedRangeState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public Guid Identifier { get; init; }
+    }
+
+    private sealed class WriteOnlyState
+    {
+        private readonly List<string> _values = [];
+
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string Value
+        {
+            set
+            {
+                _values.Add(value);
+            }
+        }
     }
 }

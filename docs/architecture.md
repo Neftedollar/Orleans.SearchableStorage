@@ -70,6 +70,8 @@ Physical providers can use serializers other than Orleans' binary serializer. Wi
 
 Backend tests must exercise the same public storage contract instead of backend-specific expected behavior. The contract covers physical partition rehydration, exact lookup, bounded range lookup, index replacement on update, index removal on clear, optimistic-concurrency rejection, persisted-layout mismatch, and physical-write failure boundaries.
 
+Every change is also evaluated using the mandatory test-sufficiency review described in [testing.md](testing.md). That review verifies behavioral, failure, durability, distributed, serialization, and sample coverage rather than relying on a raw test count.
+
 The regular suite currently uses Orleans in-memory persistence with `JsonGrainStorageSerializer` in a two-silo `TestCluster`. PostgreSQL and Redis are required integration targets. Azure Blob Storage or an S3-compatible provider belongs to a separately configured integration environment because it needs external infrastructure and credentials.
 
 ## Current scaling limit
