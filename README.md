@@ -82,7 +82,7 @@ The provider name identifies a storage namespace. Using another name selects a s
 
 Storage format version 2 identifies state types recursively from generic type definitions and their arguments. Assembly simple names, cultures, and public-key tokens participate in the identity, but assembly versions do not, so routine application or dependency version changes cannot hide otherwise compatible generic-state indexes. Existing version 1 namespaces require migration or a complete record rewrite; the runtime rejects their persisted layout instead of returning incomplete results.
 
-Index declarations and value accessors are resolved through a cached [PolyType](https://github.com/eiriktsarpalis/PolyType) runtime type model. Applications only use `SearchableIndexAttribute`; no PolyType attributes or generated witness types are required. This project uses PolyType's reflection provider and does not support Native AOT or trimming.
+Index declarations and value accessors are resolved through a cached [PolyType](https://github.com/eiriktsarpalis/PolyType) runtime type model. Complete index scopes are cached per state name, so steady-state writes do not rebuild persisted type identities through reflection. Collection, scalar, and other non-object state shapes remain valid storage values and simply contribute no index entries. Applications only use `SearchableIndexAttribute`; no PolyType attributes or generated witness types are required. This project uses PolyType's reflection provider and does not support Native AOT or trimming.
 
 ## Run the API sample
 

@@ -25,6 +25,17 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
+    public void IndexScopesAreCachedPerStateName()
+    {
+        var state = new NullableState { Optional = "value" };
+
+        var firstScope = IndexMetadataProvider.Extract("state", state).Single().Scope;
+        var secondScope = IndexMetadataProvider.Extract("state", state).Single().Scope;
+
+        ReferenceEquals(firstScope, secondScope).Should().BeTrue();
+    }
+
+    [Fact]
     public void ConstructedGenericScopeUsesVersionIndependentRecursiveTypeIdentity()
     {
         var integerScope = IndexMetadataProvider.Extract(

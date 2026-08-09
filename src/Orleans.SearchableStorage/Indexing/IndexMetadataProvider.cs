@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -31,7 +32,7 @@ internal static class IndexMetadataProvider
 
             entries.Add(new IndexEntry
             {
-                Scope = CreateScope(typeof(TState), stateName, index.Name),
+                Scope = index.GetScope(stateName),
                 Kind = index.Kind,
                 Value = value,
             });
@@ -63,7 +64,7 @@ internal static class IndexMetadataProvider
             ?? throw new ArgumentException($"Property '{property.Name}' is not marked with SearchableIndexAttribute.", nameof(expression));
 
         return new SelectedIndex(
-            CreateScope(typeof(TState), stateName, index.Name),
+            index.GetScope(stateName),
             index.Kind,
             index.Converter);
     }
@@ -117,9 +118,12 @@ internal static class IndexMetadataProvider
         var shape = ReflectionTypeShapeProvider.Default.GetTypeShape<TState>();
         if (shape is not IObjectTypeShape<TState> objectShape)
         {
-            throw new NotSupportedException($"State type '{typeof(TState)}' does not expose an object shape through PolyType.");
+            // Collection and scalar state types remain valid Orleans state. They cannot declare
+            // searchable properties, so their correct type model is an empty one.
+            return new SearchableTypeModel<TState>([]);
         }
 
+        var typeIdentity = CreateTypeIdentity(typeof(TState));
         var indexes = new List<PropertyIndexMetadata<TState>>();
         var names = new HashSet<string>(StringComparer.Ordinal);
 
@@ -143,7 +147,7 @@ internal static class IndexMetadataProvider
                 throw new InvalidOperationException($"State type '{typeof(TState).FullName}' contains duplicate index name '{name}'.");
             }
 
-            var context = new PropertyBuildContext(name!, attribute.Kind);
+            var context = new PropertyBuildContext(typeIdentity, name!, attribute.Kind);
             var index = (PropertyIndexMetadata<TState>?)property.Accept(PropertyIndexBuilder.Instance, context);
             if (index is null)
             {
@@ -163,10 +167,10 @@ internal static class IndexMetadataProvider
         return new SearchableTypeModel<TState>(indexes);
     }
 
-    private static string CreateScope(Type stateType, string stateName, string indexName)
+    internal static string CreateScope(string typeIdentity, string stateName, string indexName)
     {
         return string.Concat(
-            FormatComponent(CreateTypeIdentity(stateType)),
+            FormatComponent(typeIdentity),
             FormatComponent(stateName),
             FormatComponent(indexName));
     }
@@ -252,7 +256,10 @@ internal static class IndexMetadataProvider
         public static SearchableTypeModel<TState>? Value;
     }
 
-    private sealed record PropertyBuildContext(string Name, SearchableIndexKind Kind);
+    private sealed record PropertyBuildContext(
+        string TypeIdentity,
+        string Name,
+        SearchableIndexKind Kind);
 
     private sealed class PropertyIndexBuilder : TypeShapeVisitor
     {
@@ -275,6 +282,7 @@ internal static class IndexMetadataProvider
                     $"PolyType did not expose member identity for '{typeof(TState).FullName}.{propertyShape.Name}'.");
 
             return new PropertyIndexMetadata<TState, TValue>(
+                context.TypeIdentity,
                 memberInfo,
                 context.Name,
                 context.Kind,
@@ -287,11 +295,15 @@ internal static class IndexMetadataProvider
 internal sealed record SearchableTypeModel<TState>(IReadOnlyList<PropertyIndexMetadata<TState>> Indexes);
 
 internal abstract class PropertyIndexMetadata<TState>(
+    string typeIdentity,
     MemberInfo memberInfo,
     string name,
     SearchableIndexKind kind,
     IndexValueConverter converter)
 {
+    private readonly ConcurrentDictionary<string, string> _scopes = new(StringComparer.Ordinal);
+    private readonly string _typeIdentity = typeIdentity;
+
     public MemberInfo MemberInfo { get; } = memberInfo;
 
     public string Name { get; } = name;
@@ -300,16 +312,32 @@ internal abstract class PropertyIndexMetadata<TState>(
 
     public IndexValueConverter Converter { get; } = converter;
 
+    public string GetScope(string stateName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+
+        // State names are provider configuration, so this cache is bounded by the finite set of
+        // persistent-state registrations which use this state type in the process.
+        return _scopes.GetOrAdd(
+            stateName,
+            static (currentStateName, identity) => IndexMetadataProvider.CreateScope(
+                identity.TypeIdentity,
+                currentStateName,
+                identity.IndexName),
+            (TypeIdentity: _typeIdentity, IndexName: Name));
+    }
+
     public abstract IndexValue? Read(ref TState state);
 }
 
 internal sealed class PropertyIndexMetadata<TState, TValue>(
+    string typeIdentity,
     MemberInfo memberInfo,
     string name,
     SearchableIndexKind kind,
     Getter<TState, TValue> getter,
     IndexValueConverter<TValue> converter)
-    : PropertyIndexMetadata<TState>(memberInfo, name, kind, converter)
+    : PropertyIndexMetadata<TState>(typeIdentity, memberInfo, name, kind, converter)
 {
     public override IndexValue? Read(ref TState state)
     {

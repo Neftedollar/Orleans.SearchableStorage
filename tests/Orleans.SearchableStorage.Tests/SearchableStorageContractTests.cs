@@ -297,6 +297,32 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [Fact]
+    public async Task CollectionStateWithoutIndexesRoundTripsThroughStorage()
+    {
+        var stateName = $"items-{Guid.NewGuid():N}";
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var storage = silo.ServiceProvider.GetRequiredKeyedService<IGrainStorage>(
+            VacancyGrain.StorageProviderName);
+        var grainId = CreateGrain().GetGrainId();
+        var current = new GrainState<List<string>>
+        {
+            State = ["first", "second"],
+        };
+
+        await storage.WriteStateAsync(stateName, grainId, current);
+        await Fixture.Cluster.DeactivateAsync(GetPartition(grainId));
+
+        var loaded = new GrainState<List<string>>();
+        await storage.ReadStateAsync(stateName, grainId, loaded);
+
+        loaded.RecordExists.Should().BeTrue();
+        loaded.ETag.Should().Be(current.ETag);
+        loaded.State.Should().Equal(current.State);
+
+        await storage.ClearStateAsync(stateName, grainId, loaded);
+    }
+
+    [Fact]
     public async Task GrainStorageBridgeIncrementsETagsAndRejectsStaleClear()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);

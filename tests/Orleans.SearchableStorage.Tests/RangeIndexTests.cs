@@ -59,6 +59,23 @@ public sealed class RangeIndexTests
             .WithParameterName("lowerBound");
     }
 
+    [Fact]
+    public void ComparerEqualBucketsAreMergedDuringConstruction()
+    {
+        var first = IndexValue.FromSignedInteger(1);
+        var second = IndexValue.FromSignedInteger(2);
+        var buckets = new Dictionary<IndexValue, HashSet<string>>
+        {
+            [first] = new HashSet<string>(["first"], StringComparer.Ordinal),
+            [second] = new HashSet<string>(["second"], StringComparer.Ordinal),
+        };
+
+        var index = new RangeIndex(buckets, new DecadeComparer());
+
+        index.TryGetValue(first, out var records).Should().BeTrue();
+        records!.Should().BeEquivalentTo(["first", "second"]);
+    }
+
     private static Dictionary<IndexValue, HashSet<string>> CreateBuckets(int count)
     {
         return Enumerable.Range(0, count)
@@ -80,6 +97,19 @@ public sealed class RangeIndexTests
         public void Reset()
         {
             ComparisonCount = 0;
+        }
+    }
+
+    private sealed class DecadeComparer : IComparer<IndexValue>
+    {
+        public int Compare(IndexValue? x, IndexValue? y)
+        {
+            if (x is null || y is null)
+            {
+                return Comparer<IndexValue>.Default.Compare(x, y);
+            }
+
+            return (x.SignedInteger / 10).CompareTo(y.SignedInteger / 10);
         }
     }
 }

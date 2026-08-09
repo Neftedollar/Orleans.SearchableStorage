@@ -13,9 +13,31 @@ internal sealed class RangeIndex
     {
         ArgumentNullException.ThrowIfNull(buckets);
 
+        var effectiveComparer = comparer ?? Comparer<IndexValue>.Default;
+        var orderedBuckets = new SortedDictionary<IndexValue, HashSet<string>>(effectiveComparer);
+        foreach (var pair in buckets)
+        {
+            ArgumentNullException.ThrowIfNull(pair.Key);
+            ArgumentNullException.ThrowIfNull(pair.Value);
+
+            // Persisted values are canonicalized by ordering before the indexed representation is
+            // created. Activation must not depend on hash equality remaining identical to ordering
+            // equality as new IndexValue kinds are added.
+            if (orderedBuckets.TryGetValue(pair.Key, out var existing))
+            {
+                existing.UnionWith(pair.Value);
+            }
+            else
+            {
+                orderedBuckets.Add(
+                    pair.Key,
+                    new HashSet<string>(pair.Value, StringComparer.Ordinal));
+            }
+        }
+
         _buckets = new SortedList<IndexValue, HashSet<string>>(
-            buckets,
-            comparer ?? Comparer<IndexValue>.Default);
+            orderedBuckets,
+            effectiveComparer);
     }
 
     public bool TryGetValue(
