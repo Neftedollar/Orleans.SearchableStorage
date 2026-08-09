@@ -230,6 +230,8 @@ internal static class IndexValueConverterProvider
             var underlyingConverter = GetConverter(enumShape.UnderlyingType)
                 ?? throw new InvalidOperationException($"Enum '{typeof(TEnum)}' has an unsupported underlying type '{typeof(TUnderlying)}'.");
 
+            // The CLR guarantees that an enum has the same representation as its underlying type.
+            // BitCast keeps this path strongly typed without boxing or reflection-based conversion.
             return new IndexValueConverter<TEnum>(
                 value => underlyingConverter.Convert(Unsafe.BitCast<TEnum, TUnderlying>(value)),
                 supportsRange: true);
