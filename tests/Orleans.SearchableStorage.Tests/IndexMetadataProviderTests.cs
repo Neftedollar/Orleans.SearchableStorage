@@ -50,6 +50,28 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
+    public void NullNullableValueTypesAreOmitted()
+    {
+        var entries = IndexMetadataProvider.Extract(
+            "state",
+            new NullableNumberState { Optional = null });
+
+        entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void NullableEnumPropertiesComposeOptionalAndEnumConverters()
+    {
+        var entries = IndexMetadataProvider.Extract(
+            "state",
+            new NullableEnumState { Optional = SignedSample.Negative });
+
+        entries.Should().ContainSingle();
+        entries[0].Value.Kind.Should().Be(IndexValueKind.SignedInteger);
+        entries[0].Value.SignedInteger.Should().Be(-1);
+    }
+
+    [Fact]
     public void NullStateProducesNoIndexEntries()
     {
         var entries = IndexMetadataProvider.Extract<NullableState>("state", null!);
@@ -171,6 +193,12 @@ public sealed class IndexMetadataProviderTests
         public int? Optional { get; init; }
     }
 
+    private sealed class NullableEnumState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public SignedSample? Optional { get; init; }
+    }
+
     private sealed class SelectorState
     {
         [SearchableIndex(SearchableIndexKind.Hash)]
@@ -229,5 +257,10 @@ public sealed class IndexMetadataProviderTests
     {
         [SearchableIndex(SearchableIndexKind.Hash)]
         public string Value { get; init; } = string.Empty;
+    }
+
+    private enum SignedSample : short
+    {
+        Negative = -1,
     }
 }
