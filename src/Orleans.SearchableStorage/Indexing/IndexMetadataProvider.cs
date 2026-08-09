@@ -83,9 +83,16 @@ internal static class IndexMetadataProvider
         // property. Accessor base definitions provide a stable identity without reading values.
         var indexedGetter = indexedProperty.GetMethod;
         var selectedGetter = selectedProperty.GetMethod;
-        return indexedGetter is not null
-            && selectedGetter is not null
-            && indexedGetter.GetBaseDefinition().Equals(selectedGetter.GetBaseDefinition());
+        if (indexedGetter is null || selectedGetter is null)
+        {
+            return false;
+        }
+
+        var indexedDefinition = indexedGetter.GetBaseDefinition();
+        var selectedDefinition = selectedGetter.GetBaseDefinition();
+        return indexedDefinition.Module.Equals(selectedDefinition.Module)
+            && indexedDefinition.MetadataToken == selectedDefinition.MetadataToken
+            && indexedDefinition.DeclaringType == selectedDefinition.DeclaringType;
     }
 
     internal static SearchableTypeModel<TState> GetTypeModel<TState>()
