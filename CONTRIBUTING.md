@@ -9,6 +9,8 @@ Orleans.SearchableStorage follows the engineering conventions used by the .NET a
 - Do not add co-author trailers or AI attribution to commit messages.
 - Keep pull requests focused and route every change through a pull request.
 - Add comments for durability, consistency, concurrency, and other non-obvious invariants. Comments should explain intent and trade-offs instead of restating the code.
+- Use PolyType type shapes for runtime inspection, member access, and generic type-driven behavior. Direct reflection is limited to framework boundaries such as reading an expression-tree member identity and must not become an independent metadata path.
+- Native AOT and trimming are not supported; do not add source-generation constraints to application grain-state types solely for this project.
 
 ## Documentation policy
 
@@ -28,6 +30,8 @@ The general review covers correctness, maintainability, clarity, unnecessary com
 Every pull request also requires an explicit test-sufficiency review. This is a separate review lens and cannot be replaced by the general or domain-specific review. It evaluates whether the changed behavior is protected by meaningful tests across success, validation, failure, durability, concurrency, distributed execution, serialization, and relevant physical backends. Raw test count and line coverage are evidence, not acceptance criteria by themselves.
 
 The pull request must record intentional test gaps and explain why they are deferred. See [docs/testing.md](docs/testing.md) for the review checklist and test layers.
+
+Every actionable review comment must have an explicit disposition before merge. When feedback is addressed, reply in the original discussion with the pull request or commit which contains the fix and the validation which supports it, then resolve the thread. If the fix is implemented in a later pull request, link that pull request from the original discussion as well. Do not leave an addressed thread open or mark an unimplemented change as resolved.
 
 ## Validation
 

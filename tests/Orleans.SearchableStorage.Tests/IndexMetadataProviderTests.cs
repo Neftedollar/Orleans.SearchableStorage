@@ -25,11 +25,100 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
+    public void IndexScopesAreCachedPerStateName()
+    {
+        var state = new NullableState { Optional = "value" };
+
+        var firstScope = IndexMetadataProvider.Extract("state", state).Single().Scope;
+        var secondScope = IndexMetadataProvider.Extract("state", state).Single().Scope;
+
+        ReferenceEquals(firstScope, secondScope).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ConstructedGenericScopeUsesVersionIndependentRecursiveTypeIdentity()
+    {
+        var integerScope = IndexMetadataProvider.Extract(
+            "state",
+            new GenericState<List<int>> { Value = "value" })
+            .Single()
+            .Scope;
+        var longScope = IndexMetadataProvider.Extract(
+            "state",
+            new GenericState<List<long>> { Value = "value" })
+            .Single()
+            .Scope;
+
+        integerScope.Should().NotContain("Version=");
+        integerScope.Should().NotBe(longScope);
+    }
+
+    [Fact]
+    public void OpenGenericTypesDoNotHavePersistedIdentities()
+    {
+        var action = () => IndexMetadataProvider.CreateTypeIdentity(typeof(GenericState<>));
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*closed persisted identity*");
+    }
+
+    [Fact]
+    public void ArrayTypeIdentitiesEncodeShapeAndElementType()
+    {
+        var integerVector = IndexMetadataProvider.CreateTypeIdentity(typeof(int[]));
+        var integerMatrix = IndexMetadataProvider.CreateTypeIdentity(typeof(int[,]));
+        var longVector = IndexMetadataProvider.CreateTypeIdentity(typeof(long[]));
+
+        integerVector.Should().NotContain("Version=");
+        integerVector.Should().NotBe(integerMatrix);
+        integerVector.Should().NotBe(longVector);
+    }
+
+    [Fact]
     public void NullIndexedValuesAreOmitted()
     {
         var entries = IndexMetadataProvider.Extract("state", new NullableState());
 
         entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void NullableValueTypesUseTheirUnderlyingIndexConverter()
+    {
+        var entries = IndexMetadataProvider.Extract(
+            "state",
+            new NullableNumberState { Optional = 42 });
+        var selected = IndexMetadataProvider.GetSelectedIndex<NullableNumberState, int?>(
+            "state",
+            state => state.Optional);
+
+        entries.Should().ContainSingle();
+        entries[0].Value.Kind.Should().Be(IndexValueKind.SignedInteger);
+        entries[0].Value.SignedInteger.Should().Be(42);
+        selected.Converter.RuntimeValueType.Should().Be<int>();
+        selected.Converter.ConvertObject(42)!.SignedInteger.Should().Be(42);
+    }
+
+    [Fact]
+    public void NullNullableValueTypesAreOmitted()
+    {
+        var entries = IndexMetadataProvider.Extract(
+            "state",
+            new NullableNumberState { Optional = null });
+
+        entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void NullableEnumPropertiesComposeOptionalAndEnumConverters()
+    {
+        var entries = IndexMetadataProvider.Extract(
+            "state",
+            new NullableEnumState { Optional = SignedSample.Negative });
+
+        entries.Should().ContainSingle();
+        entries[0].Value.Kind.Should().Be(IndexValueKind.SignedInteger);
+        entries[0].Value.SignedInteger.Should().Be(-1);
     }
 
     [Fact]
@@ -60,6 +149,42 @@ public sealed class IndexMetadataProviderTests
 
         action.Should().Throw<ArgumentException>()
             .WithParameterName("expression");
+    }
+
+    [Fact]
+    public void ConvertedSelectorsResolveTheIndexedProperty()
+    {
+        var selected = IndexMetadataProvider.GetSelectedIndex<SelectorState, object>(
+            "state",
+            state => state.Indexed);
+
+        selected.Converter.ValueType.Should().Be<string>();
+    }
+
+    [Fact]
+    public void InheritedIndexedPropertiesAreResolvedThroughTheTypeShape()
+    {
+        var state = new DerivedState { Score = 17 };
+
+        var entries = IndexMetadataProvider.Extract("state", state);
+        entries.Should().ContainSingle();
+        entries[0].Value.SignedInteger.Should().Be(17);
+
+        var selected = IndexMetadataProvider.GetSelectedIndex<DerivedState, int>(
+            "state",
+            candidate => candidate.Score);
+
+        selected.Kind.Should().Be(SearchableIndexKind.Range);
+    }
+
+    [Fact]
+    public async Task TypeModelsAreSharedAcrossConcurrentCallers()
+    {
+        var models = await Task.WhenAll(
+            Enumerable.Range(0, 32)
+                .Select(_ => Task.Run(IndexMetadataProvider.GetTypeModel<ConcurrentModelState>)));
+
+        models.All(model => ReferenceEquals(model, models[0])).Should().BeTrue();
     }
 
     [Fact]
@@ -113,6 +238,24 @@ public sealed class IndexMetadataProviderTests
         public string? Optional { get; init; }
     }
 
+    private sealed class GenericState<T>
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string Value { get; init; } = string.Empty;
+    }
+
+    private sealed class NullableNumberState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public int? Optional { get; init; }
+    }
+
+    private sealed class NullableEnumState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public SignedSample? Optional { get; init; }
+    }
+
     private sealed class SelectorState
     {
         [SearchableIndex(SearchableIndexKind.Hash)]
@@ -154,5 +297,26 @@ public sealed class IndexMetadataProviderTests
                 _values.Add(value);
             }
         }
+    }
+
+    private class BaseState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public int Score { get; init; }
+    }
+
+    private sealed class DerivedState : BaseState
+    {
+    }
+
+    private sealed class ConcurrentModelState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string Value { get; init; } = string.Empty;
+    }
+
+    private enum SignedSample : short
+    {
+        Negative = -1,
     }
 }

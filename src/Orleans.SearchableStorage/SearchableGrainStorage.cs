@@ -12,7 +12,6 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     private readonly StorageLayoutDescriptor _layout;
     private readonly IStorageLayoutGrain _layoutGrain;
     private readonly object _layoutLock = new();
-    private readonly SearchableStorageOptions _options;
     private readonly IGrainStorageSerializer _serializer;
     private readonly Lazy<IStoragePartitionGrain>[] _partitions;
     private Task? _layoutInitializationTask;
@@ -33,7 +32,6 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             throw new ArgumentOutOfRangeException(nameof(options), options.PartitionCount, "PartitionCount must be greater than zero.");
         }
 
-        _options = options;
         _serializer = options.GrainStorageSerializer
             ?? throw new ArgumentException("A grain storage serializer has not been configured.", nameof(options));
         _activatorProvider = activatorProvider;
@@ -121,7 +119,7 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     {
         // Orleans defines this hash as uniform and stable, so the physical partition remains
         // unchanged across processes and runtime upgrades which preserve the GrainId contract.
-        var index = (int)((uint)grainId.GetUniformHashCode() % (uint)_options.PartitionCount);
+        var index = (int)((uint)grainId.GetUniformHashCode() % (uint)_partitions.Length);
         return _partitions[index].Value;
     }
 

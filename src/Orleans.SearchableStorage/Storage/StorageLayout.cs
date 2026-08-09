@@ -2,7 +2,7 @@ namespace Orleans.SearchableStorage.Storage;
 
 internal static class StorageLayout
 {
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     public static StorageLayoutDescriptor CreateDescriptor(string providerName, int partitionCount)
     {

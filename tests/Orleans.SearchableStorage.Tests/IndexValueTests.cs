@@ -60,6 +60,32 @@ public sealed class IndexValueTests
         first.GetHashCode().Should().Be(second.GetHashCode());
     }
 
+    [Fact]
+    public void ComparisonEqualRepresentationsShareHashCodes()
+    {
+        var utc = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        (object Left, object Right)[] pairs =
+        [
+            ('H', "H"),
+            ((sbyte)-1, -1L),
+            ((byte)1, 1UL),
+            (1.0M, 1.00M),
+            (-0.0F, 0.0D),
+            (utc, new DateTimeOffset(utc)),
+            (SampleGuid, SampleGuid),
+            (true, true),
+        ];
+
+        foreach (var pair in pairs)
+        {
+            var left = IndexValue.Create(pair.Left);
+            var right = IndexValue.Create(pair.Right);
+
+            left.CompareTo(right).Should().Be(0);
+            left.GetHashCode().Should().Be(right.GetHashCode());
+        }
+    }
+
     [Theory]
     [InlineData("string")]
     [InlineData("unsigned")]
@@ -85,7 +111,18 @@ public sealed class IndexValueTests
 
         var action = () => IndexValue.Create(value);
 
-        action.Should().Throw<NotSupportedException>();
+        action.Should().Throw<NotSupportedException>()
+            .WithMessage("*NaN*");
+    }
+
+    [Fact]
+    public void NullableAndEnumShapesReportTheirCapabilities()
+    {
+        IndexValue.IsSupported(typeof(int?)).Should().BeTrue();
+        IndexValue.IsRangeSupported(typeof(int?)).Should().BeTrue();
+        IndexValue.IsSupported(typeof(SignedSample)).Should().BeTrue();
+        IndexValue.IsRangeSupported(typeof(SignedSample)).Should().BeTrue();
+        IndexValue.IsRangeSupported(typeof(Guid?)).Should().BeFalse();
     }
 
     [Fact]

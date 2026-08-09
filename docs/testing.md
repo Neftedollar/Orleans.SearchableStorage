@@ -22,11 +22,11 @@ Missing coverage must be called out explicitly in the pull request with a reason
 
 ### Value and metadata tests
 
-Fast unit tests protect index-value normalization, equality, hashing, ordering, supported CLR types, attribute metadata, selector validation, and collision-free scope identities.
+Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, and logarithmic range lower-bound lookup.
 
 ### Storage contract tests
 
-The reusable contract exercises normal `IGrainStorage` behavior, exact and range queries, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, and physical-write failure boundaries. Every supported physical provider must run the same contract.
+The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range queries, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, and physical-write failure boundaries. Every supported physical provider must run the same contract.
 
 ### Backend-specific tests
 
