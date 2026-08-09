@@ -32,6 +32,19 @@ jobs:
       - name: Test
         run: dotnet test Orleans.SearchableStorage.slnx --configuration Release --no-build --no-restore --collect "XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx"
 
+      - name: Run memory storage contract gate
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Backend=Memory"
+          --logger "trx;LogFileName=memory-test-results.trx"
+          --results-directory artifacts/memory-test-results
+
+      - name: Validate memory storage contract
+        run: bash eng/validate-trx.sh artifacts/memory-test-results/memory-test-results.trx 45
+
       - name: Pack
         run: dotnet pack src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj --configuration Release --no-build --no-restore --output artifacts/packages
 
@@ -40,7 +53,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-results
-          path: "**/TestResults/**"
+          path: |
+            **/TestResults/**
+            artifacts/memory-test-results
           if-no-files-found: ignore
 
   backend-contract:
@@ -48,7 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      EXPECTED_BACKEND_TEST_COUNT: "135"
       ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS: "true"
 
     steps:
@@ -69,37 +83,44 @@ jobs:
       - name: Start physical backends
         run: docker compose --file tests/backends.compose.yml up --detach --wait
 
-      - name: Run backend storage contract
+      - name: Run PostgreSQL storage contract
         run: >-
           dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
           --configuration Release
           --no-build
           --no-restore
-          --filter "Category=BackendIntegration"
+          --filter "Backend=PostgreSQL"
           --collect "XPlat Code Coverage"
-          --logger "trx;LogFileName=backend-test-results.trx"
+          --logger "trx;LogFileName=postgresql-test-results.trx"
+          --results-directory artifacts/backend-test-results
+
+      - name: Run Redis storage contract
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Backend=Redis"
+          --collect "XPlat Code Coverage"
+          --logger "trx;LogFileName=redis-test-results.trx"
+          --results-directory artifacts/backend-test-results
+
+      - name: Run Azure Blob storage contract
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Backend=AzureBlob"
+          --collect "XPlat Code Coverage"
+          --logger "trx;LogFileName=azure-blob-test-results.trx"
           --results-directory artifacts/backend-test-results
 
       - name: Validate backend test results
-        shell: bash
         run: |
-          result="artifacts/backend-test-results/backend-test-results.trx"
-          if [[ ! -f "$result" ]]; then
-            echo "The backend test result was not produced." >&2
-            exit 1
-          fi
-
-          if grep --quiet 'outcome="NotExecuted"' "$result"; then
-            echo "The enabled backend contract contained skipped tests." >&2
-            exit 1
-          fi
-
-          expected="<Counters total=\"${EXPECTED_BACKEND_TEST_COUNT}\" executed=\"${EXPECTED_BACKEND_TEST_COUNT}\" passed=\"${EXPECTED_BACKEND_TEST_COUNT}\" failed=\"0\""
-          if ! grep --fixed-strings --quiet "$expected" "$result"; then
-            echo "Expected ${EXPECTED_BACKEND_TEST_COUNT} executed and passing backend tests." >&2
-            grep '<Counters ' "$result" >&2 || true
-            exit 1
-          fi
+          bash eng/validate-trx.sh artifacts/backend-test-results/postgresql-test-results.trx 46
+          bash eng/validate-trx.sh artifacts/backend-test-results/redis-test-results.trx 46
+          bash eng/validate-trx.sh artifacts/backend-test-results/azure-blob-test-results.trx 46
 
       - name: Stop physical backends
         if: always()

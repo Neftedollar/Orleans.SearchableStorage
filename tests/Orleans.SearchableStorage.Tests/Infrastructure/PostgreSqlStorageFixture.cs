@@ -11,12 +11,16 @@ namespace Orleans.SearchableStorage.Tests.Infrastructure;
 public sealed class PostgreSqlStorageFixture : ExternalStorageFixture<PostgreSqlSiloConfigurator>
 {
     private string? _administrativeConnectionString;
+    private PostgreSqlSchemaManager? _schemaManager;
     private string? _schemaName;
 
     public PostgreSqlStorageFixture()
         : base("postgresql")
     {
     }
+
+    internal PostgreSqlSchemaManager SchemaManager => _schemaManager
+        ?? throw new InvalidOperationException("The PostgreSQL test resource has not been prepared.");
 
     protected override async Task<IReadOnlyDictionary<string, string?>> PrepareBackendAsync()
     {
@@ -25,11 +29,12 @@ public sealed class PostgreSqlStorageFixture : ExternalStorageFixture<PostgreSql
             BackendTestEnvironment.DefaultPostgreSqlConnectionString);
         // Orleans' PostgreSQL queries are unqualified, so a private search path isolates each run.
         _schemaName = $"oss_{Guid.NewGuid():N}";
-        var schemaIdentifier = QuoteIdentifier(_schemaName);
+        _schemaManager = new PostgreSqlSchemaManager(_administrativeConnectionString);
+        await _schemaManager.CreateSchemaAsync(_schemaName);
+        var schemaIdentifier = PostgreSqlSchemaManager.QuoteIdentifier(_schemaName);
 
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync();
-        await ExecuteAsync(connection, $"CREATE SCHEMA {schemaIdentifier}");
         await ExecuteAsync(connection, $"SET search_path TO {schemaIdentifier}");
         await ExecuteScriptAsync(connection, "PostgreSql/PostgreSQL-Main.sql");
         await ExecuteScriptAsync(connection, "PostgreSql/PostgreSQL-Persistence.sql");
@@ -47,14 +52,12 @@ public sealed class PostgreSqlStorageFixture : ExternalStorageFixture<PostgreSql
 
     protected override async Task CleanupBackendAsync()
     {
-        if (_administrativeConnectionString is null || _schemaName is null)
+        if (_schemaManager is null || _schemaName is null)
         {
             return;
         }
 
-        await using var connection = new NpgsqlConnection(_administrativeConnectionString);
-        await connection.OpenAsync();
-        await ExecuteAsync(connection, $"DROP SCHEMA IF EXISTS {QuoteIdentifier(_schemaName)} CASCADE");
+        await _schemaManager.DropSchemaAsync(_schemaName);
     }
 
     private static async Task ExecuteScriptAsync(NpgsqlConnection connection, string relativePath)
@@ -71,9 +74,69 @@ public sealed class PostgreSqlStorageFixture : ExternalStorageFixture<PostgreSql
         await command.ExecuteNonQueryAsync();
     }
 
-    private static string QuoteIdentifier(string identifier)
+}
+
+internal sealed class PostgreSqlSchemaManager(string connectionString)
+{
+    private const string SentinelTableName = "cleanup_sentinel";
+
+    public async Task CreateSchemaAsync(string schemaName)
+    {
+        await ExecuteAsync($"CREATE SCHEMA {QuoteIdentifier(schemaName)}");
+    }
+
+    public async Task CreateSchemaWithSentinelAsync(string schemaName)
+    {
+        var schemaIdentifier = QuoteIdentifier(schemaName);
+        await ExecuteAsync(
+            $"CREATE SCHEMA {schemaIdentifier}; " +
+            $"CREATE TABLE {schemaIdentifier}.{QuoteIdentifier(SentinelTableName)} (value integer NOT NULL)");
+    }
+
+    public async Task DropSchemaAsync(string schemaName)
+    {
+        await ExecuteAsync($"DROP SCHEMA IF EXISTS {QuoteIdentifier(schemaName)} CASCADE");
+    }
+
+    public Task<bool> SchemaExistsAsync(string schemaName)
+    {
+        return ExistsAsync(
+            "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = @name)",
+            schemaName);
+    }
+
+    public Task<bool> SentinelExistsAsync(string schemaName)
+    {
+        return ExistsAsync(
+            "SELECT EXISTS (" +
+            "SELECT 1 FROM information_schema.tables " +
+            "WHERE table_schema = @name AND table_name = 'cleanup_sentinel')",
+            schemaName);
+    }
+
+    internal static string QuoteIdentifier(string identifier)
     {
         return $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+    }
+
+    private async Task ExecuteAsync(string commandText)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = commandText;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<bool> ExistsAsync(string commandText, string schemaName)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = commandText;
+        command.Parameters.AddWithValue("name", schemaName);
+        return (bool)(await command.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("PostgreSQL did not return an existence result."));
     }
 }
 

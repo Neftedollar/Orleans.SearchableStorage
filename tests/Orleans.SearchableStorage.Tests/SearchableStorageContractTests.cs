@@ -1411,6 +1411,7 @@ public abstract class FaultInjectingSearchableStorageContractTests<TFixture>
     }
 }
 
+[Trait("Backend", "Memory")]
 public sealed class MemorySearchableStorageContractTests
     : FaultInjectingSearchableStorageContractTests<MemoryStorageFixture>
 {

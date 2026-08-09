@@ -48,13 +48,15 @@ The memory, PostgreSQL, Redis, and Azure Blob fixtures inherit this same contrac
 
 Provider fixtures add environment setup, cleanup, serializer selection, and registration assertions which cannot be expressed in the shared contract. All four fixtures use `JsonGrainStorageSerializer`, two in-process silos, eight storage partitions, and the same fault-injecting decorator around the physical provider.
 
-- PostgreSQL uses `Microsoft.Orleans.Persistence.AdoNet` with Npgsql. The fixture creates an isolated schema and applies the unmodified operational schema from the Orleans 10.2.2 source tag, apart from source-attribution comments.
+- PostgreSQL uses `Microsoft.Orleans.Persistence.AdoNet` with Npgsql. The fixture creates an isolated schema and applies operational SQL copied from the Orleans 10.2.2 source tag under the full upstream MIT notice retained inline; the SQL body is unchanged apart from its source and license header.
 - Redis uses `Microsoft.Orleans.Persistence.Redis` with a unique Orleans service id.
 - Azure Blob uses `Microsoft.Orleans.Persistence.AzureStorage` with a unique container and runs against Azurite in CI.
 
+Each external fixture also runs one resource-isolation cleanup case without starting another cluster. PostgreSQL removes a populated owned schema while a populated foreign schema survives, Redis removes only the selected service id's state keys, and Azure Blob removes only the selected container. `try`/`finally` cleanup removes every sentinel even when an assertion fails.
+
 The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
 
-The dedicated CI job starts the pinned images from `tests/backends.compose.yml`, runs only tests tagged `BackendIntegration`, uploads its TRX and coverage artifacts, and removes the volumes even after failure. Its result gate requires exactly 45 executed and passing cases for each external provider (135 total) and rejects missing results, skipped tests, empty filters, partial discovery, and failures. When the shared contract gains or loses a data row, update `EXPECTED_BACKEND_TEST_COUNT` in the workflow in the same change. For local execution and connection-string overrides, see [physical storage backends](backends.md).
+CI writes four independently filtered TRX files using the `Backend` trait: 45 memory cases in the regular job and 46 cases apiece for PostgreSQL, Redis, and Azure Blob in the external job. The small `eng/validate-trx.sh` gate requires one `Counters` element, the exact total, executed and passed counts, zero failed and not-executed summary counts, no `NotExecuted` result, and no non-passed result element. Missing files, empty filters, partial discovery, per-provider omissions, failures, and skips therefore fail independently. The external job starts the pinned images from `tests/backends.compose.yml`, uploads its TRX and coverage artifacts, and removes the volumes even after failure. When a contract data row or provider-specific test changes, update the corresponding expected count in the workflow in the same change. For local execution and connection-string overrides, see [physical storage backends](backends.md).
 
 ### Executable sample tests
 

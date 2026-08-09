@@ -11,17 +11,25 @@ namespace Orleans.SearchableStorage.Tests.Infrastructure;
 public sealed class RedisStorageFixture : ExternalStorageFixture<RedisSiloConfigurator>
 {
     private string? _connectionString;
+    private RedisStateKeyManager? _stateKeyManager;
 
     public RedisStorageFixture()
         : base("redis")
     {
     }
 
+    internal string ConnectionString => _connectionString
+        ?? throw new InvalidOperationException("The Redis test resource has not been prepared.");
+
+    internal RedisStateKeyManager StateKeyManager => _stateKeyManager
+        ?? throw new InvalidOperationException("The Redis test resource has not been prepared.");
+
     protected override Task<IReadOnlyDictionary<string, string?>> PrepareBackendAsync()
     {
         _connectionString = BackendTestEnvironment.GetConnectionString(
             BackendTestEnvironment.RedisConnectionStringVariable,
             BackendTestEnvironment.DefaultRedisConnectionString);
+        _stateKeyManager = new RedisStateKeyManager(_connectionString);
         IReadOnlyDictionary<string, string?> settings = new Dictionary<string, string?>
         {
             [RedisSiloConfigurator.ConnectionStringKey] = _connectionString,
@@ -31,18 +39,26 @@ public sealed class RedisStorageFixture : ExternalStorageFixture<RedisSiloConfig
 
     protected override async Task CleanupBackendAsync()
     {
-        if (_connectionString is null)
+        if (_stateKeyManager is null)
         {
             return;
         }
 
-        var configuration = ConfigurationOptions.Parse(_connectionString);
+        await _stateKeyManager.DeleteStateKeysAsync(ServiceId);
+    }
+}
+
+internal sealed class RedisStateKeyManager(string connectionString)
+{
+    public async Task DeleteStateKeysAsync(string serviceId)
+    {
+        var configuration = ConfigurationOptions.Parse(connectionString);
         await using var multiplexer = await ConnectionMultiplexer.ConnectAsync(configuration);
         var database = multiplexer.GetDatabase();
         foreach (var endpoint in multiplexer.GetEndPoints())
         {
             var keys = multiplexer.GetServer(endpoint)
-                .Keys(pattern: $"{ServiceId}/state/*")
+                .Keys(pattern: $"{serviceId}/state/*")
                 .ToArray();
             if (keys.Length > 0)
             {

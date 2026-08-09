@@ -10,6 +10,7 @@ namespace Orleans.SearchableStorage.Tests.Infrastructure;
 
 public sealed class AzureBlobStorageFixture : ExternalStorageFixture<AzureBlobSiloConfigurator>
 {
+    private AzureBlobContainerManager? _containerManager;
     private string? _connectionString;
 
     public AzureBlobStorageFixture()
@@ -20,11 +21,18 @@ public sealed class AzureBlobStorageFixture : ExternalStorageFixture<AzureBlobSi
 
     public string ContainerName { get; }
 
+    internal AzureBlobContainerManager ContainerManager => _containerManager
+        ?? throw new InvalidOperationException("The Azure Blob test resource has not been prepared.");
+
+    internal string ConnectionString => _connectionString
+        ?? throw new InvalidOperationException("The Azure Blob test resource has not been prepared.");
+
     protected override Task<IReadOnlyDictionary<string, string?>> PrepareBackendAsync()
     {
         _connectionString = BackendTestEnvironment.GetConnectionString(
             BackendTestEnvironment.AzureBlobConnectionStringVariable,
             BackendTestEnvironment.DefaultAzureBlobConnectionString);
+        _containerManager = new AzureBlobContainerManager(_connectionString);
         IReadOnlyDictionary<string, string?> settings = new Dictionary<string, string?>
         {
             [AzureBlobSiloConfigurator.ConnectionStringKey] = _connectionString,
@@ -35,13 +43,21 @@ public sealed class AzureBlobStorageFixture : ExternalStorageFixture<AzureBlobSi
 
     protected override async Task CleanupBackendAsync()
     {
-        if (_connectionString is null)
+        if (_containerManager is null)
         {
             return;
         }
 
-        var client = new BlobServiceClient(_connectionString);
-        await client.GetBlobContainerClient(ContainerName).DeleteIfExistsAsync();
+        await _containerManager.DeleteContainerAsync(ContainerName);
+    }
+}
+
+internal sealed class AzureBlobContainerManager(string connectionString)
+{
+    public async Task DeleteContainerAsync(string containerName)
+    {
+        var client = new BlobServiceClient(connectionString);
+        await client.GetBlobContainerClient(containerName).DeleteIfExistsAsync();
     }
 }
 
