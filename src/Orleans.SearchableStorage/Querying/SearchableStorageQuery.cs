@@ -4,16 +4,9 @@ using Orleans.Runtime;
 
 namespace Orleans.SearchableStorage.Querying;
 
-internal interface ISearchableStorageQueryProvider
-{
-    Task<IReadOnlyList<GrainId>> ExecuteAsync(
-        Expression expression,
-        CancellationToken cancellationToken);
-}
-
 internal sealed class SearchableStorageQueryProvider<TState>(
     SearchableStorageClient client,
-    string stateName) : IQueryProvider, ISearchableStorageQueryProvider
+    string stateName) : IQueryProvider, ISearchableStorageAsyncQueryProvider
 {
     public IQueryable CreateQuery(Expression expression)
     {
@@ -47,7 +40,7 @@ internal sealed class SearchableStorageQueryProvider<TState>(
         throw SynchronousExecutionNotSupported();
     }
 
-    public Task<IReadOnlyList<GrainId>> ExecuteAsync(
+    public Task<IReadOnlyList<GrainId>> ExecuteToGrainIdsAsync(
         Expression expression,
         CancellationToken cancellationToken)
     {

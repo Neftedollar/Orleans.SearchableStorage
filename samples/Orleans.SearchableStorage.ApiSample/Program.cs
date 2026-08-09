@@ -1,4 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
 using Orleans.SearchableStorage;
 using Orleans.SearchableStorage.ApiSample;
 
@@ -20,8 +19,8 @@ app.MapGet("/", () => Results.Ok(SampleMetadata.Description));
 app.MapPut("/vacancies/{id}", PutVacancyAsync);
 app.MapGet("/vacancies/{id}", GetVacancyAsync);
 app.MapDelete("/vacancies/{id}", DeleteVacancyAsync);
-app.MapGet("/vacancies/search/by-city", FindByCityAsync);
-app.MapGet("/vacancies/search/by-salary", FindBySalaryAsync);
+app.MapGet("/vacancies/search/by-city", VacancySearchEndpoints.FindByCityAsync);
+app.MapGet("/vacancies/search/by-salary", VacancySearchEndpoints.FindBySalaryAsync);
 
 app.Run();
 
@@ -66,52 +65,6 @@ static async Task<IResult> DeleteVacancyAsync(string id, IGrainFactory grainFact
 {
     await grainFactory.GetGrain<IVacancyGrain>(id).ClearAsync();
     return Results.NoContent();
-}
-
-static async Task<IResult> FindByCityAsync(
-    string city,
-    [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageClient search)
-{
-    if (string.IsNullOrWhiteSpace(city))
-    {
-        return ValidationError(nameof(city), "A city is required.");
-    }
-
-    var normalizedCity = city.Trim();
-    var matches = await search
-        .Query<VacancyState>(VacancyGrain.StateName)
-        .Where(state => state.City == normalizedCity)
-        .ToGrainIdsAsync();
-    return Results.Ok(ToSearchResponse(matches));
-}
-
-static async Task<IResult> FindBySalaryAsync(
-    int lower,
-    int upper,
-    bool? includeLower,
-    bool? includeUpper,
-    [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageClient search)
-{
-    if (lower > upper)
-    {
-        return ValidationError(nameof(lower), "The lower bound must not exceed the upper bound.");
-    }
-
-    IQueryable<VacancyState> query = search.Query<VacancyState>(VacancyGrain.StateName);
-    query = includeLower ?? true
-        ? query.Where(state => state.Salary >= lower)
-        : query.Where(state => state.Salary > lower);
-    query = includeUpper ?? true
-        ? query.Where(state => state.Salary <= upper)
-        : query.Where(state => state.Salary < upper);
-
-    var matches = await query.ToGrainIdsAsync();
-    return Results.Ok(ToSearchResponse(matches));
-}
-
-static SearchResponse ToSearchResponse(IEnumerable<GrainId> matches)
-{
-    return new SearchResponse(matches.Select(static grainId => grainId.Key.ToString()).ToArray());
 }
 
 static IResult ValidationError(string field, string message)

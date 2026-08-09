@@ -9,11 +9,10 @@ namespace Orleans.SearchableStorage;
 /// <summary>
 /// Queries storage partitions through an Orleans grain factory.
 /// </summary>
-public sealed class SearchableStorageClient : ISearchableStorageClient
+public sealed class SearchableStorageClient : ISearchableStorageQueryClient
 {
     private readonly string _providerName;
-    private readonly StorageLayoutDescriptor _layout;
-    private readonly IStorageLayoutGrain _layoutGrain;
+    private readonly Func<Task<bool>> _validateLayout;
     private readonly object _layoutLock = new();
     private readonly IStoragePartitionGrain[] _partitions;
     private Task<bool>? _layoutValidationTask;
@@ -34,13 +33,29 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(partitionCount);
 
         _providerName = providerName;
-        _layout = StorageLayout.CreateDescriptor(providerName, partitionCount);
-        _layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
+        var layout = StorageLayout.CreateDescriptor(providerName, partitionCount);
+        var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
+        _validateLayout = () => layoutGrain.ValidateAsync(layout);
         _partitions = new IStoragePartitionGrain[partitionCount];
         for (var index = 0; index < partitionCount; index++)
         {
             _partitions[index] = grainFactory.GetGrain<IStoragePartitionGrain>(StorageLayout.CreatePartitionKey(providerName, index));
         }
+    }
+
+    internal SearchableStorageClient(
+        string providerName,
+        IReadOnlyList<IStoragePartitionGrain> partitions,
+        Func<Task<bool>> validateLayout)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        ArgumentNullException.ThrowIfNull(partitions);
+        ArgumentNullException.ThrowIfNull(validateLayout);
+        ArgumentOutOfRangeException.ThrowIfZero(partitions.Count);
+
+        _providerName = providerName;
+        _validateLayout = validateLayout;
+        _partitions = partitions.ToArray();
     }
 
     /// <inheritdoc />
@@ -73,7 +88,7 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
         };
 
         var tasks = _partitions.Select(partition => partition.FindAsync(query));
-        var results = await Task.WhenAll(tasks).WaitAsync(cancellationToken);
+        var results = await WaitForFanoutAsync(tasks, cancellationToken);
         return Merge(results);
     }
 
@@ -115,7 +130,7 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
         };
 
         var tasks = _partitions.Select(partition => partition.RangeAsync(query));
-        var results = await Task.WhenAll(tasks).WaitAsync(cancellationToken);
+        var results = await WaitForFanoutAsync(tasks, cancellationToken);
         return Merge(results);
     }
 
@@ -137,8 +152,10 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
             return [];
         }
 
-        var matches = await ExecutePlanAsync(plan, cancellationToken);
-        return matches.Order().ToArray();
+        var partitionPlan = PartitionQueryPlanFactory.Create(plan);
+        var tasks = _partitions.Select(partition => partition.QueryAsync(partitionPlan));
+        var results = await WaitForFanoutAsync(tasks, cancellationToken);
+        return Merge(results);
     }
 
     private static IndexValue CreateQueryValue<TValue>(SelectedIndex index, TValue value, string parameterName)
@@ -165,7 +182,7 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
         Task<bool> validationTask;
         lock (_layoutLock)
         {
-            validationTask = _layoutValidationTask ??= _layoutGrain.ValidateAsync(_layout);
+            validationTask = _layoutValidationTask ??= _validateLayout();
         }
 
         try
@@ -177,6 +194,12 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
             }
 
             return initialized;
+        }
+        catch (OperationCanceledException) when (!validationTask.IsCompleted)
+        {
+            ResetLayoutValidation(validationTask);
+            _ = ObserveCompletionAsync(validationTask);
+            throw;
         }
         catch
         {
@@ -205,77 +228,26 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
             .ToArray();
     }
 
-    private async Task<HashSet<GrainId>> ExecutePlanAsync(
-        QueryPlan plan,
+    private static async Task<T[]> WaitForFanoutAsync<T>(
+        IEnumerable<Task<T>> tasks,
         CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return plan switch
+        var aggregate = Task.WhenAll(tasks);
+        try
         {
-            EmptyQueryPlan => [],
-            ExactQueryPlan exact => await ExecuteExactAsync(exact, cancellationToken),
-            RangeQueryPlan range => await ExecuteRangeAsync(range, cancellationToken),
-            AndQueryPlan and => await ExecuteAndAsync(and, cancellationToken),
-            OrQueryPlan or => await ExecuteOrAsync(or, cancellationToken),
-            _ => throw new InvalidOperationException($"Unknown query plan '{plan.GetType()}'."),
-        };
-    }
-
-    private async Task<HashSet<GrainId>> ExecuteExactAsync(
-        ExactQueryPlan plan,
-        CancellationToken cancellationToken)
-    {
-        var query = new ExactIndexQuery
+            return await aggregate.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (!aggregate.IsCompleted)
         {
-            Scope = plan.Index.Scope,
-            Kind = plan.Index.Kind,
-            Value = plan.Value,
-        };
-        var tasks = _partitions.Select(partition => partition.FindAsync(query));
-        var results = await Task.WhenAll(tasks).WaitAsync(cancellationToken);
-        return results.SelectMany(static result => result).ToHashSet();
+            // Orleans calls do not accept this local cancellation token. Observe their eventual
+            // completion so a later transport or partition failure cannot become unobserved.
+            _ = ObserveCompletionAsync(aggregate);
+            throw;
+        }
     }
 
-    private async Task<HashSet<GrainId>> ExecuteRangeAsync(
-        RangeQueryPlan plan,
-        CancellationToken cancellationToken)
+    private static async Task ObserveCompletionAsync(Task task)
     {
-        var query = new RangeIndexQuery
-        {
-            Scope = plan.Index.Scope,
-            LowerBound = plan.LowerBound,
-            UpperBound = plan.UpperBound,
-            IncludeLowerBound = plan.IncludeLowerBound,
-            IncludeUpperBound = plan.IncludeUpperBound,
-        };
-        var tasks = _partitions.Select(partition => partition.RangeAsync(query));
-        var results = await Task.WhenAll(tasks).WaitAsync(cancellationToken);
-        return results.SelectMany(static result => result).ToHashSet();
-    }
-
-    private async Task<HashSet<GrainId>> ExecuteAndAsync(
-        AndQueryPlan plan,
-        CancellationToken cancellationToken)
-    {
-        var leftTask = ExecutePlanAsync(plan.Left, cancellationToken);
-        var rightTask = ExecutePlanAsync(plan.Right, cancellationToken);
-        await Task.WhenAll(leftTask, rightTask).WaitAsync(cancellationToken);
-
-        var left = await leftTask;
-        left.IntersectWith(await rightTask);
-        return left;
-    }
-
-    private async Task<HashSet<GrainId>> ExecuteOrAsync(
-        OrQueryPlan plan,
-        CancellationToken cancellationToken)
-    {
-        var leftTask = ExecutePlanAsync(plan.Left, cancellationToken);
-        var rightTask = ExecutePlanAsync(plan.Right, cancellationToken);
-        await Task.WhenAll(leftTask, rightTask).WaitAsync(cancellationToken);
-
-        var left = await leftTask;
-        left.UnionWith(await rightTask);
-        return left;
+        await task.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
     }
 }

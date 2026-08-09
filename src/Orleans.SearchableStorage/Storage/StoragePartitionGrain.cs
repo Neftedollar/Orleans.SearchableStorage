@@ -98,15 +98,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     public Task<GrainId[]> RangeAsync(RangeIndexQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(query.LowerBound);
+        ArgumentNullException.ThrowIfNull(query.UpperBound);
 
-        if (query.LowerBound is null && query.UpperBound is null)
-        {
-            throw new ArgumentException("At least one range bound is required.", nameof(query));
-        }
-
-        if (query.LowerBound is not null
-            && query.UpperBound is not null
-            && query.LowerBound.CompareTo(query.UpperBound) > 0)
+        if (query.LowerBound.CompareTo(query.UpperBound) > 0)
         {
             throw new ArgumentException("The lower range bound must not be greater than the upper range bound.", nameof(query));
         }
@@ -125,6 +120,107 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             recordKeys);
 
         return Task.FromResult(ResolveGrainIds(recordKeys));
+    }
+
+    public Task<GrainId[]> QueryAsync(PartitionQueryPlan query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        // StoragePartitionGrain is non-reentrant. Evaluating the complete plan synchronously in
+        // this call gives AND and OR one serially consistent partition-local view.
+        var recordKeys = EvaluateQuery(query);
+        return Task.FromResult(ResolveGrainIds(recordKeys));
+    }
+
+    private HashSet<string> EvaluateQuery(PartitionQueryPlan query)
+    {
+        return query.Operation switch
+        {
+            PartitionQueryOperation.Empty => [],
+            PartitionQueryOperation.Exact => EvaluateExactQuery(query),
+            PartitionQueryOperation.Range => EvaluateRangeQuery(query),
+            PartitionQueryOperation.And => EvaluateAndQuery(query),
+            PartitionQueryOperation.Or => EvaluateOrQuery(query),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(query),
+                query.Operation,
+                "Unknown partition query operation."),
+        };
+    }
+
+    private HashSet<string> EvaluateExactQuery(PartitionQueryPlan query)
+    {
+        var scope = query.Scope
+            ?? throw new ArgumentException("An exact query requires an index scope.", nameof(query));
+        var value = query.Value
+            ?? throw new ArgumentException("An exact query requires an index value.", nameof(query));
+        var records = query.IndexKind switch
+        {
+            SearchableIndexKind.Hash => FindHashEntries(scope, value),
+            SearchableIndexKind.Range => FindRangeEntries(scope, value),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(query),
+                query.IndexKind,
+                "Unknown index kind."),
+        };
+        return new HashSet<string>(records, StringComparer.Ordinal);
+    }
+
+    private HashSet<string> EvaluateRangeQuery(PartitionQueryPlan query)
+    {
+        var scope = query.Scope
+            ?? throw new ArgumentException("A range query requires an index scope.", nameof(query));
+        if (query.LowerBound is null && query.UpperBound is null)
+        {
+            throw new ArgumentException("A range query requires at least one bound.", nameof(query));
+        }
+
+        if (query.LowerBound is not null
+            && query.UpperBound is not null
+            && query.LowerBound.CompareTo(query.UpperBound) > 0)
+        {
+            throw new ArgumentException(
+                "The lower range bound must not be greater than the upper range bound.",
+                nameof(query));
+        }
+
+        var records = new HashSet<string>(StringComparer.Ordinal);
+        if (_rangeIndexes.TryGetValue(scope, out var index))
+        {
+            index.UnionRange(
+                query.LowerBound,
+                query.UpperBound,
+                query.IncludeLowerBound,
+                query.IncludeUpperBound,
+                records);
+        }
+
+        return records;
+    }
+
+    private HashSet<string> EvaluateAndQuery(PartitionQueryPlan query)
+    {
+        var left = EvaluateQuery(GetRequiredChild(query.Left, "left", query));
+        left.IntersectWith(EvaluateQuery(GetRequiredChild(query.Right, "right", query)));
+        return left;
+    }
+
+    private HashSet<string> EvaluateOrQuery(PartitionQueryPlan query)
+    {
+        var left = EvaluateQuery(GetRequiredChild(query.Left, "left", query));
+        left.UnionWith(EvaluateQuery(GetRequiredChild(query.Right, "right", query)));
+        return left;
+    }
+
+    private static PartitionQueryPlan GetRequiredChild(
+        PartitionQueryPlan? child,
+        string side,
+        PartitionQueryPlan query)
+    {
+        return child
+            ?? throw new ArgumentException(
+                $"A boolean query requires a {side} child plan.",
+                nameof(query));
     }
 
     private static PartitionIndexes BuildIndexes(StoragePartitionState state)

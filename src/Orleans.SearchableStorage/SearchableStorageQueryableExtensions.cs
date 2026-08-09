@@ -1,5 +1,4 @@
 using Orleans.Runtime;
-using Orleans.SearchableStorage.Querying;
 
 namespace Orleans.SearchableStorage;
 
@@ -12,7 +11,7 @@ public static class SearchableStorageQueryableExtensions
     /// Executes a supported indexed predicate and returns matching grain identifiers.
     /// </summary>
     /// <typeparam name="TState">The persisted state type being queried.</typeparam>
-    /// <param name="source">A query created by <see cref="ISearchableStorageClient.Query{TState}(string)"/>.</param>
+    /// <param name="source">A query created by <see cref="ISearchableStorageQueryClient.Query{TState}(string)"/>.</param>
     /// <param name="cancellationToken">A token which cancels waiting for the distributed query.</param>
     /// <returns>A sorted, distinct list of matching grain identifiers.</returns>
     /// <remarks>
@@ -27,12 +26,13 @@ public static class SearchableStorageQueryableExtensions
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
-        if (source.Provider is not ISearchableStorageQueryProvider provider)
+        if (source.Provider is not ISearchableStorageAsyncQueryProvider provider)
         {
             throw new NotSupportedException(
-                "ToGrainIdsAsync can only execute queries created by ISearchableStorageClient.Query.");
+                "ToGrainIdsAsync requires a query created by ISearchableStorageQueryClient.Query " +
+                "or an IQueryable provider which implements ISearchableStorageAsyncQueryProvider.");
         }
 
-        return provider.ExecuteAsync(source.Expression, cancellationToken);
+        return provider.ExecuteToGrainIdsAsync(source.Expression, cancellationToken);
     }
 }

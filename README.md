@@ -13,6 +13,7 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - Persisted layout metadata rejects a mismatched storage-format version or partition count within one provider namespace before incomplete results can be returned.
 - Queries fan out over a fixed number of partitions and return matching `GrainId` values.
 - A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
+- One complete boolean query plan is evaluated in one non-reentrant call per partition.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
 The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Queries do not provide a snapshot across partitions. Text search, composite indexes, arbitrary LINQ, online repartitioning, and backend integration suites are not implemented yet.
@@ -63,7 +64,7 @@ Resolve the named query client inside the silo so it shares the provider configu
 deferred predicate and execute it explicitly as a `GrainId` query:
 
 ```csharp
-var search = services.GetRequiredKeyedService<ISearchableStorageClient>("Searchable");
+var search = services.GetRequiredKeyedService<ISearchableStorageQueryClient>("Searchable");
 
 var minimumSalary = 5;
 var maximumSalary = 8;
@@ -82,11 +83,29 @@ as `&&`. The other side of a comparison must be a constant or captured value; me
 calculations inside the expression are rejected. Relational operators require a range index.
 `ToGrainIdsAsync` is the only execution operation: synchronous enumeration, projections, ordering,
 grouping, joins, and other general LINQ operators throw `NotSupportedException` with a diagnostic.
+Execution sends the complete translated predicate to each partition once. AND and OR are evaluated
+against one serially consistent view inside that partition, then the client merges the partition-local
+results into a sorted, distinct list. The merge is not a snapshot across partitions.
 
 `FindAsync` and `RangeAsync` remain available as lower-level compatibility APIs for callers which
-already express one exact lookup or one bounded range directly.
+already express one exact lookup or one bounded range directly. They remain on
+`ISearchableStorageClient`; the focused LINQ surface is opt-in through
+`ISearchableStorageQueryClient : ISearchableStorageClient`. Both keyed registrations resolve the
+same built-in client instance. An alternative `IQueryable` implementation can use
+`ToGrainIdsAsync` by exposing an `IQueryProvider` which also implements the public
+`ISearchableStorageAsyncQueryProvider` terminal contract.
+
+The cancellation token cancels the caller's wait. Orleans partition calls already in flight cannot
+be canceled by that local token, so the client observes their eventual completion while returning
+cancellation promptly to the caller.
 
 `SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and partition count. Its partition count and storage-format version are validated against the persisted layout; a mismatch throws instead of returning partial results.
+
+Before using the `IQueryable` surface during an upgrade, deploy this package version to every silo
+and Orleans client which can execute searches. The existing bounded `RangeAsync` wire message keeps
+its required lower and upper fields, while the new nullable open-bound plan is a separate,
+non-persisted protocol message. Existing direct-query consumers can continue resolving
+`ISearchableStorageClient` without implementing or depending on the new query surface.
 
 The provider name identifies a storage namespace. Using another name selects a separate, initially empty namespace, so renaming a provider requires an explicit migration. `PartitionCount` and storage-format version are validated within that namespace and must not change without migration. Index names, kinds, and property types are also persisted schema: adding an index does not backfill existing records, and changing or renaming one requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime` values must use `DateTimeKind.Utc`.
 

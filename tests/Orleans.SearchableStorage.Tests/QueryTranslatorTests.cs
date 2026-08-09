@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using AwesomeAssertions;
 using Orleans.SearchableStorage.Querying;
+using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
 
@@ -98,6 +99,33 @@ public sealed class QueryTranslatorTests
         var plan = Translate(state => state.City == "Helsinki" || state.City == "Tampere");
 
         plan.Should().BeOfType<OrQueryPlan>();
+    }
+
+    [Fact]
+    public void MixedBooleanPlanProducesOnePartitionWireTree()
+    {
+        var plan = Translate(
+            state => (state.City == "Helsinki" || state.Code == 7)
+                && state.Salary > 5
+                && state.Salary < 8);
+
+        var wirePlan = PartitionQueryPlanFactory.Create(plan);
+
+        wirePlan.Operation.Should().Be(PartitionQueryOperation.And);
+        wirePlan.Left!.Operation.Should().Be(PartitionQueryOperation.Or);
+        wirePlan.Right!.Operation.Should().Be(PartitionQueryOperation.Range);
+        wirePlan.Right.LowerBound!.SignedInteger.Should().Be(5);
+        wirePlan.Right.UpperBound!.SignedInteger.Should().Be(8);
+    }
+
+    [Fact]
+    public void ContradictoryPredicateProducesAnEmptyPartitionWirePlan()
+    {
+        var plan = Translate(state => state.Salary > 8 && state.Salary < 5);
+
+        var wirePlan = PartitionQueryPlanFactory.Create(plan);
+
+        wirePlan.Operation.Should().Be(PartitionQueryOperation.Empty);
     }
 
     [Fact]
@@ -210,7 +238,7 @@ public sealed class QueryTranslatorTests
         Action action = () => _ = query.ToGrainIdsAsync();
 
         action.Should().Throw<NotSupportedException>()
-            .WithMessage("*only execute queries created by ISearchableStorageClient.Query*");
+            .WithMessage("*ISearchableStorageQueryClient.Query*");
     }
 
     private static QueryPlan Translate(Expression<Func<QueryState, bool>> predicate)
