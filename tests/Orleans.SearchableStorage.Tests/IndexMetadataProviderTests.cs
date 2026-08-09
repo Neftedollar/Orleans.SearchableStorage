@@ -25,6 +25,33 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
+    public void ConstructedGenericScopeUsesVersionIndependentRecursiveTypeIdentity()
+    {
+        var integerScope = IndexMetadataProvider.Extract(
+            "state",
+            new GenericState<List<int>> { Value = "value" })
+            .Single()
+            .Scope;
+        var longScope = IndexMetadataProvider.Extract(
+            "state",
+            new GenericState<List<long>> { Value = "value" })
+            .Single()
+            .Scope;
+
+        integerScope.Should().NotContain("Version=");
+        integerScope.Should().NotBe(longScope);
+    }
+
+    [Fact]
+    public void OpenGenericTypesDoNotHavePersistedIdentities()
+    {
+        var action = () => IndexMetadataProvider.CreateTypeIdentity(typeof(GenericState<>));
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*closed persisted identity*");
+    }
+
+    [Fact]
     public void NullIndexedValuesAreOmitted()
     {
         var entries = IndexMetadataProvider.Extract("state", new NullableState());
@@ -186,6 +213,12 @@ public sealed class IndexMetadataProviderTests
     {
         [SearchableIndex(SearchableIndexKind.Hash)]
         public string? Optional { get; init; }
+    }
+
+    private sealed class GenericState<T>
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string Value { get; init; } = string.Empty;
     }
 
     private sealed class NullableNumberState

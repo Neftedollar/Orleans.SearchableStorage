@@ -22,7 +22,7 @@ Missing coverage must be called out explicitly in the pull request with a reason
 
 ### Value and metadata tests
 
-Fast unit tests protect index-value normalization, equality, hashing, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, and collision-free scope identities.
+Fast unit tests protect index-value normalization, equality, hashing, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent scope identities, and logarithmic range lower-bound lookup.
 
 ### Storage contract tests
 

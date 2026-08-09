@@ -9,7 +9,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 {
     private readonly IPersistentState<StoragePartitionState> _state;
     private Dictionary<string, Dictionary<IndexValue, HashSet<string>>> _hashIndexes = new(StringComparer.Ordinal);
-    private Dictionary<string, SortedDictionary<IndexValue, HashSet<string>>> _rangeIndexes = new(StringComparer.Ordinal);
+    private Dictionary<string, RangeIndex> _rangeIndexes = new(StringComparer.Ordinal);
 
     public StoragePartitionGrain(
         [PersistentState("partition", SearchableStorageConstants.PhysicalStorageProviderName)]
@@ -110,29 +110,20 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
 
         var recordKeys = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var pair in index)
-        {
-            var lowerComparison = pair.Key.CompareTo(query.LowerBound);
-            if (lowerComparison < 0 || (lowerComparison == 0 && !query.IncludeLowerBound))
-            {
-                continue;
-            }
-
-            var upperComparison = pair.Key.CompareTo(query.UpperBound);
-            if (upperComparison > 0 || (upperComparison == 0 && !query.IncludeUpperBound))
-            {
-                break;
-            }
-
-            recordKeys.UnionWith(pair.Value);
-        }
+        index.UnionRange(
+            query.LowerBound,
+            query.UpperBound,
+            query.IncludeLowerBound,
+            query.IncludeUpperBound,
+            recordKeys);
 
         return Task.FromResult(ResolveGrainIds(recordKeys));
     }
 
     private static PartitionIndexes BuildIndexes(StoragePartitionState state)
     {
-        var indexes = new PartitionIndexes();
+        var hashIndexes = new Dictionary<string, Dictionary<IndexValue, HashSet<string>>>(StringComparer.Ordinal);
+        var rangeBuckets = new Dictionary<string, Dictionary<IndexValue, HashSet<string>>>(StringComparer.Ordinal);
         foreach (var pair in state.Records)
         {
             foreach (var entry in pair.Value.IndexEntries)
@@ -140,10 +131,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 switch (entry.Kind)
                 {
                     case SearchableIndexKind.Hash:
-                        AddHashEntry(indexes.Hash, entry.Scope, entry.Value, pair.Key);
+                        AddIndexEntry(hashIndexes, entry.Scope, entry.Value, pair.Key);
                         break;
                     case SearchableIndexKind.Range:
-                        AddRangeEntry(indexes.Range, entry.Scope, entry.Value, pair.Key);
+                        AddIndexEntry(rangeBuckets, entry.Scope, entry.Value, pair.Key);
                         break;
                     default:
                         throw new InvalidOperationException($"Unknown index kind '{entry.Kind}'.");
@@ -151,32 +142,15 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             }
         }
 
-        return indexes;
+        var rangeIndexes = rangeBuckets.ToDictionary(
+            static pair => pair.Key,
+            static pair => new RangeIndex(pair.Value),
+            StringComparer.Ordinal);
+        return new PartitionIndexes(hashIndexes, rangeIndexes);
     }
 
-    private static void AddHashEntry(
+    private static void AddIndexEntry(
         Dictionary<string, Dictionary<IndexValue, HashSet<string>>> indexes,
-        string scope,
-        IndexValue value,
-        string recordKey)
-    {
-        if (!indexes.TryGetValue(scope, out var index))
-        {
-            index = [];
-            indexes.Add(scope, index);
-        }
-
-        if (!index.TryGetValue(value, out var bucket))
-        {
-            bucket = new HashSet<string>(StringComparer.Ordinal);
-            index.Add(value, bucket);
-        }
-
-        bucket.Add(recordKey);
-    }
-
-    private static void AddRangeEntry(
-        Dictionary<string, SortedDictionary<IndexValue, HashSet<string>>> indexes,
         string scope,
         IndexValue value,
         string recordKey)
@@ -266,10 +240,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             expectedETag);
     }
 
-    private sealed class PartitionIndexes
+    private sealed class PartitionIndexes(
+        Dictionary<string, Dictionary<IndexValue, HashSet<string>>> hash,
+        Dictionary<string, RangeIndex> range)
     {
-        public Dictionary<string, Dictionary<IndexValue, HashSet<string>>> Hash { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, Dictionary<IndexValue, HashSet<string>>> Hash { get; } = hash;
 
-        public Dictionary<string, SortedDictionary<IndexValue, HashSet<string>>> Range { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, RangeIndex> Range { get; } = range;
     }
 }

@@ -48,11 +48,13 @@ A point read is routed directly to the record's owning partition. Missing record
 
 Exact and range queries fan out to all configured partitions. Each individual partition answers from a serially consistent activation state. The merged result is not a cross-partition snapshot: concurrent writes can become visible at different points during one query.
 
+Each in-memory range index stores its distinct values in a `SortedList`. A bounded query performs a binary lower-bound lookup through the indexed key view and then visits only buckets inside the requested window. Its local index traversal is therefore O(log d + k), where d is the number of distinct indexed values in the partition and k is the number of buckets in the requested window.
+
 Once a successful write returns, that partition's activation already contains the committed state and corresponding index entries. No asynchronous index-maintenance pipeline exists in this version.
 
 ## Index metadata
 
-Public readable state properties marked with `SearchableIndexAttribute` are indexed. Index scope combines length-prefixed state assembly, full state type name, Orleans state name, and stable index name components. The length prefixes prevent user-controlled names from creating ambiguous boundaries and keep unrelated states from sharing buckets accidentally.
+Public readable state properties marked with `SearchableIndexAttribute` are indexed. Index scope combines a length-prefixed persisted state-type identity, Orleans state name, and stable index name. A named type identity contains its assembly simple name, culture, public-key token, and full type name. Constructed generic identities contain the generic definition followed by recursively encoded argument identities; arrays encode their shape and element identity. Assembly versions are deliberately excluded. Length prefixes make every boundary unambiguous and prevent unrelated states from sharing buckets accidentally.
 
 `IndexMetadataProvider` builds one `SearchableTypeModel<TState>` through PolyType's reflection provider and caches each valid model for the process lifetime. The model contains the indexed member identity, index kind, normalized index name, value converter, and a strongly typed PolyType getter delegate. Writes therefore do not call `PropertyInfo.GetValue`; they invoke the cached getter and converter. Failed model construction is not cached so an invalid state declaration continues to produce its direct validation exception.
 
@@ -68,6 +70,8 @@ Index names, index kinds, and indexed property types are persisted schema. Addin
 
 The layout format version, provider name, partition count, layout-grain type and key, partition-grain type, partition-key format, record-key format, and index-scope format determine how durable data is located and interpreted. Changes to any of them require a format-version increment and a migration path. In particular, renaming the layout grain interface or changing its key can silently select a fresh namespace unless the old identity is migrated.
 
+Format version 2 introduces the recursive, assembly-version-independent type identity described above. Version 1 index scopes are intentionally not read as version 2 scopes. A provider namespace whose persisted layout still reports version 1 is rejected and must be migrated or completely rewritten before it can be opened by this version.
+
 Orleans serializer `[Id]` values on persisted layout, partition, record, index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or renumbered after release. New fields must use new IDs and remain readable when absent from older data.
 
 Physical providers can use serializers other than Orleans' binary serializer. With JSON persistence, CLR type and property names plus configured JSON converters are part of the compatibility surface; Orleans `[Id]` values do not rename JSON members. The memory contract suite explicitly uses `JsonGrainStorageSerializer` so partition and layout reactivation exercise that representation.
@@ -82,8 +86,6 @@ The regular suite currently uses Orleans in-memory persistence with `JsonGrainSt
 
 ## Current scaling limit
 
-One physical write serializes the entire owning partition snapshot, and the activation rebuilds its bucket maps from durable record entries after each successful mutation. This deliberately makes the initial consistency boundary small and observable, but produces work and write amplification proportional to partition size.
+One physical write serializes the entire owning partition snapshot, and the activation rebuilds its bucket maps from durable record entries after each successful mutation. This deliberately makes the initial consistency boundary small and observable, but produces work and write amplification proportional to partition size. Range reads now seek to their lower bound, but queries still fan out to every partition and a large result window can hold a non-reentrant partition turn while its matching record ids are collected.
 
-The current bounded-range implementation also enumerates a partition's `SortedDictionary` from its smallest key and skips values below the requested lower bound. `SortedDictionary` does not expose a seek operation, so a narrow high-end range still performs work proportional to all preceding distinct values while holding the non-reentrant partition grain turn. A production range structure must support logarithmic lower-bound lookup followed by enumeration of only the requested window.
-
-A production-scale layout will need both smaller durable units and seekable range indexes while preserving the record-and-index atomicity described above.
+A production-scale layout will need smaller durable units and bounded query-result handling while preserving the record-and-index atomicity described above.

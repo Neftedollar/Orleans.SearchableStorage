@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text;
 using Orleans.SearchableStorage.Storage;
 using PolyType.Abstractions;
 using PolyType.ReflectionProvider;
@@ -164,16 +165,79 @@ internal static class IndexMetadataProvider
 
     private static string CreateScope(Type stateType, string stateName, string indexName)
     {
-        var assemblyName = stateType.Assembly.GetName().Name
-            ?? throw new InvalidOperationException($"State type '{stateType}' has no assembly name.");
-        var typeName = stateType.FullName
-            ?? throw new InvalidOperationException($"State type '{stateType}' has no stable full name.");
-
         return string.Concat(
-            FormatComponent(assemblyName),
-            FormatComponent(typeName),
+            FormatComponent(CreateTypeIdentity(stateType)),
             FormatComponent(stateName),
             FormatComponent(indexName));
+    }
+
+    internal static string CreateTypeIdentity(Type type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        if (type.ContainsGenericParameters)
+        {
+            throw new InvalidOperationException($"Type '{type}' does not have a closed persisted identity.");
+        }
+
+        var builder = new StringBuilder();
+        AppendTypeIdentity(builder, type);
+        return builder.ToString();
+    }
+
+    private static void AppendTypeIdentity(StringBuilder builder, Type type)
+    {
+        if (type.IsArray)
+        {
+            AppendComponent(builder, type.IsSZArray ? "szarray" : "array");
+            AppendComponent(builder, type.GetArrayRank().ToString(CultureInfo.InvariantCulture));
+            AppendTypeIdentity(
+                builder,
+                type.GetElementType()
+                    ?? throw new InvalidOperationException($"Array type '{type}' has no element type."));
+            return;
+        }
+
+        if (type.IsGenericType)
+        {
+            var definition = type.GetGenericTypeDefinition();
+            var arguments = type.GetGenericArguments();
+            AppendComponent(builder, "generic");
+            AppendNamedTypeIdentity(builder, definition);
+            AppendComponent(builder, arguments.Length.ToString(CultureInfo.InvariantCulture));
+            foreach (var argument in arguments)
+            {
+                AppendTypeIdentity(builder, argument);
+            }
+
+            return;
+        }
+
+        AppendComponent(builder, "named");
+        AppendNamedTypeIdentity(builder, type);
+    }
+
+    private static void AppendNamedTypeIdentity(StringBuilder builder, Type type)
+    {
+        var assemblyName = type.Assembly.GetName();
+        var simpleName = assemblyName.Name
+            ?? throw new InvalidOperationException($"Type '{type}' has no assembly name.");
+        var typeName = type.FullName
+            ?? throw new InvalidOperationException($"Type '{type}' has no stable full name.");
+        var publicKeyToken = assemblyName.GetPublicKeyToken();
+
+        AppendComponent(builder, simpleName);
+        AppendComponent(builder, assemblyName.CultureName ?? string.Empty);
+        AppendComponent(
+            builder,
+            publicKeyToken is { Length: > 0 }
+                ? Convert.ToHexString(publicKeyToken)
+                : string.Empty);
+        AppendComponent(builder, typeName);
+    }
+
+    private static void AppendComponent(StringBuilder builder, string value)
+    {
+        builder.Append(FormatComponent(value));
     }
 
     private static string FormatComponent(string value)

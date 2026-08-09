@@ -439,14 +439,23 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             ProviderName = providerName,
             PartitionCount = Fixture.PartitionCount,
         };
+        var legacyVersion = new StorageLayoutDescriptor
+        {
+            FormatVersion = 1,
+            ProviderName = providerName,
+            PartitionCount = Fixture.PartitionCount,
+        };
 
         Func<Task> validateWrongProvider = () => layout.ValidateAsync(wrongProvider);
         Func<Task> validateUnsupportedVersion = () => layout.ValidateAsync(unsupportedVersion);
+        Func<Task> validateLegacyVersion = () => layout.ValidateAsync(legacyVersion);
 
         await validateWrongProvider.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*layout descriptor provider name*");
         await validateUnsupportedVersion.Should().ThrowAsync<ArgumentOutOfRangeException>()
             .WithMessage("*Storage format version*");
+        await validateLegacyVersion.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithMessage("*Storage format version 2 is required*");
         (await layout.ValidateAsync(StorageLayout.CreateDescriptor(providerName, Fixture.PartitionCount)))
             .Should().BeFalse();
     }
