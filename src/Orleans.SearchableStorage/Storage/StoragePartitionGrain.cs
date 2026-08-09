@@ -99,7 +99,14 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         ArgumentNullException.ThrowIfNull(query);
 
-        if (query.LowerBound.CompareTo(query.UpperBound) > 0)
+        if (query.LowerBound is null && query.UpperBound is null)
+        {
+            throw new ArgumentException("At least one range bound is required.", nameof(query));
+        }
+
+        if (query.LowerBound is not null
+            && query.UpperBound is not null
+            && query.LowerBound.CompareTo(query.UpperBound) > 0)
         {
             throw new ArgumentException("The lower range bound must not be greater than the upper range bound.", nameof(query));
         }

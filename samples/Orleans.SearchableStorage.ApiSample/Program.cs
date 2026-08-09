@@ -77,10 +77,11 @@ static async Task<IResult> FindByCityAsync(
         return ValidationError(nameof(city), "A city is required.");
     }
 
-    var matches = await search.FindAsync<VacancyState, string>(
-        VacancyGrain.StateName,
-        state => state.City,
-        city.Trim());
+    var normalizedCity = city.Trim();
+    var matches = await search
+        .Query<VacancyState>(VacancyGrain.StateName)
+        .Where(state => state.City == normalizedCity)
+        .ToGrainIdsAsync();
     return Results.Ok(ToSearchResponse(matches));
 }
 
@@ -96,13 +97,15 @@ static async Task<IResult> FindBySalaryAsync(
         return ValidationError(nameof(lower), "The lower bound must not exceed the upper bound.");
     }
 
-    var matches = await search.RangeAsync<VacancyState, int>(
-        VacancyGrain.StateName,
-        state => state.Salary,
-        lower,
-        upper,
-        includeLower ?? true,
-        includeUpper ?? true);
+    IQueryable<VacancyState> query = search.Query<VacancyState>(VacancyGrain.StateName);
+    query = includeLower ?? true
+        ? query.Where(state => state.Salary >= lower)
+        : query.Where(state => state.Salary > lower);
+    query = includeUpper ?? true
+        ? query.Where(state => state.Salary <= upper)
+        : query.Where(state => state.Salary < upper);
+
+    var matches = await query.ToGrainIdsAsync();
     return Results.Ok(ToSearchResponse(matches));
 }
 

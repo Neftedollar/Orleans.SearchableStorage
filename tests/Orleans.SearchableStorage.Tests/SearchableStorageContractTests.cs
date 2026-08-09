@@ -168,6 +168,159 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [Fact]
+    public async Task QueryablePredicateIntersectsExactAndRangeIndexes()
+    {
+        var city = $"query-and-{Guid.NewGuid():N}";
+        var offset = Random.Shared.Next(2_000_000, 3_000_000);
+        var match = CreateGrain();
+        var wrongCity = CreateGrain();
+        var wrongSalary = CreateGrain();
+
+        await match.SetAsync(city, offset + 6);
+        await wrongCity.SetAsync($"other-{Guid.NewGuid():N}", offset + 6);
+        await wrongSalary.SetAsync(city, offset + 9);
+        var lowerBound = offset + 5;
+        var upperBound = offset + 8;
+
+        var matches = await CreateClient()
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == city && state.Salary > lowerBound && state.Salary < upperBound)
+            .ToGrainIdsAsync();
+
+        matches.Should().ContainSingle().Which.Should().Be(match.GetGrainId());
+
+        await ClearAsync(match, wrongCity, wrongSalary);
+    }
+
+    [Fact]
+    public async Task QueryableOrUnionsAndDeduplicatesMatches()
+    {
+        var firstCity = $"query-or-first-{Guid.NewGuid():N}";
+        var secondCity = $"query-or-second-{Guid.NewGuid():N}";
+        var first = CreateGrainInPartition(0);
+        var second = CreateGrainInPartition(1);
+        var outside = CreateGrain();
+
+        await first.SetAsync(firstCity, 10);
+        await second.SetAsync(secondCity, 20);
+        await outside.SetAsync($"outside-{Guid.NewGuid():N}", 30);
+
+        var matches = await CreateClient()
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == firstCity || state.City == secondCity || state.City == firstCity)
+            .ToGrainIdsAsync();
+
+        matches.Should().BeEquivalentTo([first.GetGrainId(), second.GetGrainId()]);
+        matches.Should().OnlyHaveUniqueItems();
+        GetPartitionIndex(first.GetGrainId()).Should().NotBe(GetPartitionIndex(second.GetGrainId()));
+
+        await ClearAsync(first, second, outside);
+    }
+
+    [Fact]
+    public async Task QueryableReversedOperandsHonorInclusivity()
+    {
+        var offset = Random.Shared.Next(3_000_000, 4_000_000);
+        var lower = CreateGrain();
+        var middle = CreateGrain();
+        var upper = CreateGrain();
+
+        await lower.SetAsync("lower", offset + 5);
+        await middle.SetAsync("middle", offset + 6);
+        await upper.SetAsync("upper", offset + 8);
+        var lowerBound = offset + 5;
+        var upperBound = offset + 8;
+
+        var matches = await CreateClient()
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => lowerBound <= state.Salary && upperBound > state.Salary)
+            .ToGrainIdsAsync();
+
+        matches.Should().BeEquivalentTo([lower.GetGrainId(), middle.GetGrainId()]);
+
+        await ClearAsync(lower, middle, upper);
+    }
+
+    [Fact]
+    public async Task QueryableMultipleWhereCallsCombineCapturedBounds()
+    {
+        var offset = Random.Shared.Next(4_000_000, 5_000_000);
+        var match = CreateGrain();
+        var outside = CreateGrain();
+        await match.SetAsync("match", offset + 6);
+        await outside.SetAsync("outside", offset + 9);
+        var lowerBound = offset + 5;
+        var upperBound = offset + 8;
+
+        var query = CreateClient()
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.Salary > lowerBound)
+            .Where(state => state.Salary < upperBound);
+        var matches = await query.ToGrainIdsAsync();
+
+        matches.Should().ContainSingle().Which.Should().Be(match.GetGrainId());
+
+        await ClearAsync(match, outside);
+    }
+
+    [Fact]
+    public async Task QueryableOneSidedRangesReachOpenEnds()
+    {
+        var highMatch = CreateGrain();
+        var highOutside = CreateGrain();
+        var lowMatch = CreateGrain();
+        var lowOutside = CreateGrain();
+        await highMatch.SetAsync("high-match", int.MaxValue - 2);
+        await highOutside.SetAsync("high-outside", int.MaxValue - 5);
+        await lowMatch.SetAsync("low-match", int.MinValue + 2);
+        await lowOutside.SetAsync("low-outside", int.MinValue + 5);
+        var lowerBound = int.MaxValue - 4;
+        var upperBound = int.MinValue + 4;
+        var client = CreateClient();
+
+        var greaterMatches = await client
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.Salary > lowerBound)
+            .ToGrainIdsAsync();
+        var lessMatches = await client
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.Salary < upperBound)
+            .ToGrainIdsAsync();
+
+        greaterMatches.Should().ContainSingle().Which.Should().Be(highMatch.GetGrainId());
+        lessMatches.Should().ContainSingle().Which.Should().Be(lowMatch.GetGrainId());
+
+        await ClearAsync(highMatch, highOutside, lowMatch, lowOutside);
+    }
+
+    [Fact]
+    public async Task QueryableExecutionHonorsCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        var query = CreateClient()
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.Salary >= 0);
+
+        Func<Task> execute = () => query.ToGrainIdsAsync(cancellation.Token);
+
+        await execute.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public void QueryableSynchronousEnumerationIsRejected()
+    {
+        var query = CreateClient()
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.Salary >= 0);
+
+        Func<IEnumerator<VacancyState>> enumerate = query.GetEnumerator;
+
+        enumerate.Should().Throw<NotSupportedException>()
+            .WithMessage("*Synchronous query enumeration is not supported*");
+    }
+
+    [Fact]
     public async Task ReversedRangeBoundsAreRejected()
     {
         Func<Task> query = () => CreateClient().RangeAsync<VacancyState, int>(
@@ -407,6 +560,13 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await query.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*persisted layout*");
 
+        Func<Task> queryable = () => client
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == city)
+            .ToGrainIdsAsync();
+        await queryable.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*persisted layout*");
+
         await grain.ClearAsync();
     }
 
@@ -441,11 +601,21 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             state => state.Salary,
             1,
             10);
+        var firstQueryableResults = await firstClient
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == "missing")
+            .ToGrainIdsAsync();
+        var secondQueryableResults = await secondClient
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == "missing")
+            .ToGrainIdsAsync();
 
         firstResults.Should().BeEmpty();
         secondResults.Should().BeEmpty();
         firstRangeResults.Should().BeEmpty();
         secondRangeResults.Should().BeEmpty();
+        firstQueryableResults.Should().BeEmpty();
+        secondQueryableResults.Should().BeEmpty();
     }
 
     [Fact]

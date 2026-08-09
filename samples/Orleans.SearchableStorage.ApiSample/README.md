@@ -26,7 +26,13 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 2. `VacancyGrain` writes normal `IPersistentState<VacancyState>` state through the `Searchable` provider.
 3. The provider serializes the state, uses its cached PolyType model to read the `[SearchableIndex]` values, and routes the record to one storage-partition grain.
 4. The partition persists the record and its index entries together through the physical in-memory provider.
-5. Search endpoints query every storage partition and return the matching vacancy ids.
+5. Search endpoints build a focused `IQueryable<VacancyState>` predicate and execute it with `ToGrainIdsAsync`.
+6. The query plan sends its exact or range leaves to every storage partition and returns matching vacancy ids.
+
+The city endpoint demonstrates an exact hash-index comparison. The salary endpoint builds two
+`Where` clauses dynamically so all four inclusive/exclusive bound combinations use the same public
+query surface. This `IQueryable` is deliberately not a general LINQ provider: it returns grain ids,
+does not load state objects, and does not support synchronous enumeration, projections, or ordering.
 
 The sample's physical provider is in memory, so its data disappears when the process stops. A production host can register PostgreSQL, Redis, or another Orleans storage provider under `SearchableStorageConstants.PhysicalStorageProviderName`. Co-hosting HTTP and Orleans is only a sample convenience; the query client can also use an Orleans client from another process when configured with the same provider name and partition count.
 

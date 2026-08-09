@@ -38,12 +38,12 @@ Content-Type: application/json
 GET {{host}}/vacancies/helsinki-6
 Accept: application/json
 
-### Exact hash-index lookup
+### IQueryable exact hash-index lookup
 
 GET {{host}}/vacancies/search/by-city?city=Helsinki
 Accept: application/json
 
-### Range-index lookup: values greater than 5 and less than 8
+### IQueryable range lookup: values greater than 5 and less than 8
 
 GET {{host}}/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false
 Accept: application/json

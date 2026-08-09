@@ -12,9 +12,10 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - Mutations within a partition are serialized by one Orleans grain activation.
 - Persisted layout metadata rejects a mismatched storage-format version or partition count within one provider namespace before incomplete results can be returned.
 - Queries fan out over a fixed number of partitions and return matching `GrainId` values.
+- A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
-The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Bounded range queries use binary search to seek to the lower bound and then enumerate only the requested ordered window. Queries do not provide a snapshot across partitions. Text search, composite indexes, a query language, online repartitioning, and backend integration suites are not implemented yet.
+The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Queries do not provide a snapshot across partitions. Text search, composite indexes, arbitrary LINQ, online repartitioning, and backend integration suites are not implemented yet.
 
 ## Example
 
@@ -58,23 +59,32 @@ public sealed class VacancyGrain(
 }
 ```
 
-Resolve the named query client inside the silo so it shares the provider configuration:
+Resolve the named query client inside the silo so it shares the provider configuration. Build a
+deferred predicate and execute it explicitly as a `GrainId` query:
 
 ```csharp
 var search = services.GetRequiredKeyedService<ISearchableStorageClient>("Searchable");
 
-var inHelsinki = await search.FindAsync<VacancyState, string>(
-    "vacancy",
-    state => state.City,
-    "Helsinki");
-
-var salaryRange = await search.RangeAsync<VacancyState, int>(
-    "vacancy",
-    state => state.Salary,
-    lowerBound: 5,
-    upperBound: 8,
-    includeLowerBound: false);
+var minimumSalary = 5;
+var maximumSalary = 8;
+var matches = await search
+    .Query<VacancyState>("vacancy")
+    .Where(state =>
+        state.City == "Helsinki" &&
+        state.Salary > minimumSalary &&
+        state.Salary <= maximumSalary)
+    .ToGrainIdsAsync(cancellationToken);
 ```
+
+The focused query layer accepts direct indexed-property comparisons using `==`, `<`, `<=`, `>`,
+and `>=`. Comparisons can be combined with `&&` and `||`, and additional `Where` calls are treated
+as `&&`. The other side of a comparison must be a constant or captured value; method calls and
+calculations inside the expression are rejected. Relational operators require a range index.
+`ToGrainIdsAsync` is the only execution operation: synchronous enumeration, projections, ordering,
+grouping, joins, and other general LINQ operators throw `NotSupportedException` with a diagnostic.
+
+`FindAsync` and `RangeAsync` remain available as lower-level compatibility APIs for callers which
+already express one exact lookup or one bounded range directly.
 
 `SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and partition count. Its partition count and storage-format version are validated against the persisted layout; a mismatch throws instead of returning partial results.
 
@@ -92,7 +102,7 @@ The runnable sample co-hosts an ASP.NET Core minimal API and an Orleans silo:
 dotnet run --project samples/Orleans.SearchableStorage.ApiSample
 ```
 
-Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies, read one by id, search the hash index by city, search the range index by salary, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md) follows each request from HTTP through the application grain, searchable provider, storage-partition grain, and physical provider.
+Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies, read one by id, execute the `IQueryable` layer over the city and salary indexes, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md) follows each request from HTTP through the application grain, query plan, searchable provider, storage-partition grain, and physical provider.
 
 The one-process topology and in-memory physical storage keep the sample easy to run; neither is a library requirement.
 

@@ -49,17 +49,17 @@ internal sealed class RangeIndex
     }
 
     public void UnionRange(
-        IndexValue lowerBound,
-        IndexValue upperBound,
+        IndexValue? lowerBound,
+        IndexValue? upperBound,
         bool includeLowerBound,
         bool includeUpperBound,
         HashSet<string> destination)
     {
-        ArgumentNullException.ThrowIfNull(lowerBound);
-        ArgumentNullException.ThrowIfNull(upperBound);
         ArgumentNullException.ThrowIfNull(destination);
 
-        if (_buckets.Comparer.Compare(lowerBound, upperBound) > 0)
+        if (lowerBound is not null
+            && upperBound is not null
+            && _buckets.Comparer.Compare(lowerBound, upperBound) > 0)
         {
             throw new ArgumentException(
                 "The lower range bound must not be greater than the upper range bound.",
@@ -68,13 +68,18 @@ internal sealed class RangeIndex
 
         // SortedList exposes indexed keys, so binary search can seek directly to the first
         // eligible bucket instead of enumerating every key below the lower bound.
-        var startIndex = FindLowerBound(lowerBound, includeLowerBound);
+        var startIndex = lowerBound is null
+            ? 0
+            : FindLowerBound(lowerBound, includeLowerBound);
         for (var index = startIndex; index < _buckets.Count; index++)
         {
-            var comparison = _buckets.Comparer.Compare(_buckets.Keys[index], upperBound);
-            if (comparison > 0 || (comparison == 0 && !includeUpperBound))
+            if (upperBound is not null)
             {
-                break;
+                var comparison = _buckets.Comparer.Compare(_buckets.Keys[index], upperBound);
+                if (comparison > 0 || (comparison == 0 && !includeUpperBound))
+                {
+                    break;
+                }
             }
 
             destination.UnionWith(_buckets.Values[index]);

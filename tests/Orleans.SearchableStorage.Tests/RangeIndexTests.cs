@@ -43,6 +43,38 @@ public sealed class RangeIndexTests
     }
 
     [Fact]
+    public void MissingLowerBoundStartsAtFirstBucket()
+    {
+        var index = new RangeIndex(CreateBuckets(4));
+        var matches = new HashSet<string>(StringComparer.Ordinal);
+
+        index.UnionRange(
+            lowerBound: null,
+            IndexValue.FromSignedInteger(1),
+            includeLowerBound: false,
+            includeUpperBound: true,
+            destination: matches);
+
+        matches.Should().BeEquivalentTo(["record-0", "record-1"]);
+    }
+
+    [Fact]
+    public void MissingUpperBoundContinuesThroughLastBucket()
+    {
+        var index = new RangeIndex(CreateBuckets(4));
+        var matches = new HashSet<string>(StringComparer.Ordinal);
+
+        index.UnionRange(
+            IndexValue.FromSignedInteger(2),
+            upperBound: null,
+            includeLowerBound: false,
+            includeUpperBound: false,
+            destination: matches);
+
+        matches.Should().ContainSingle().Which.Should().Be("record-3");
+    }
+
+    [Fact]
     public void ReversedBoundsAreRejected()
     {
         var index = new RangeIndex(CreateBuckets(4));

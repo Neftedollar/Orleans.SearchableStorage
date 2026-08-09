@@ -68,10 +68,10 @@ internal sealed class RangeIndexQuery
     public required string Scope { get; init; }
 
     [Id(1)]
-    public required IndexValue LowerBound { get; init; }
+    public IndexValue? LowerBound { get; init; }
 
     [Id(2)]
-    public required IndexValue UpperBound { get; init; }
+    public IndexValue? UpperBound { get; init; }
 
     [Id(3)]
     public bool IncludeLowerBound { get; init; }

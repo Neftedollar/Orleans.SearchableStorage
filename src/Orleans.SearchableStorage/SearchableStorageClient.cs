@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage;
@@ -40,6 +41,14 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
         {
             _partitions[index] = grainFactory.GetGrain<IStoragePartitionGrain>(StorageLayout.CreatePartitionKey(providerName, index));
         }
+    }
+
+    /// <inheritdoc />
+    public IQueryable<TState> Query<TState>(string stateName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        var provider = new SearchableStorageQueryProvider<TState>(this, stateName);
+        return new SearchableStorageQuery<TState>(provider);
     }
 
     /// <inheritdoc />
@@ -116,6 +125,22 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
         return $"{nameof(SearchableStorageClient)}({_providerName})";
     }
 
+    internal async Task<IReadOnlyList<GrainId>> ExecuteQueryAsync<TState>(
+        string stateName,
+        Expression expression,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var plan = QueryTranslator.Translate<TState>(stateName, expression);
+        if (!await IsLayoutInitializedAsync(cancellationToken))
+        {
+            return [];
+        }
+
+        var matches = await ExecutePlanAsync(plan, cancellationToken);
+        return matches.Order().ToArray();
+    }
+
     private static IndexValue CreateQueryValue<TValue>(SelectedIndex index, TValue value, string parameterName)
     {
         if (value is null)
@@ -178,5 +203,79 @@ public sealed class SearchableStorageClient : ISearchableStorageClient
             .Distinct()
             .Order()
             .ToArray();
+    }
+
+    private async Task<HashSet<GrainId>> ExecutePlanAsync(
+        QueryPlan plan,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return plan switch
+        {
+            EmptyQueryPlan => [],
+            ExactQueryPlan exact => await ExecuteExactAsync(exact, cancellationToken),
+            RangeQueryPlan range => await ExecuteRangeAsync(range, cancellationToken),
+            AndQueryPlan and => await ExecuteAndAsync(and, cancellationToken),
+            OrQueryPlan or => await ExecuteOrAsync(or, cancellationToken),
+            _ => throw new InvalidOperationException($"Unknown query plan '{plan.GetType()}'."),
+        };
+    }
+
+    private async Task<HashSet<GrainId>> ExecuteExactAsync(
+        ExactQueryPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var query = new ExactIndexQuery
+        {
+            Scope = plan.Index.Scope,
+            Kind = plan.Index.Kind,
+            Value = plan.Value,
+        };
+        var tasks = _partitions.Select(partition => partition.FindAsync(query));
+        var results = await Task.WhenAll(tasks).WaitAsync(cancellationToken);
+        return results.SelectMany(static result => result).ToHashSet();
+    }
+
+    private async Task<HashSet<GrainId>> ExecuteRangeAsync(
+        RangeQueryPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var query = new RangeIndexQuery
+        {
+            Scope = plan.Index.Scope,
+            LowerBound = plan.LowerBound,
+            UpperBound = plan.UpperBound,
+            IncludeLowerBound = plan.IncludeLowerBound,
+            IncludeUpperBound = plan.IncludeUpperBound,
+        };
+        var tasks = _partitions.Select(partition => partition.RangeAsync(query));
+        var results = await Task.WhenAll(tasks).WaitAsync(cancellationToken);
+        return results.SelectMany(static result => result).ToHashSet();
+    }
+
+    private async Task<HashSet<GrainId>> ExecuteAndAsync(
+        AndQueryPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var leftTask = ExecutePlanAsync(plan.Left, cancellationToken);
+        var rightTask = ExecutePlanAsync(plan.Right, cancellationToken);
+        await Task.WhenAll(leftTask, rightTask).WaitAsync(cancellationToken);
+
+        var left = await leftTask;
+        left.IntersectWith(await rightTask);
+        return left;
+    }
+
+    private async Task<HashSet<GrainId>> ExecuteOrAsync(
+        OrQueryPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var leftTask = ExecutePlanAsync(plan.Left, cancellationToken);
+        var rightTask = ExecutePlanAsync(plan.Right, cancellationToken);
+        await Task.WhenAll(leftTask, rightTask).WaitAsync(cancellationToken);
+
+        var left = await leftTask;
+        left.UnionWith(await rightTask);
+        return left;
     }
 }

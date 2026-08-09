@@ -22,11 +22,11 @@ Missing coverage must be called out explicitly in the pull request with a reason
 
 ### Value and metadata tests
 
-Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, and logarithmic range lower-bound lookup.
+Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, open and bounded range traversal, query expression translation, captured values, reversed operands, bound combination, unsupported syntax, and query-plan simplification.
 
 ### Storage contract tests
 
-The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range queries, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, and physical-write failure boundaries. Every supported physical provider must run the same contract.
+The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range primitives, `IQueryable` intersection and union, inclusive and exclusive one-sided bounds, result deduplication, cancellation, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, and physical-write failure boundaries. Every supported physical provider must run the same contract.
 
 ### Backend-specific tests
 
@@ -34,7 +34,7 @@ Provider fixtures add failure injection, serializer selection, environment setup
 
 ### Executable sample tests
 
-The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`. These tests ensure the documented host starts, keyed Orleans services resolve, writes reach the searchable provider, queries return indexed ids, and deletes remove both state and index entries.
+The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`. These tests ensure the documented host starts, keyed Orleans services resolve, writes reach the searchable provider, the focused `IQueryable` API returns indexed ids, and deletes remove both state and index entries.
 
 ## Coverage artifacts
 

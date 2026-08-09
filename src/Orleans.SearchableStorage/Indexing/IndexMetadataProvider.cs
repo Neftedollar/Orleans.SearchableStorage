@@ -59,14 +59,29 @@ internal static class IndexMetadataProvider
             throw new ArgumentException("The index selector must select one state property.", nameof(expression));
         }
 
+        return GetSelectedIndex<TState>(stateName, property, nameof(expression));
+    }
+
+    public static SelectedIndex GetSelectedIndex<TState>(
+        string stateName,
+        PropertyInfo property,
+        string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        ArgumentNullException.ThrowIfNull(property);
+        ArgumentException.ThrowIfNullOrWhiteSpace(parameterName);
+
         var model = GetTypeModel<TState>();
         var index = model.Indexes.SingleOrDefault(candidate => IsSameProperty(candidate.MemberInfo, property))
-            ?? throw new ArgumentException($"Property '{property.Name}' is not marked with SearchableIndexAttribute.", nameof(expression));
+            ?? throw new ArgumentException(
+                $"Property '{property.Name}' is not marked with SearchableIndexAttribute.",
+                parameterName);
 
         return new SelectedIndex(
             index.GetScope(stateName),
             index.Kind,
-            index.Converter);
+            index.Converter,
+            property.Name);
     }
 
     private static bool IsSameProperty(MemberInfo indexedMember, PropertyInfo selectedProperty)
@@ -348,4 +363,5 @@ internal sealed class PropertyIndexMetadata<TState, TValue>(
 internal sealed record SelectedIndex(
     string Scope,
     SearchableIndexKind Kind,
-    IndexValueConverter Converter);
+    IndexValueConverter Converter,
+    string PropertyName);
