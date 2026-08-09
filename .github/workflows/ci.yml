@@ -42,3 +42,56 @@ jobs:
           name: test-results
           path: "**/TestResults/**"
           if-no-files-found: ignore
+
+  backend-contract:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS: "true"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore backend tests
+        run: dotnet restore tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+
+      - name: Build backend tests
+        run: dotnet build tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj --configuration Release --no-restore
+
+      - name: Start physical backends
+        run: docker compose --file tests/backends.compose.yml up --detach --wait
+
+      - name: Run backend storage contract
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Category=BackendIntegration"
+          --collect "XPlat Code Coverage"
+          --logger "trx;LogFileName=backend-test-results.trx"
+          --results-directory artifacts/backend-test-results
+
+      - name: Reject skipped backend tests
+        run: >-
+          if grep --recursive --quiet 'outcome="NotExecuted"' artifacts/backend-test-results;
+          then echo "The enabled backend contract contained skipped tests." >&2; exit 1; fi
+
+      - name: Stop physical backends
+        if: always()
+        run: docker compose --file tests/backends.compose.yml down --volumes
+
+      - name: Upload backend test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-results
+          path: artifacts/backend-test-results
+          if-no-files-found: ignore

@@ -40,6 +40,6 @@ data rather than as an unmodified production search API.
 ASP.NET Core passes request cancellation to both search handlers, and each handler forwards it to
 `ToGrainIdsAsync`.
 
-The sample's physical provider is in memory, so its data disappears when the process stops. A production host can register PostgreSQL, Redis, or another Orleans storage provider under `SearchableStorageConstants.PhysicalStorageProviderName`. Co-hosting HTTP and Orleans is only a sample convenience; the query client can also use an Orleans client from another process when configured with the same provider name and partition count.
+The sample's physical provider is in memory, so its data disappears when the process stops. A production host can register PostgreSQL, Redis, Azure Blob Storage, or another Orleans storage provider under `SearchableStorageConstants.PhysicalStorageProviderName`; the [backend guide](../../docs/backends.md) contains complete examples. Co-hosting HTTP and Orleans is only a sample convenience; the query client can also use an Orleans client from another process when configured with the same provider name and partition count.
 
 The sample state needs no PolyType-specific annotations. Orleans.SearchableStorage uses PolyType's runtime reflection provider internally; Native AOT and trimming are outside the supported deployment model.

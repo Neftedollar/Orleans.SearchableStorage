@@ -16,7 +16,7 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - One complete boolean query plan is evaluated in one non-reentrant call per partition.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
-The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Every query still contacts every partition, and `ToGrainIdsAsync` currently has no `Take`, pagination, or result-size limit. Increasing `PartitionCount` spreads ownership and writes but does not reduce read fan-out. Queries do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes, arbitrary LINQ, online repartitioning, and backend integration suites are not implemented yet.
+The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Every query still contacts every partition, and `ToGrainIdsAsync` currently has no `Take`, pagination, or result-size limit. Increasing `PartitionCount` spreads ownership and writes but does not reduce read fan-out. Queries do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes, arbitrary LINQ beyond the documented focused subset, and online repartitioning are not implemented yet.
 
 ## Example
 
@@ -31,7 +31,7 @@ siloBuilder.AddSearchableGrainStorage(
     options => options.PartitionCount = 32);
 ```
 
-The memory provider is only an example. PostgreSQL, Redis, or another Orleans persistence provider can be registered under `SearchableStorageConstants.PhysicalStorageProviderName` without changing application grains.
+The memory provider is only an example. PostgreSQL, Redis, Azure Blob Storage, or another Orleans persistence provider can be registered under `SearchableStorageConstants.PhysicalStorageProviderName` without changing application grains. See [physical backend configuration](docs/backends.md) for complete provider examples and operational prerequisites.
 
 Mark indexed state properties and use the searchable provider with normal Orleans persistent state:
 
@@ -135,12 +135,24 @@ The one-process topology and in-memory physical storage keep the sample easy to 
 
 ## Backend validation
 
-The test suite defines one reusable storage contract. It currently runs against Orleans in-memory persistence configured with `JsonGrainStorageSerializer` through a two-silo `TestCluster`, forces storage-partition reactivation, and injects failures before commit and after commit but before acknowledgement. The API sample is also exercised through an in-process HTTP server.
+The test suite defines one reusable storage contract. It runs through a two-silo `TestCluster`, forces storage-partition reactivation, and injects failures before commit and after commit but before acknowledgement. The API sample is also exercised through an in-process HTTP server.
 
-- In-memory: implemented in the regular test suite.
-- PostgreSQL: required integration target.
-- Redis: required integration target.
-- Azure Blob Storage or an S3-compatible backend: planned for a separately configured integration environment.
+- In-memory: Orleans `Microsoft.Orleans.Persistence.Memory`.
+- PostgreSQL: Orleans `Microsoft.Orleans.Persistence.AdoNet` with Npgsql and the official Orleans schema.
+- Redis: Orleans `Microsoft.Orleans.Persistence.Redis`.
+- Azure Blob Storage: Orleans `Microsoft.Orleans.Persistence.AzureStorage`, exercised against Azurite in CI.
+
+The external backend contract is opt-in locally and runs on every pull request in a dedicated CI job. Start the pinned containers and run it with:
+
+```bash
+docker compose --file tests/backends.compose.yml up --detach --wait
+ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS=true \
+  dotnet test tests/Orleans.SearchableStorage.Tests \
+  --filter "Category=BackendIntegration"
+docker compose --file tests/backends.compose.yml down --volumes
+```
+
+Connection strings can be overridden for an existing test environment. See the [backend guide](docs/backends.md) and [testing strategy](docs/testing.md).
 
 Every pull request requires a dedicated test-sufficiency review in addition to general and domain-specific reviews. See the [testing strategy](docs/testing.md) for the behavioral checklist and test layers.
 

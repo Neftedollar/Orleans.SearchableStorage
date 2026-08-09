@@ -105,9 +105,15 @@ Physical providers can use serializers other than Orleans' binary serializer. Wi
 
 Backend tests must exercise the same public storage contract instead of backend-specific expected behavior. The contract covers physical partition rehydration, exact lookup, bounded range lookup, index replacement on update, index removal on clear, optimistic-concurrency rejection, persisted-layout mismatch, and physical-write failure boundaries.
 
+The contract runs unchanged against Orleans memory, ADO.NET/PostgreSQL, Redis, and Azure Blob providers. Each external fixture registers the official Orleans 10.2.2 provider under an internal name and places the same failure-injecting decorator under `Orleans.SearchableStorage.Physical`. The decorator is test infrastructure only; production hosts register their selected provider directly under the physical name. All fixtures select `JsonGrainStorageSerializer`, so reactivation crosses a physical serialization boundary instead of retaining object references.
+
+External resources are isolated per fixture. PostgreSQL receives a unique schema and an Npgsql connection string with that schema as its search path. Redis receives a unique Orleans service id, which is part of every provider key. Azure Blob receives a unique container. The fixtures stop their two-silo clusters before deleting those resources. CI provides PostgreSQL, Redis, and Azurite through pinned containers, while connection-string overrides allow the same tests to target a separately managed environment.
+
+Azurite validates the Azure Blob provider protocol and storage semantics used by the searchable layer, but it is not a substitute for Azure service-level performance, identity, network, redundancy, or disaster-recovery testing. Likewise, passing the common contract does not equate the operational characteristics of PostgreSQL, Redis, and Blob Storage.
+
 Every change is also evaluated using the mandatory test-sufficiency review described in [testing.md](testing.md). That review verifies behavioral, failure, durability, distributed, serialization, and sample coverage rather than relying on a raw test count.
 
-The regular suite currently uses Orleans in-memory persistence with `JsonGrainStorageSerializer` in a two-silo `TestCluster`. PostgreSQL and Redis are required integration targets. Azure Blob Storage or an S3-compatible provider belongs to a separately configured integration environment because it needs external infrastructure and credentials.
+An S3-compatible provider is not part of the current supported matrix. Adding one requires an Orleans `IGrainStorage` implementation and the complete contract; Azure Blob compatibility does not imply S3 compatibility.
 
 ## Current scaling limit
 

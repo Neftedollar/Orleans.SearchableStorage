@@ -42,9 +42,19 @@ plan round trip through the configured Orleans serializer. Compile-time test imp
 the old direct-client interface independent from the opt-in query interface and exercise an
 external public async terminal provider.
 
+The memory, PostgreSQL, Redis, and Azure Blob fixtures inherit this same contract class; backend tests do not copy or weaken its assertions.
+
 ### Backend-specific tests
 
-Provider fixtures add failure injection, serializer selection, environment setup, and backend behavior which cannot be expressed in the shared contract. PostgreSQL and Redis are required integration targets. Object-storage providers run in a separately configured environment.
+Provider fixtures add environment setup, cleanup, serializer selection, and registration assertions which cannot be expressed in the shared contract. All four fixtures use `JsonGrainStorageSerializer`, two in-process silos, eight storage partitions, and the same fault-injecting decorator around the physical provider.
+
+- PostgreSQL uses `Microsoft.Orleans.Persistence.AdoNet` with Npgsql. The fixture creates an isolated schema and applies the unmodified operational schema from the Orleans 10.2.2 source tag, apart from source-attribution comments.
+- Redis uses `Microsoft.Orleans.Persistence.Redis` with a unique Orleans service id.
+- Azure Blob uses `Microsoft.Orleans.Persistence.AzureStorage` with a unique container and runs against Azurite in CI.
+
+The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
+
+The dedicated CI job starts the pinned images from `tests/backends.compose.yml`, runs only tests tagged `BackendIntegration`, rejects a result containing skipped backend tests, uploads its TRX and coverage artifacts, and removes the volumes even after failure. For local execution and connection-string overrides, see [physical storage backends](backends.md).
 
 ### Executable sample tests
 
@@ -52,4 +62,4 @@ The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`
 
 ## Coverage artifacts
 
-CI collects Coverlet line and branch coverage together with test results. Coverage changes guide review toward untested branches, but no pull request can satisfy the test-sufficiency requirement by meeting a percentage alone.
+CI collects Coverlet line and branch coverage together with test results. The regular job covers unit, memory-contract, and sample tests; the backend job records the external contract separately so a skipped local run cannot be mistaken for backend validation. Coverage changes guide review toward untested branches, but no pull request can satisfy the test-sufficiency requirement by meeting a percentage alone.
