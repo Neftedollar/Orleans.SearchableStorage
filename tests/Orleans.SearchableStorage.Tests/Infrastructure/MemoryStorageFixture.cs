@@ -31,9 +31,17 @@ public sealed class MemoryStorageFixture : ISearchableStorageFixture, IAsyncLife
         return Cluster.DeployAsync();
     }
 
-    public Task DisposeAsync()
+    public async Task DisposeAsync()
     {
-        return Cluster.StopAllSilosAsync();
+        try
+        {
+            await Cluster.StopAllSilosAsync();
+        }
+        finally
+        {
+            // Full disposal also releases the port allocator and handles left by a partial stop.
+            await Cluster.DisposeAsync();
+        }
     }
 
     private sealed class SiloConfigurator : ISiloConfigurator

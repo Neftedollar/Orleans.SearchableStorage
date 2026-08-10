@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Every backend inherits the shared contract. Memory adds one provider test; external providers add two.
+  SHARED_STORAGE_CONTRACT_TEST_COUNT: "48"
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -23,6 +27,9 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Verify vendored Orleans SQL
+        run: sha256sum --check eng/orleans-sql.sha256
+
       - name: Restore
         run: dotnet restore Orleans.SearchableStorage.slnx
 
@@ -32,6 +39,22 @@ jobs:
       - name: Test
         run: dotnet test Orleans.SearchableStorage.slnx --configuration Release --no-build --no-restore --collect "XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx"
 
+      - name: Run memory storage contract gate
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Backend=Memory"
+          --logger "trx;LogFileName=memory-test-results.trx"
+          --results-directory artifacts/memory-test-results
+
+      - name: Validate memory storage contract
+        run: >-
+          bash eng/validate-trx.sh
+          artifacts/memory-test-results/memory-test-results.trx
+          "$((SHARED_STORAGE_CONTRACT_TEST_COUNT + 1))"
+
       - name: Pack
         run: dotnet pack src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj --configuration Release --no-build --no-restore --output artifacts/packages
 
@@ -40,5 +63,84 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-results
-          path: "**/TestResults/**"
+          path: |
+            **/TestResults/**
+            artifacts/memory-test-results
+          if-no-files-found: ignore
+
+  backend-contract:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS: "true"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore backend tests
+        run: dotnet restore tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+
+      - name: Build backend tests
+        run: dotnet build tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj --configuration Release --no-restore
+
+      - name: Start physical backends
+        run: docker compose --file tests/backends.compose.yml up --detach --wait
+
+      - name: Run PostgreSQL storage contract
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Backend=PostgreSQL"
+          --collect "XPlat Code Coverage"
+          --logger "trx;LogFileName=postgresql-test-results.trx"
+          --results-directory artifacts/backend-test-results
+
+      - name: Run Redis storage contract
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Backend=Redis"
+          --collect "XPlat Code Coverage"
+          --logger "trx;LogFileName=redis-test-results.trx"
+          --results-directory artifacts/backend-test-results
+
+      - name: Run Azure Blob storage contract
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Backend=AzureBlob"
+          --collect "XPlat Code Coverage"
+          --logger "trx;LogFileName=azure-blob-test-results.trx"
+          --results-directory artifacts/backend-test-results
+
+      - name: Validate backend test results
+        run: |
+          expected_count="$((SHARED_STORAGE_CONTRACT_TEST_COUNT + 2))"
+          bash eng/validate-trx.sh artifacts/backend-test-results/postgresql-test-results.trx "$expected_count"
+          bash eng/validate-trx.sh artifacts/backend-test-results/redis-test-results.trx "$expected_count"
+          bash eng/validate-trx.sh artifacts/backend-test-results/azure-blob-test-results.trx "$expected_count"
+
+      - name: Stop physical backends
+        if: always()
+        run: docker compose --file tests/backends.compose.yml down --volumes
+
+      - name: Upload backend test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-results
+          path: artifacts/backend-test-results
           if-no-files-found: ignore

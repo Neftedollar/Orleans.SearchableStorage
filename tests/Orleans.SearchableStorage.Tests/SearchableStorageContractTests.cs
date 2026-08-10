@@ -24,7 +24,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
 
     protected TFixture Fixture { get; }
 
-    [Fact]
+    [SkippableFact]
     public async Task StateAndIndexesSurvivePartitionReactivation()
     {
         var city = $"reactivation-{Guid.NewGuid():N}";
@@ -56,7 +56,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task HashQueryReturnsMatchingGrainIds()
     {
         var city = $"city-{Guid.NewGuid():N}";
@@ -78,7 +78,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(first, second, different);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task HashQueryMergesDifferentPartitionsInStableOrder()
     {
         var city = $"partitioned-{Guid.NewGuid():N}";
@@ -102,7 +102,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(first, second);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RangeQueryHonorsExclusiveBounds()
     {
         var offset = Random.Shared.Next(10_000, 1_000_000);
@@ -129,7 +129,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(below, firstMatch, secondMatch, above);
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(true, true)]
     [InlineData(true, false)]
     [InlineData(false, true)]
@@ -170,7 +170,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(lower, middle, upper);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryablePredicateIntersectsExactAndRangeIndexes()
     {
         var city = $"query-and-{Guid.NewGuid():N}";
@@ -195,7 +195,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(match, wrongCity, wrongSalary);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryableOrUnionsAndDeduplicatesMatches()
     {
         var firstCity = $"query-or-first-{Guid.NewGuid():N}";
@@ -223,7 +223,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(first, second, outside);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CompoundQueriesDoNotMutateBackingIndexBuckets()
     {
         var city = $"bucket-a-{Guid.NewGuid():N}";
@@ -271,7 +271,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryableNestedBooleanAndEmptyPlansExecuteThroughPublicApi()
     {
         var firstCity = $"nested-first-{Guid.NewGuid():N}";
@@ -287,7 +287,9 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await wrongCity.SetAsync($"nested-other-{Guid.NewGuid():N}", offset + 6);
         var lowerBound = offset + 5;
         var upperBound = offset + 8;
-        var client = CreateClient();
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var client = silo.ServiceProvider.GetRequiredKeyedService<ISearchableStorageQueryClient>(
+            VacancyGrain.StorageProviderName);
 
         var matches = await client
             .Query<VacancyState>(VacancyGrain.StateName)
@@ -309,7 +311,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(first, second, wrongSalary, wrongCity);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryableReversedOperandsHonorInclusivity()
     {
         var offset = Random.Shared.Next(3_000_000, 4_000_000);
@@ -333,7 +335,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(lower, middle, upper);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryableMultipleWhereCallsCombineCapturedBounds()
     {
         var offset = Random.Shared.Next(4_000_000, 5_000_000);
@@ -355,7 +357,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(match, outside);
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(true, true, true)]
     [InlineData(true, false, false)]
     [InlineData(false, true, false)]
@@ -393,7 +395,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryableOneSidedRangesReachOpenEnds()
     {
         var highMatch = CreateGrain();
@@ -423,7 +425,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await ClearAsync(highMatch, highOutside, lowMatch, lowOutside);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryableExecutionHonorsCancellation()
     {
         using var cancellation = new CancellationTokenSource();
@@ -437,7 +439,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await execute.Should().ThrowAsync<OperationCanceledException>();
     }
 
-    [Fact]
+    [SkippableFact]
     public void QueryableSynchronousEnumerationIsRejected()
     {
         var query = CreateClient()
@@ -450,7 +452,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             .WithMessage("*Synchronous query enumeration is not supported*");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ReversedRangeBoundsAreRejected()
     {
         Func<Task> query = () => CreateClient().RangeAsync<VacancyState, int>(
@@ -463,7 +465,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             .WithParameterName("lowerBound");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task HashIndexesCannotBeUsedForRangeQueries()
     {
         Func<Task> query = () => CreateClient().RangeAsync<VacancyState, string>(
@@ -476,7 +478,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             .WithParameterName("propertySelector");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task UpdatingStateMovesEntriesBetweenIndexBuckets()
     {
         var oldCity = $"old-{Guid.NewGuid():N}";
@@ -512,7 +514,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ClearingStateRemovesAllIndexEntries()
     {
         var city = $"clear-{Guid.NewGuid():N}";
@@ -542,7 +544,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         rangeResults.Should().BeEmpty();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GrainStorageBridgeMaintainsRecordMetadataAndRejectsStaleETag()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
@@ -579,7 +581,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         loaded.State.City.Should().BeEmpty();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CollectionStateWithoutIndexesRoundTripsThroughStorage()
     {
         var stateName = $"items-{Guid.NewGuid():N}";
@@ -605,7 +607,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await storage.ClearStateAsync(stateName, grainId, loaded);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryableEqualityFindsNullableIndexedValues()
     {
         var stateName = $"nullable-{Guid.NewGuid():N}";
@@ -630,7 +632,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await storage.ClearStateAsync(stateName, grainId, current);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CompilerPromotedValuesRoundTripThroughStorageAndQueryableExecution()
     {
         var stateName = $"promoted-{Guid.NewGuid():N}";
@@ -695,7 +697,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MalformedWirePlansAreRejectedWithoutPoisoningThePartition()
     {
         var partition = GetPartition(CreateGrain().GetGrainId());
@@ -726,7 +728,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         })).Should().BeEmpty();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MalformedBoundedRangeQueriesAreRejectedWithoutPoisoningThePartition()
     {
         var partition = GetPartition(CreateGrain().GetGrainId());
@@ -758,7 +760,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         })).Should().BeEmpty();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GrainStorageBridgeIncrementsETagsAndRejectsStaleClear()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
@@ -796,7 +798,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await storage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ClearingMissingStateIsIdempotentButStillChecksETag()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
@@ -821,7 +823,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await clearWithStaleETag.Should().ThrowAsync<InconsistentStateException>();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MismatchedPartitionCountIsRejected()
     {
         var city = $"layout-{Guid.NewGuid():N}";
@@ -853,7 +855,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueriesBeforeFirstWriteReturnEmptyWithoutInitializingLayout()
     {
         var providerName = $"uninitialized-{Guid.NewGuid():N}";
@@ -901,7 +903,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         secondQueryableResults.Should().BeEmpty();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task InvalidLayoutDescriptorsAreRejectedBeforePersistence()
     {
         var providerName = $"invalid-layout-{Guid.NewGuid():N}";
@@ -939,7 +941,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             .Should().BeFalse();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task DifferentProviderNameUsesAnIsolatedNamespace()
     {
         var city = $"isolated-{Guid.NewGuid():N}";
@@ -959,7 +961,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public void KeyedDirectAndQueryableClientsShareProviderConfiguration()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
@@ -972,7 +974,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         queryClient.Should().BeSameAs(client);
     }
 
-    [Fact]
+    [SkippableFact]
     public void PartitionQueryPlanRoundTripsThroughOrleansSerializer()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
@@ -1010,7 +1012,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         copy.Right.UpperBound.Should().BeNull();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task QueryValueTypeMustMatchIndexedPropertyType()
     {
         var client = CreateClient();
@@ -1023,7 +1025,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             .WithParameterName("value");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task NullQueryValuesAreRejected()
     {
         Func<Task> query = () => CreateClient().FindAsync<VacancyState, string>(
@@ -1115,25 +1117,16 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 }
 
-public sealed class MemorySearchableStorageContractTests : SearchableStorageContractTests<MemoryStorageFixture>
+public abstract class FaultInjectingSearchableStorageContractTests<TFixture>
+    : SearchableStorageContractTests<TFixture>
+    where TFixture : class, ISearchableStorageFixture
 {
-    public MemorySearchableStorageContractTests(MemoryStorageFixture fixture)
+    protected FaultInjectingSearchableStorageContractTests(TFixture fixture)
         : base(fixture)
     {
     }
 
-    [Fact]
-    public void PhysicalMemoryBackendUsesJsonSerializer()
-    {
-        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
-        var options = silo.ServiceProvider
-            .GetRequiredService<IOptionsMonitor<MemoryGrainStorageOptions>>()
-            .Get(MemoryStorageFixture.InnerPhysicalStorageProviderName);
-
-        options.GrainStorageSerializer.Should().BeOfType<JsonGrainStorageSerializer>();
-    }
-
-    [Fact]
+    [SkippableFact]
     public async Task FailedPhysicalWriteDoesNotExposeCandidateState()
     {
         var oldCity = $"before-old-{Guid.NewGuid():N}";
@@ -1172,7 +1165,7 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task LostAcknowledgementRehydratesCommittedCandidate()
     {
         var oldCity = $"after-old-{Guid.NewGuid():N}";
@@ -1211,7 +1204,7 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task FailedPhysicalClearPreservesCommittedState()
     {
         var city = $"clear-before-{Guid.NewGuid():N}";
@@ -1248,7 +1241,7 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         await grain.ClearAsync();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task LostClearAcknowledgementRehydratesClearedState()
     {
         var city = $"clear-after-{Guid.NewGuid():N}";
@@ -1284,7 +1277,7 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         rangeResults.Should().BeEmpty();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task StorageBridgeCanRetryLayoutInitializationAfterPhysicalFailure()
     {
         var providerName = $"storage-layout-retry-{Guid.NewGuid():N}";
@@ -1323,7 +1316,7 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         await storage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task StoragePartitionTopologyDoesNotFollowLaterOptionsMutation()
     {
         var providerName = $"stable-partitions-{Guid.NewGuid():N}";
@@ -1356,7 +1349,7 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         await storage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task LayoutInitializationCanRetryAfterPhysicalFailure()
     {
         var providerName = $"layout-retry-{Guid.NewGuid():N}";
@@ -1415,5 +1408,26 @@ public sealed class MemorySearchableStorageContractTests : SearchableStorageCont
         }
 
         throw new InvalidOperationException("Could not create a grain id in the upper half of the requested partition range.");
+    }
+}
+
+[Trait("Backend", "Memory")]
+public sealed class MemorySearchableStorageContractTests
+    : FaultInjectingSearchableStorageContractTests<MemoryStorageFixture>
+{
+    public MemorySearchableStorageContractTests(MemoryStorageFixture fixture)
+        : base(fixture)
+    {
+    }
+
+    [SkippableFact]
+    public void PhysicalMemoryBackendUsesJsonSerializer()
+    {
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var options = silo.ServiceProvider
+            .GetRequiredService<IOptionsMonitor<MemoryGrainStorageOptions>>()
+            .Get(MemoryStorageFixture.InnerPhysicalStorageProviderName);
+
+        options.GrainStorageSerializer.Should().BeOfType<JsonGrainStorageSerializer>();
     }
 }
