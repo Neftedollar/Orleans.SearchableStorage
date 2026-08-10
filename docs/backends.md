@@ -12,17 +12,50 @@ siloBuilder.AddSearchableGrainStorage(
     options =>
     {
         options.PartitionCount = 32;
+        options.VirtualSlotTargetCount = 16_384;
         options.JournalSegmentCapacity = 64;
         options.MaximumJournalReplayEntries = 4_096;
         options.CompactionThreshold = 1_024;
     });
 ```
 
-These are the defaults. `PartitionCount`, `JournalSegmentCapacity`, and `MaximumJournalReplayEntries` are persisted layout choices and require migration to change after data is written. `CompactionThreshold` is operational, must be positive, and cannot exceed `MaximumJournalReplayEntries`.
+These are the defaults. `VirtualSlotTargetCount` seeds the exact persisted map for that provider
+namespace by rounding upward to a multiple of `PartitionCount`; it does not change an existing
+version-4 map, although it must remain a valid configured value. The exact per-layout map is capped
+at 262,144 owner integers. `PartitionCount`, `JournalSegmentCapacity`, and
+`MaximumJournalReplayEntries` are persisted choices and require migration to change.
+`CompactionThreshold` is operational, must be positive, and cannot exceed the replay limit.
+
+A valid version-3 layout upgrades with one physical layout CAS. The migration does not write any
+partition manifest, journal segment, or snapshot. Every supported backend must therefore preserve
+the same stale-ETag and lost-acknowledgement behavior for the layout document as it does for the
+partition manifest. The project uses JSON physical serialization; durable C# property names in the
+layout state are retained across the version change in addition to Orleans serializer field IDs.
+Partition manifests, journal segments, and snapshots remain persistence format 3 after layout
+adoption.
+
+The v3-to-v4 transition requires a traffic pause rather than an online mixed-version rollout.
+Quiesce searchable storage and query traffic, update every silo and Orleans client, verify that no
+version-3 process remains, and keep traffic paused while one normal grain-state storage operation
+adopts each provider namespace. Verify that the admin read succeeds and reports epoch 1 before
+resuming traffic; the admin path returns a snapshot only for format 4, and it does not perform
+adoption. A new storage activation immediately uses routed methods which an old silo does not
+implement, and an old activation cannot read the adopted format-4 layout. This release retains
+legacy methods for updated consumers and its epoch-1 identity map preserves old modulo placement,
+but it does not expose `MoveSlot`. Future ownership changes require a separate coordinated all-v4
+protocol gate.
 
 The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, and snapshot states is required; the manifest is the searchable-storage commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, or snapshot state.
 
-Journal segments are bounded by operation count, not serialized bytes, and each snapshot contains the whole partition. The two snapshot slots bound object count, not object size. Choose the partition count and journal capacity with the provider's row/value/blob limits, serialization cost, and activation memory in mind. Repeatable capacity benchmarks are tracked in [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8).
+Journal segments are bounded by operation count, not serialized bytes, and each snapshot contains
+the whole partition. The two snapshot slots bound object count, not object size. The virtual map adds
+approximately four raw bytes per slot before serializer overhead and is read as one layout value.
+Partition activations share one retained map per provider and silo instead of cloning it per
+partition. The keyed storage provider and query/admin clients retain a bounded constant number of
+additional process-local snapshots, never one per partition activation.
+Choose the initial partition count, virtual-slot target, and journal capacity with the provider's
+row/value/blob limits, serialization cost, and activation memory in mind. Repeatable capacity
+benchmarks are tracked in [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8).
 
 ## PostgreSQL
 

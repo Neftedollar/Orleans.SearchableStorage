@@ -606,12 +606,27 @@ public sealed class SearchableStorageClientExecutionTests
             throw new NotSupportedException();
         }
 
+        public Task<StorageReadResult> ReadRoutedAsync(RoutedStorageReadRequest request)
+        {
+            throw new NotSupportedException();
+        }
+
         public Task<string> WriteAsync(StorageWriteRequest request)
         {
             throw new NotSupportedException();
         }
 
+        public Task<string> WriteRoutedAsync(RoutedStorageWriteRequest request)
+        {
+            throw new NotSupportedException();
+        }
+
         public Task ClearAsync(StorageClearRequest request)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task ClearRoutedAsync(RoutedStorageClearRequest request)
         {
             throw new NotSupportedException();
         }
@@ -632,10 +647,20 @@ public sealed class SearchableStorageClientExecutionTests
             return _find(query);
         }
 
+        public Task<GrainId[]> FindRoutedAsync(RoutedExactIndexQuery query)
+        {
+            return FindAsync(query.Query);
+        }
+
         public Task<GrainId[]> RangeAsync(RangeIndexQuery query)
         {
             RangeCallCount++;
             return _range(query);
+        }
+
+        public Task<GrainId[]> RangeRoutedAsync(RoutedRangeIndexQuery query)
+        {
+            return RangeAsync(query.Query);
         }
 
         public Task<GrainId[]> QueryAsync(PartitionQueryPlan query)
@@ -645,6 +670,11 @@ public sealed class SearchableStorageClientExecutionTests
             _started.TrySetResult();
             LastQueryTask = _query(query);
             return LastQueryTask;
+        }
+
+        public Task<GrainId[]> QueryRoutedAsync(RoutedPartitionQuery query)
+        {
+            return QueryAsync(query.Query);
         }
     }
 }

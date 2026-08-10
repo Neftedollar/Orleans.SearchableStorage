@@ -19,32 +19,55 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 | `DELETE` | `/vacancies/{id}` | Remove the vacancy and both index entries. |
 | `GET` | `/vacancies/search/by-city?city=Helsinki` | Use the hash index for exact lookup. |
 | `GET` | `/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false` | Use the range index with explicit bounds. |
+| `GET` | `/storage/layout` | Read the persisted virtual-routing summary. |
 
 ## What happens on a write
 
 1. The HTTP endpoint calls `IVacancyGrain` using the route id as its grain key.
 2. `VacancyGrain` writes normal `IPersistentState<VacancyState>` state through the `Searchable` provider.
-3. The provider serializes the state, uses its cached PolyType model to read the `[SearchableIndex]` values, and routes the record to one storage-partition grain.
-4. The partition writes one bounded journal segment and then advances a small manifest. The manifest
+3. The provider serializes the state and uses its cached PolyType model to read the
+   `[SearchableIndex]` values.
+4. The provider initializes or loads layout format 4, derives the record's virtual slot from its
+   Orleans grain hash, and sends the slot and routing epoch to the assigned physical partition.
+5. The partition validates the grain, slot, epoch, and current owner before it reads record state or
+   applies ETag logic. It then writes one bounded journal segment and advances a small manifest. The manifest
    write is the commit point for the record and every derived index entry.
-5. The activation updates only the affected in-memory hash and range buckets. Automatic compaction
+6. The activation updates only the affected in-memory hash and range buckets. Automatic compaction
    periodically publishes a whole-partition snapshot through one of two fenced snapshot slots.
-6. Search endpoints build a focused `IQueryable<VacancyState>` predicate and execute it with `ToGrainIdsAsync`.
-7. The named `ISearchableStorageQueryClient` sends one complete boolean plan to every storage partition.
-8. Each non-reentrant partition evaluates that plan in one turn; the client merges the final local results.
+7. Search endpoints build a focused `IQueryable<VacancyState>` predicate and execute it with
+   `ToGrainIdsAsync`.
+8. The named `ISearchableStorageQueryClient` sends one complete boolean plan once to every distinct
+   owner in the layout snapshot.
+9. Each non-reentrant partition validates the epoch and evaluates that plan in one turn. The client
+   merges only the final local results. A routing mismatch discards the complete attempt, refreshes
+   the shared layout cache, and retries once, so results from different epochs are never combined.
 
 The sample uses deliberately visible persistence settings in `Program.cs`: journal segments contain
 at most 16 mutations, activation replay is capped at 256 committed mutations, and compaction is
 requested after 64. Segment capacity and the replay limit are durable layout settings; changing
 either requires migration. The compaction threshold is operational and can be tuned between runs.
 
+The sample starts with eight physical partitions and a virtual-slot target of 64. Initialization
+persists exactly 64 slots because the target is already a multiple of eight. Layout format 4 assigns
+those slots with the zero-movement identity rule `slot % 8`, so every initial owner has eight slots
+at epoch 1. `VirtualSlotTargetCount` is only a seed for a new or version-3 layout: the exact `V` is
+persisted per provider namespace and is not recomputed from a later default. Partition manifests,
+journals, and snapshots remain persistence format 3.
+
+`GET /storage/layout` uses the keyed `ISearchableStorageAdminClient`. It is read-only and returns
+`404 Not Found` before a storage operation initializes the namespace. After the first vacancy write,
+it returns the epoch, initial partition count, exact virtual-slot count, and the slot count for each
+current owner. The public response deliberately does not expose the mutable assignment array.
+
 The city endpoint demonstrates an exact hash-index comparison. The salary endpoint builds two
 `Where` clauses dynamically so all four inclusive/exclusive bound combinations use the same public
 query surface. This `IQueryable` is a deliberately focused, partial query provider which will expand
 in later releases: it returns grain ids, does not load state objects, and does not currently support
 synchronous enumeration, projections, ordering, pagination, or result limits. Every execution fans
-out to all storage partitions, so the sample endpoints are suitable for learning and bounded test
-data rather than as an unmodified production search API.
+out to all distinct current owners, so the sample endpoints are suitable for learning and bounded
+test data rather than as an unmodified production search API. The current identity map has every
+initial partition as an owner; a future moved layout would still receive only one query call per
+distinct owner.
 ASP.NET Core passes request cancellation to both search handlers, and each handler forwards it to
 `ToGrainIdsAsync`.
 
@@ -56,6 +79,15 @@ contains complete examples. The sample deliberately keeps backend infrastructure
 walkthrough; the same journal, recovery, compaction, and query behavior is exercised separately by
 the shared provider contract. Co-hosting HTTP and Orleans is only a sample convenience; the query
 client can also use an Orleans client from another process when configured with the same provider
-name and partition count.
+name and initial partition count.
+
+This release does not expose `MoveSlot` or change physical ownership. The v3-to-v4 transition is not
+an online mixed-version rollout: pause searchable storage and query traffic, update every silo and
+Orleans client, verify that no version-3 process remains, and keep traffic paused while one normal
+grain-state storage operation adopts each provider namespace. Verify that `GET /storage/layout`
+succeeds and reports epoch 1, then resume traffic; the endpoint returns a layout only for format 4.
+Query and admin reads do not perform adoption. Updated legacy calls remain placement-compatible with
+the epoch-1 identity map, but any future movement protocol requires a separate coordinated all-v4
+gate.
 
 The sample state needs no PolyType-specific annotations. Orleans.SearchableStorage uses PolyType's runtime reflection provider internally; Native AOT and trimming are outside the supported deployment model.

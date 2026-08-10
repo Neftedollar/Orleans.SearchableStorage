@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Linq.Expressions;
+using System.Runtime.ExceptionServices;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
@@ -12,10 +14,8 @@ namespace Orleans.SearchableStorage;
 public sealed class SearchableStorageClient : ISearchableStorageQueryClient
 {
     private readonly string _providerName;
-    private readonly Func<Task<bool>> _validateLayout;
-    private readonly object _layoutLock = new();
-    private readonly IStoragePartitionGrain[] _partitions;
-    private Task<bool>? _layoutValidationTask;
+    private readonly Func<int, IStoragePartitionGrain> _getPartition;
+    private readonly StorageLayoutCache _layoutCache;
 
     /// <summary>
     /// Initializes a client for one searchable storage provider.
@@ -35,12 +35,12 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         _providerName = providerName;
         var layout = StorageLayout.CreateIdentity(providerName, partitionCount);
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
-        _validateLayout = () => layoutGrain.ValidateIdentityAsync(layout);
-        _partitions = new IStoragePartitionGrain[partitionCount];
-        for (var index = 0; index < partitionCount; index++)
-        {
-            _partitions[index] = grainFactory.GetGrain<IStoragePartitionGrain>(StorageLayout.CreatePartitionKey(providerName, index));
-        }
+        _layoutCache = new StorageLayoutCache(() => layoutGrain.GetLayoutAsync(layout));
+        var partitions = new ConcurrentDictionary<int, IStoragePartitionGrain>();
+        _getPartition = index => partitions.GetOrAdd(
+            index,
+            partitionIndex => grainFactory.GetGrain<IStoragePartitionGrain>(
+                StorageLayout.CreatePartitionKey(providerName, partitionIndex)));
     }
 
     internal SearchableStorageClient(
@@ -54,8 +54,24 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         ArgumentOutOfRangeException.ThrowIfZero(partitions.Count);
 
         _providerName = providerName;
-        _validateLayout = validateLayout;
-        _partitions = partitions.ToArray();
+        var staticLayout = CreateStaticLayout(providerName, partitions.Count);
+        _layoutCache = new StorageLayoutCache(
+            async () => await validateLayout() ? staticLayout : null);
+        _getPartition = index => partitions[index];
+    }
+
+    internal SearchableStorageClient(
+        string providerName,
+        StorageLayoutCache layoutCache,
+        Func<int, IStoragePartitionGrain> getPartition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        ArgumentNullException.ThrowIfNull(layoutCache);
+        ArgumentNullException.ThrowIfNull(getPartition);
+
+        _providerName = providerName;
+        _layoutCache = layoutCache;
+        _getPartition = getPartition;
     }
 
     /// <inheritdoc />
@@ -75,10 +91,6 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
     {
         var index = IndexMetadataProvider.GetSelectedIndex(stateName, propertySelector);
         var indexValue = CreateQueryValue(index, value, nameof(value));
-        if (!await IsLayoutInitializedAsync(cancellationToken))
-        {
-            return [];
-        }
 
         var query = new ExactIndexQuery
         {
@@ -87,9 +99,13 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             Value = indexValue,
         };
 
-        var tasks = _partitions.Select(partition => partition.FindAsync(query));
-        var results = await WaitForFanoutAsync(tasks, cancellationToken);
-        return Merge(results);
+        return await ExecuteRoutedQueryAsync(
+            (partition, epoch) => partition.FindRoutedAsync(new RoutedExactIndexQuery
+            {
+                Query = query,
+                Epoch = epoch,
+            }),
+            cancellationToken);
     }
 
     /// <inheritdoc />
@@ -115,11 +131,6 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             throw new ArgumentException("The lower range bound must not be greater than the upper range bound.", nameof(lowerBound));
         }
 
-        if (!await IsLayoutInitializedAsync(cancellationToken))
-        {
-            return [];
-        }
-
         var query = new RangeIndexQuery
         {
             Scope = index.Scope,
@@ -129,9 +140,13 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             IncludeUpperBound = includeUpperBound,
         };
 
-        var tasks = _partitions.Select(partition => partition.RangeAsync(query));
-        var results = await WaitForFanoutAsync(tasks, cancellationToken);
-        return Merge(results);
+        return await ExecuteRoutedQueryAsync(
+            (partition, epoch) => partition.RangeRoutedAsync(new RoutedRangeIndexQuery
+            {
+                Query = query,
+                Epoch = epoch,
+            }),
+            cancellationToken);
     }
 
     /// <inheritdoc />
@@ -147,7 +162,8 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
     {
         cancellationToken.ThrowIfCancellationRequested();
         var plan = QueryTranslator.Translate<TState>(stateName, expression);
-        if (!await IsLayoutInitializedAsync(cancellationToken))
+        var layout = await _layoutCache.GetAsync(cancellationToken);
+        if (layout is null)
         {
             return [];
         }
@@ -158,9 +174,14 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         }
 
         var partitionPlan = PartitionQueryPlanFactory.Create(plan);
-        var tasks = _partitions.Select(partition => partition.QueryAsync(partitionPlan));
-        var results = await WaitForFanoutAsync(tasks, cancellationToken);
-        return Merge(results);
+        return await ExecuteRoutedQueryAsync(
+            layout,
+            (partition, epoch) => partition.QueryRoutedAsync(new RoutedPartitionQuery
+            {
+                Query = partitionPlan,
+                Epoch = epoch,
+            }),
+            cancellationToken);
     }
 
     private static IndexValue CreateQueryValue<TValue>(SelectedIndex index, TValue value, string parameterName)
@@ -182,46 +203,75 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             ?? throw new InvalidOperationException("A non-null query value unexpectedly converted to null.");
     }
 
-    private async Task<bool> IsLayoutInitializedAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<GrainId>> ExecuteRoutedQueryAsync(
+        Func<IStoragePartitionGrain, long, Task<GrainId[]>> query,
+        CancellationToken cancellationToken)
     {
-        Task<bool> validationTask;
-        lock (_layoutLock)
+        var layout = await _layoutCache.GetAsync(cancellationToken);
+        if (layout is null)
         {
-            validationTask = _layoutValidationTask ??= _validateLayout();
+            return [];
         }
 
-        try
+        return await ExecuteRoutedQueryAsync(layout, query, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<GrainId>> ExecuteRoutedQueryAsync(
+        StorageLayoutSnapshot layout,
+        Func<IStoragePartitionGrain, long, Task<GrainId[]>> query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        for (var attempt = 0; ; attempt++)
         {
-            var initialized = await validationTask.WaitAsync(cancellationToken);
-            if (!initialized)
+            var tasks = layout
+                .GetDistinctOwners()
+                .Select(owner => StartRoutedQuery(owner, layout.Epoch, query));
+            try
             {
-                ResetLayoutValidation(validationTask);
+                var results = await WaitForFanoutAsync(tasks, cancellationToken);
+                return Merge(results);
             }
-
-            return initialized;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            ResetLayoutValidation(validationTask);
-            _ = ObserveCompletionAsync(validationTask);
-            throw;
-        }
-        catch
-        {
-            ResetLayoutValidation(validationTask);
-            throw;
+            catch (StorageRouteMismatchException) when (attempt == 0)
+            {
+                _layoutCache.Invalidate(layout);
+                layout = await _layoutCache.GetAsync(cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        "The storage layout disappeared while a routed query was refreshing.");
+            }
         }
     }
 
-    private void ResetLayoutValidation(Task<bool> validationTask)
+    private Task<GrainId[]> StartRoutedQuery(
+        int owner,
+        long epoch,
+        Func<IStoragePartitionGrain, long, Task<GrainId[]>> query)
     {
-        lock (_layoutLock)
+        try
         {
-            if (ReferenceEquals(_layoutValidationTask, validationTask))
-            {
-                _layoutValidationTask = null;
-            }
+            return query(_getPartition(owner), epoch);
         }
+        catch (Exception exception)
+        {
+            // Normalize synchronous test doubles, client lookup failures, and custom Orleans
+            // proxies into the same all-partitions completion path as faulted RPC tasks.
+            return Task.FromException<GrainId[]>(exception);
+        }
+    }
+
+    private static StorageLayoutSnapshot CreateStaticLayout(string providerName, int partitionCount)
+    {
+        var assignments = StorageLayout.CreateIdentityAssignments(partitionCount, partitionCount);
+        return StorageLayoutSnapshot.FromState(new StorageLayoutState
+        {
+            Initialized = true,
+            FormatVersion = StorageLayout.CurrentFormatVersion,
+            ProviderName = providerName,
+            PartitionCount = partitionCount,
+            VirtualSlotCount = partitionCount,
+            SlotAssignments = assignments,
+            Epoch = 1,
+        });
     }
 
     private static GrainId[] Merge(IEnumerable<GrainId[]> results)
@@ -237,7 +287,8 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         IEnumerable<Task<T>> tasks,
         CancellationToken cancellationToken)
     {
-        var aggregate = Task.WhenAll(tasks);
+        var partitionTasks = tasks.ToArray();
+        var aggregate = Task.WhenAll(partitionTasks);
         try
         {
             return await aggregate.WaitAsync(cancellationToken);
@@ -247,6 +298,39 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             // Orleans calls do not accept this local cancellation token. Observe their eventual
             // completion so a later transport or partition failure cannot become unobserved.
             _ = ObserveCompletionAsync(aggregate);
+            throw;
+        }
+        catch
+        {
+            var failures = aggregate.Exception?.Flatten().InnerExceptions;
+            var nonRoutingFailure = failures?.FirstOrDefault(
+                static failure => failure is not StorageRouteMismatchException);
+            if (nonRoutingFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(nonRoutingFailure).Throw();
+            }
+
+            var canceledPartition = partitionTasks.FirstOrDefault(static task => task.IsCanceled);
+            if (canceledPartition is not null)
+            {
+                // Task.WhenAll is faulted rather than canceled when another child also faults, and
+                // canceled children are absent from AggregateException.InnerExceptions. Surface the
+                // cancellation before classifying the remaining failures as routing-only.
+                _ = await canceledPartition;
+                throw new InvalidOperationException("A canceled partition task completed successfully.");
+            }
+
+            if (failures is not null)
+            {
+                var newestMismatch = failures
+                    .OfType<StorageRouteMismatchException>()
+                    .MaxBy(static failure => failure.CurrentEpoch);
+                if (newestMismatch is not null)
+                {
+                    ExceptionDispatchInfo.Capture(newestMismatch).Throw();
+                }
+            }
+
             throw;
         }
     }

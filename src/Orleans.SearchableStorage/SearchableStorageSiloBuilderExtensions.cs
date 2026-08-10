@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Orleans.Hosting;
 using Orleans.Runtime;
@@ -57,6 +58,12 @@ public static class SearchableStorageSiloBuilderExtensions
         options
             .Validate(static value => value.PartitionCount > 0, "PartitionCount must be greater than zero.")
             .Validate(
+                static value => value.VirtualSlotTargetCount > 0,
+                "VirtualSlotTargetCount must be greater than zero.")
+            .Validate(
+                static value => IsVirtualSlotLayoutAddressable(value),
+                $"PartitionCount and VirtualSlotTargetCount must produce no more than {StorageLayout.MaximumVirtualSlotCount} virtual slots.")
+            .Validate(
                 static value => value.JournalSegmentCapacity > 0,
                 "JournalSegmentCapacity must be greater than zero.")
             .Validate(
@@ -76,6 +83,7 @@ public static class SearchableStorageSiloBuilderExtensions
         services.AddTransient<
             IPostConfigureOptions<SearchableStorageOptions>,
             DefaultStorageProviderSerializerOptionsConfigurator<SearchableStorageOptions>>();
+        services.TryAddSingleton<StorageLayoutCacheRegistry>();
 
         services.AddKeyedSingleton<IGrainStorage>(
             providerName,
@@ -98,6 +106,19 @@ public static class SearchableStorageSiloBuilderExtensions
             providerName,
             (serviceProvider, _) => serviceProvider.GetRequiredKeyedService<ISearchableStorageQueryClient>(providerName));
 
+        services.AddKeyedSingleton<ISearchableStorageAdminClient>(
+            providerName,
+            (serviceProvider, _) =>
+            {
+                var configuredOptions = serviceProvider
+                    .GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+                    .Get(providerName);
+                return new SearchableStorageAdminClient(
+                    serviceProvider.GetRequiredService<IGrainFactory>(),
+                    providerName,
+                    configuredOptions.PartitionCount);
+            });
+
         return services;
     }
 
@@ -117,6 +138,31 @@ public static class SearchableStorageSiloBuilderExtensions
             return true;
         }
         catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsVirtualSlotLayoutAddressable(SearchableStorageOptions options)
+    {
+        if (options.PartitionCount <= 0 || options.VirtualSlotTargetCount <= 0)
+        {
+            // Dedicated validation produces the more specific message for non-positive values.
+            return true;
+        }
+
+        try
+        {
+            _ = StorageLayout.DeriveVirtualSlotCount(
+                options.PartitionCount,
+                options.VirtualSlotTargetCount);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+        catch (OverflowException)
         {
             return false;
         }

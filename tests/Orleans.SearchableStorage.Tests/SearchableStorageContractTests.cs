@@ -998,6 +998,156 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [SkippableFact]
+    public async Task VersionThreeLayoutAdoptionPreservesPersistedRecordsAndIndexesWithoutPartitionWrites()
+    {
+        const int journalSegmentCapacity = 4;
+        const int maximumJournalReplayEntries = 4;
+        const int compactionThreshold = 4;
+        const int originalSalary = 70;
+        const int updatedSalary = 90;
+
+        var providerName = $"version-three-adoption-{Guid.NewGuid():N}";
+        var originalCity = $"legacy-{Guid.NewGuid():N}";
+        var updatedCity = $"updated-{Guid.NewGuid():N}";
+        var grainId = CreateGrain().GetGrainId();
+        var layout = Fixture.Cluster.GrainFactory.GetGrain<IStorageLayoutGrain>(providerName);
+        var physical = GetPhysicalStorage();
+        var persistedLayout = new GrainState<StorageLayoutState>
+        {
+            State = new StorageLayoutState
+            {
+                Initialized = true,
+                FormatVersion = StorageLayout.PreviousFormatVersion,
+                ProviderName = providerName,
+                PartitionCount = Fixture.PartitionCount,
+                JournalSegmentCapacity = journalSegmentCapacity,
+                MaximumJournalReplayEntries = maximumJournalReplayEntries,
+            },
+        };
+        await physical.WriteStateAsync("layout", layout.GetGrainId(), persistedLayout);
+
+        try
+        {
+            var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+            var serializer = silo.ServiceProvider
+                .GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+                .Get(VacancyGrain.StorageProviderName)
+                .GrainStorageSerializer
+                ?? throw new InvalidOperationException("The configured grain storage serializer is missing.");
+            var persistence = new StoragePersistenceSettings
+            {
+                JournalSegmentCapacity = journalSegmentCapacity,
+                MaximumJournalReplayEntries = maximumJournalReplayEntries,
+                CompactionThreshold = compactionThreshold,
+            };
+            var recordKey = CreateStoredRecordKey(VacancyGrain.StateName, grainId);
+            var partitionIndex = (int)((uint)grainId.GetUniformHashCode() % (uint)Fixture.PartitionCount);
+            var partition = Fixture.Cluster.GrainFactory.GetGrain<IStoragePartitionGrain>(
+                StorageLayout.CreatePartitionKey(providerName, partitionIndex));
+            var originalState = new VacancyState { City = originalCity, Salary = originalSalary };
+            var seededETag = await partition.WriteAsync(new StorageWriteRequest
+            {
+                RecordKey = recordKey,
+                GrainId = grainId,
+                Payload = serializer.Serialize(originalState).ToArray(),
+                ExpectedETag = null,
+                IndexEntries = [.. IndexMetadataProvider.Extract(VacancyGrain.StateName, originalState)],
+                Persistence = persistence,
+            });
+            await Fixture.Cluster.DeactivateAsync(partition);
+
+            var legacyLayout = new GrainState<StorageLayoutState>();
+            await physical.ReadStateAsync("layout", layout.GetGrainId(), legacyLayout);
+            legacyLayout.RecordExists.Should().BeTrue();
+            legacyLayout.State.FormatVersion.Should().Be(StorageLayout.PreviousFormatVersion);
+            legacyLayout.State.VirtualSlotCount.Should().Be(0);
+            legacyLayout.State.SlotAssignments.Should().BeEmpty();
+            legacyLayout.State.Epoch.Should().Be(0);
+            legacyLayout.ETag.Should().NotBeNull();
+
+            var layoutWritesBefore = await GetPhysicalWriteCallCountAsync(
+                layout.GetGrainId(),
+                "layout");
+            var partitionWritesBefore = await GetPartitionPhysicalWriteCallCountsAsync(
+                providerName,
+                journalSegmentCapacity,
+                maximumJournalReplayEntries);
+            layoutWritesBefore.Should().Be(1);
+            partitionWritesBefore.Sum().Should().BeGreaterThan(0);
+
+            var storage = CreateStorageBridge(
+                providerName,
+                journalSegmentCapacity,
+                maximumJournalReplayEntries,
+                compactionThreshold);
+            var loaded = new GrainState<VacancyState>();
+            await storage.ReadStateAsync(VacancyGrain.StateName, grainId, loaded);
+
+            loaded.RecordExists.Should().BeTrue();
+            loaded.ETag.Should().Be(seededETag);
+            loaded.State.City.Should().Be(originalCity);
+            loaded.State.Salary.Should().Be(originalSalary);
+
+            var migratedLayout = new GrainState<StorageLayoutState>();
+            await physical.ReadStateAsync("layout", layout.GetGrainId(), migratedLayout);
+            var expectedVirtualSlotCount = StorageLayout.DeriveVirtualSlotCount(
+                Fixture.PartitionCount,
+                StorageLayout.DefaultVirtualSlotTargetCount);
+            migratedLayout.RecordExists.Should().BeTrue();
+            migratedLayout.ETag.Should().NotBeNull();
+            migratedLayout.ETag.Should().NotBe(legacyLayout.ETag);
+            migratedLayout.State.FormatVersion.Should().Be(StorageLayout.CurrentFormatVersion);
+            migratedLayout.State.ProviderName.Should().Be(providerName);
+            migratedLayout.State.PartitionCount.Should().Be(Fixture.PartitionCount);
+            migratedLayout.State.JournalSegmentCapacity.Should().Be(journalSegmentCapacity);
+            migratedLayout.State.MaximumJournalReplayEntries.Should().Be(maximumJournalReplayEntries);
+            migratedLayout.State.VirtualSlotCount.Should().Be(expectedVirtualSlotCount);
+            migratedLayout.State.SlotAssignments.Should().Equal(
+                StorageLayout.CreateIdentityAssignments(Fixture.PartitionCount, expectedVirtualSlotCount));
+            migratedLayout.State.Epoch.Should().Be(1);
+
+            (await GetPhysicalWriteCallCountAsync(layout.GetGrainId(), "layout"))
+                .Should().Be(layoutWritesBefore + 1);
+            (await GetPartitionPhysicalWriteCallCountsAsync(
+                providerName,
+                journalSegmentCapacity,
+                maximumJournalReplayEntries))
+                .Should().Equal(partitionWritesBefore);
+
+            var client = new SearchableStorageClient(
+                Fixture.Cluster.GrainFactory,
+                providerName,
+                Fixture.PartitionCount);
+            await AssertVacancyQueriesAsync(client, originalCity, originalSalary, grainId);
+
+            loaded.State.City = updatedCity;
+            loaded.State.Salary = updatedSalary;
+            await storage.WriteStateAsync(VacancyGrain.StateName, grainId, loaded);
+
+            await AssertVacancyQueriesAsync(client, originalCity, originalSalary);
+            await AssertVacancyQueriesAsync(client, updatedCity, updatedSalary, grainId);
+
+            await storage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
+            var cleared = new GrainState<VacancyState>();
+            await storage.ReadStateAsync(VacancyGrain.StateName, grainId, cleared);
+
+            cleared.RecordExists.Should().BeFalse();
+            cleared.ETag.Should().BeNull();
+            await AssertVacancyQueriesAsync(client, updatedCity, updatedSalary);
+        }
+        finally
+        {
+            await Fixture.Cluster.DeactivateAsync(layout);
+            var currentLayout = new GrainState<StorageLayoutState>();
+            await physical.ReadStateAsync("layout", layout.GetGrainId(), currentLayout);
+            if (currentLayout.RecordExists)
+            {
+                await physical.ClearStateAsync("layout", layout.GetGrainId(), currentLayout);
+            }
+        }
+    }
+
+    [SkippableFact]
     public async Task InvalidLayoutDescriptorsAreRejectedBeforePersistence()
     {
         var providerName = $"invalid-layout-{Guid.NewGuid():N}";
@@ -1034,9 +1184,9 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await validateWrongProvider.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*layout descriptor provider name*");
         await validateUnsupportedVersion.Should().ThrowAsync<ArgumentOutOfRangeException>()
-            .WithMessage("*Storage format version*");
+            .WithMessage("*Layout format version*");
         await validateLegacyVersion.Should().ThrowAsync<ArgumentOutOfRangeException>()
-            .WithMessage("*Storage format version 3 is required*");
+            .WithMessage("*Layout format version 4*required*");
         (await layout.ValidateAsync(StorageLayout.CreateDescriptor(providerName, Fixture.PartitionCount)))
             .Should().BeFalse();
     }
@@ -1258,10 +1408,11 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [SkippableFact]
-    public void SearchableStorageOptionsUseBoundedPersistenceDefaults()
+    public void SearchableStorageOptionsUseBoundedLayoutAndPersistenceDefaults()
     {
         var options = new SearchableStorageOptions();
 
+        options.VirtualSlotTargetCount.Should().Be(16_384);
         options.JournalSegmentCapacity.Should().Be(64);
         options.MaximumJournalReplayEntries.Should().Be(4_096);
         options.CompactionThreshold.Should().Be(1_024);
@@ -1341,6 +1492,82 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
         return silo.ServiceProvider.GetRequiredKeyedService<IGrainStorage>(
             SearchableStorageConstants.PhysicalStorageProviderName);
+    }
+
+    private async Task<int[]> GetPartitionPhysicalWriteCallCountsAsync(
+        string providerName,
+        int journalSegmentCapacity,
+        int maximumJournalReplayEntries)
+    {
+        var journalSlotCount = StoragePersistence.GetJournalSlotCount(
+            maximumJournalReplayEntries,
+            journalSegmentCapacity);
+        var counts = new List<int>(Fixture.PartitionCount * (1 + journalSlotCount + StoragePersistence.SnapshotSlotCount));
+        for (var partitionIndex = 0; partitionIndex < Fixture.PartitionCount; partitionIndex++)
+        {
+            var partitionKey = StorageLayout.CreatePartitionKey(providerName, partitionIndex);
+            var partition = Fixture.Cluster.GrainFactory.GetGrain<IStoragePartitionGrain>(partitionKey);
+            counts.Add(await GetPhysicalWriteCallCountAsync(partition.GetGrainId(), "manifest"));
+
+            for (var slotIndex = 0; slotIndex < journalSlotCount; slotIndex++)
+            {
+                var journal = Fixture.Cluster.GrainFactory.GetGrain<IStorageJournalSegmentGrain>(
+                    StoragePersistence.CreateJournalSlotKey(partitionKey, slotIndex, journalSlotCount));
+                counts.Add(await GetPhysicalWriteCallCountAsync(journal.GetGrainId(), "journal"));
+            }
+
+            for (var slotIndex = 0; slotIndex < StoragePersistence.SnapshotSlotCount; slotIndex++)
+            {
+                var snapshot = Fixture.Cluster.GrainFactory.GetGrain<IStorageSnapshotGrain>(
+                    StoragePersistence.CreateSnapshotSlotKey(partitionKey, slotIndex));
+                counts.Add(await GetPhysicalWriteCallCountAsync(snapshot.GetGrainId(), "snapshot"));
+            }
+        }
+
+        return [.. counts];
+    }
+
+    private Task<int> GetPhysicalWriteCallCountAsync(GrainId grainId, string stateName)
+    {
+        return WriteFaultInjectingGrainStorage.GetWriteCallCountAsync(
+            Fixture.Cluster.GrainFactory,
+            grainId,
+            stateName);
+    }
+
+    private static async Task AssertVacancyQueriesAsync(
+        SearchableStorageClient client,
+        string city,
+        int salary,
+        params GrainId[] expected)
+    {
+        var hashResults = await client.FindAsync<VacancyState, string>(
+            VacancyGrain.StateName,
+            state => state.City,
+            city);
+        var rangeResults = await client.RangeAsync<VacancyState, int>(
+            VacancyGrain.StateName,
+            state => state.Salary,
+            salary,
+            salary);
+        var queryableResults = await client
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == city && state.Salary == salary)
+            .ToGrainIdsAsync();
+
+        hashResults.Should().BeEquivalentTo(expected);
+        rangeResults.Should().BeEquivalentTo(expected);
+        queryableResults.Should().BeEquivalentTo(expected);
+    }
+
+    private static string CreateStoredRecordKey(string stateName, GrainId grainId)
+    {
+        return string.Concat(
+            stateName,
+            "/",
+            Convert.ToHexString(grainId.Type.AsSpan()),
+            "/",
+            Convert.ToHexString(grainId.Key.AsSpan()));
     }
 
     protected IVacancyGrain CreateGrain()

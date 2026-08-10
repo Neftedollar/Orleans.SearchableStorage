@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
@@ -9,13 +10,10 @@ namespace Orleans.SearchableStorage;
 internal sealed class SearchableGrainStorage : IGrainStorage
 {
     private readonly IActivatorProvider _activatorProvider;
-    private readonly StorageLayoutDescriptor _layout;
-    private readonly IStorageLayoutGrain _layoutGrain;
-    private readonly object _layoutLock = new();
+    private readonly Func<int, IStoragePartitionGrain> _getPartition;
+    private readonly StorageLayoutCache _layoutCache;
     private readonly IGrainStorageSerializer _serializer;
     private readonly StoragePersistenceSettings _persistenceSettings;
-    private readonly Lazy<IStoragePartitionGrain>[] _partitions;
-    private Task? _layoutInitializationTask;
 
     public SearchableGrainStorage(
         string name,
@@ -28,7 +26,48 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentNullException.ThrowIfNull(activatorProvider);
 
+        var configuration = CreateConfiguration(name, options);
+        _persistenceSettings = configuration.PersistenceSettings;
+        _serializer = configuration.Serializer;
+        _activatorProvider = activatorProvider;
+        var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(name);
+        _layoutCache = new StorageLayoutCache(
+            async () => await layoutGrain.InitializeRoutingAsync(configuration.Layout));
+        var partitions = new ConcurrentDictionary<int, IStoragePartitionGrain>();
+        _getPartition = index => partitions.GetOrAdd(
+            index,
+            partitionIndex => grainFactory.GetGrain<IStoragePartitionGrain>(
+                StorageLayout.CreatePartitionKey(name, partitionIndex)));
+    }
+
+    internal SearchableGrainStorage(
+        string name,
+        SearchableStorageOptions options,
+        IActivatorProvider activatorProvider,
+        StorageLayoutCache layoutCache,
+        Func<int, IStoragePartitionGrain> getPartition)
+    {
+        ArgumentNullException.ThrowIfNull(activatorProvider);
+        ArgumentNullException.ThrowIfNull(layoutCache);
+        ArgumentNullException.ThrowIfNull(getPartition);
+
+        var configuration = CreateConfiguration(name, options);
+        _persistenceSettings = configuration.PersistenceSettings;
+        _serializer = configuration.Serializer;
+        _activatorProvider = activatorProvider;
+        _layoutCache = layoutCache;
+        _getPartition = getPartition;
+    }
+
+    private static StorageConfiguration CreateConfiguration(
+        string name,
+        SearchableStorageOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(options);
+
         var partitionCount = options.PartitionCount;
+        var virtualSlotTargetCount = options.VirtualSlotTargetCount;
         var journalSegmentCapacity = options.JournalSegmentCapacity;
         var maximumJournalReplayEntries = options.MaximumJournalReplayEntries;
         var compactionThreshold = options.CompactionThreshold;
@@ -39,39 +78,41 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             throw new ArgumentOutOfRangeException(nameof(options), partitionCount, "PartitionCount must be greater than zero.");
         }
 
+        _ = StorageLayout.DeriveVirtualSlotCount(partitionCount, virtualSlotTargetCount);
+
         ValidatePersistenceOptions(journalSegmentCapacity, maximumJournalReplayEntries, compactionThreshold);
 
-        _persistenceSettings = new StoragePersistenceSettings
+        var persistenceSettings = new StoragePersistenceSettings
         {
             JournalSegmentCapacity = journalSegmentCapacity,
             MaximumJournalReplayEntries = maximumJournalReplayEntries,
             CompactionThreshold = compactionThreshold,
         };
-        _serializer = serializer
+        var configuredSerializer = serializer
             ?? throw new ArgumentException("A grain storage serializer has not been configured.", nameof(options));
-        _activatorProvider = activatorProvider;
-        _layout = StorageLayout.CreateDescriptor(
+        var layout = StorageLayout.CreateDescriptor(
             name,
             partitionCount,
-            _persistenceSettings.JournalSegmentCapacity,
-            _persistenceSettings.MaximumJournalReplayEntries);
-        _layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(name);
-        _partitions = new Lazy<IStoragePartitionGrain>[partitionCount];
-        for (var index = 0; index < _partitions.Length; index++)
-        {
-            var partitionIndex = index;
-            _partitions[index] = new Lazy<IStoragePartitionGrain>(
-                () => grainFactory.GetGrain<IStoragePartitionGrain>(StorageLayout.CreatePartitionKey(name, partitionIndex)));
-        }
+            persistenceSettings.JournalSegmentCapacity,
+            persistenceSettings.MaximumJournalReplayEntries,
+            virtualSlotTargetCount);
+        return new StorageConfiguration(configuredSerializer, persistenceSettings, layout);
     }
 
     public async Task ReadStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
-        await EnsureLayoutAsync();
 
         var recordKey = CreateRecordKey(stateName, grainId);
-        var result = await GetPartition(grainId).ReadAsync(recordKey);
+        var result = await ExecuteRoutedAsync(
+            grainId,
+            (partition, slot, epoch) => partition.ReadRoutedAsync(new RoutedStorageReadRequest
+            {
+                RecordKey = recordKey,
+                GrainId = grainId,
+                Slot = slot,
+                Epoch = epoch,
+            }));
         if (!result.Found)
         {
             grainState.State = CreateInstance<T>();
@@ -93,7 +134,6 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     public async Task WriteStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
-        await EnsureLayoutAsync();
 
         var recordKey = CreateRecordKey(stateName, grainId);
         var payload = _serializer.Serialize(grainState.State).ToArray();
@@ -108,22 +148,36 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             Persistence = _persistenceSettings,
         };
 
-        grainState.ETag = await GetPartition(grainId).WriteAsync(request);
+        grainState.ETag = await ExecuteRoutedAsync(
+            grainId,
+            (partition, slot, epoch) => partition.WriteRoutedAsync(new RoutedStorageWriteRequest
+            {
+                Request = request,
+                Slot = slot,
+                Epoch = epoch,
+            }));
         grainState.RecordExists = true;
     }
 
     public async Task ClearStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
-        await EnsureLayoutAsync();
 
         var recordKey = CreateRecordKey(stateName, grainId);
-        await GetPartition(grainId).ClearAsync(new StorageClearRequest
-        {
-            RecordKey = recordKey,
-            ExpectedETag = grainState.ETag,
-            Persistence = _persistenceSettings,
-        });
+        await ExecuteRoutedAsync(
+            grainId,
+            (partition, slot, epoch) => partition.ClearRoutedAsync(new RoutedStorageClearRequest
+            {
+                Request = new StorageClearRequest
+                {
+                    RecordKey = recordKey,
+                    ExpectedETag = grainState.ETag,
+                    Persistence = _persistenceSettings,
+                },
+                GrainId = grainId,
+                Slot = slot,
+                Epoch = epoch,
+            }));
         grainState.State = CreateInstance<T>();
         grainState.ETag = null;
         grainState.RecordExists = false;
@@ -140,38 +194,45 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             Convert.ToHexString(grainId.Key.AsSpan()));
     }
 
-    private IStoragePartitionGrain GetPartition(GrainId grainId)
+    private async Task<T> ExecuteRoutedAsync<T>(
+        GrainId grainId,
+        Func<IStoragePartitionGrain, int, long, Task<T>> operation)
     {
-        // Orleans defines this hash as uniform and stable, so the physical partition remains
-        // unchanged across processes and runtime upgrades which preserve the GrainId contract.
-        var index = (int)((uint)grainId.GetUniformHashCode() % (uint)_partitions.Length);
-        return _partitions[index].Value;
+        ArgumentNullException.ThrowIfNull(operation);
+        var layout = await GetRequiredLayoutAsync();
+        for (var attempt = 0; ; attempt++)
+        {
+            var slot = StorageLayout.GetSlot(grainId, layout.VirtualSlotCount);
+            var owner = layout.GetOwner(slot);
+            try
+            {
+                return await operation(_getPartition(owner), slot, layout.Epoch);
+            }
+            catch (StorageRouteMismatchException) when (attempt == 0)
+            {
+                _layoutCache.Invalidate(layout);
+                layout = await GetRequiredLayoutAsync();
+            }
+        }
     }
 
-    private async Task EnsureLayoutAsync()
+    private async Task ExecuteRoutedAsync(
+        GrainId grainId,
+        Func<IStoragePartitionGrain, int, long, Task> operation)
     {
-        Task initializationTask;
-        lock (_layoutLock)
-        {
-            initializationTask = _layoutInitializationTask ??= _layoutGrain.InitializeAsync(_layout);
-        }
-
-        try
-        {
-            await initializationTask;
-        }
-        catch
-        {
-            lock (_layoutLock)
+        await ExecuteRoutedAsync(
+            grainId,
+            async (partition, slot, epoch) =>
             {
-                if (ReferenceEquals(_layoutInitializationTask, initializationTask))
-                {
-                    _layoutInitializationTask = null;
-                }
-            }
+                await operation(partition, slot, epoch);
+                return true;
+            });
+    }
 
-            throw;
-        }
+    private async Task<StorageLayoutSnapshot> GetRequiredLayoutAsync()
+    {
+        return await _layoutCache.GetAsync()
+            ?? throw new InvalidOperationException("The storage layout was not initialized by its storage provider.");
     }
 
     private T CreateInstance<T>()
@@ -218,4 +279,9 @@ internal sealed class SearchableGrainStorage : IGrainStorage
                 "CompactionThreshold must not exceed MaximumJournalReplayEntries.");
         }
     }
+
+    private readonly record struct StorageConfiguration(
+        IGrainStorageSerializer Serializer,
+        StoragePersistenceSettings PersistenceSettings,
+        StorageLayoutDescriptor Layout);
 }
