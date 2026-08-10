@@ -36,12 +36,13 @@ adoption.
 
 The v3-to-v4 transition requires a traffic pause rather than an online mixed-version rollout.
 Quiesce searchable storage and query traffic, update every silo and Orleans client, verify that no
-version-3 process remains, and only then resume traffic so the first storage operation can adopt the
-layout. A new storage activation immediately uses routed methods which an old silo does not
-implement, and an old activation cannot read the adopted format-4 layout. This release retains
-legacy methods for updated consumers and its epoch-1 identity map preserves old modulo placement,
-but it does not expose `MoveSlot`. Future ownership changes require a separate coordinated all-v4
-protocol gate.
+version-3 process remains, and keep traffic paused while one normal grain-state storage operation
+adopts each provider namespace. Verify format 4 and epoch 1 through the admin client before resuming
+traffic; query and admin reads do not perform adoption. A new storage activation immediately uses
+routed methods which an old silo does not implement, and an old activation cannot read the adopted
+format-4 layout. This release retains legacy methods for updated consumers and its epoch-1 identity
+map preserves old modulo placement, but it does not expose `MoveSlot`. Future ownership changes
+require a separate coordinated all-v4 protocol gate.
 
 The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, and snapshot states is required; the manifest is the searchable-storage commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, or snapshot state.
 

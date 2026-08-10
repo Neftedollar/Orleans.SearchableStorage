@@ -54,9 +54,10 @@ mismatch, the client observes the complete fan-out, discards all results from th
 conditionally invalidates only the snapshot which was rejected, and retries once. Conditional
 invalidation prevents concurrent stale callers from replacing each other's refresh.
 
-A query before any storage operation returns empty and does not initialize the layout. A read-only
-admin client likewise returns no layout. Migration is owned by `SearchableGrainStorage`, which has
-the full provider and journal descriptor; query and admin clients never invent a virtual map.
+A query against an uninitialized namespace returns empty and does not initialize the layout. A
+read-only admin client likewise returns no layout. A persisted version-3 namespace instead requires
+adoption through `SearchableGrainStorage`, which has the full provider and journal descriptor; query
+and admin clients never invent or migrate a virtual map.
 
 Assignments remain the epoch-1 identity map in this release. Live slot movement and a changed
 physical owner count are intentionally not exposed. The future move protocol needs a coordinated
@@ -224,12 +225,13 @@ method addition alone does not make a mixed-version cluster safe. A new `Searcha
 uses routed layout and partition methods on its first operation; Orleans may place the receiving
 grain activation on an old silo which does not implement them, and an old activation cannot read a
 format-4 layout. Operators must quiesce searchable storage and query traffic, update every silo and
-Orleans client, verify that no version-3 process remains, and only then resume traffic. The first
-storage operation can then adopt an exact version-3 layout as the epoch-1 identity map. Adoption
-performs one layout CAS and no partition-persistence write. Legacy calls remain available on updated
-processes and the identity map preserves their modulo placement, but this is not an online rolling
-upgrade guarantee. This release exposes no `MoveSlot` operation; future assignment changes require
-a separate coordinated all-v4 protocol gate.
+Orleans client, and verify that no version-3 process remains. While traffic is still paused, one
+normal grain-state storage operation must adopt each provider namespace as the epoch-1 identity map;
+operators should verify format 4 and epoch 1 through the admin client before resuming traffic.
+Adoption performs one layout CAS and no partition-persistence write. Query and admin reads do not
+perform adoption. Legacy calls remain available on updated processes and the identity map preserves
+their modulo placement, but this is not an online rolling upgrade guarantee. This release exposes no
+`MoveSlot` operation; future assignment changes require a separate coordinated all-v4 protocol gate.
 
 Physical providers can use serializers other than Orleans' binary serializer. With JSON persistence, CLR type and property names plus configured JSON converters are part of the compatibility surface; Orleans `[Id]` values do not rename JSON members. The memory contract suite explicitly uses `JsonGrainStorageSerializer` so partition and layout reactivation exercise that representation.
 

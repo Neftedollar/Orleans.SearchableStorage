@@ -83,8 +83,10 @@ name and initial partition count.
 
 This release does not expose `MoveSlot` or change physical ownership. The v3-to-v4 transition is not
 an online mixed-version rollout: pause searchable storage and query traffic, update every silo and
-Orleans client, verify that no version-3 process remains, and then resume traffic. Updated legacy
-calls remain placement-compatible with the epoch-1 identity map, but any future movement protocol
-requires a separate coordinated all-v4 gate.
+Orleans client, verify that no version-3 process remains, and keep traffic paused while one normal
+grain-state storage operation adopts each provider namespace. Verify format 4 and epoch 1 through
+`GET /storage/layout`, then resume traffic. Query and admin reads do not perform adoption. Updated
+legacy calls remain placement-compatible with the epoch-1 identity map, but any future movement
+protocol requires a separate coordinated all-v4 gate.
 
 The sample state needs no PolyType-specific annotations. Orleans.SearchableStorage uses PolyType's runtime reflection provider internally; Native AOT and trimming are outside the supported deployment model.

@@ -154,7 +154,9 @@ different epochs are never merged.
 
 This format transition is not an online mixed-version rollout. Quiesce searchable storage and query
 traffic, deploy this package to every silo and Orleans client, verify that no version-3 process
-remains, and only then resume traffic. The first storage operation can then adopt the layout. New
+remains, and keep traffic paused while one normal grain-state storage operation adopts each provider
+namespace. Verify through the admin client that every persisted layout reports format 4 and epoch 1,
+then resume traffic. Query and admin reads deliberately do not perform migration themselves. New
 routed methods are additive and legacy calls remain placement-compatible with the epoch-1 identity
 map on updated processes, but a new storage activation can otherwise reach an old silo which does
 not implement those methods. Live ownership movement is not exposed by this release and requires a
