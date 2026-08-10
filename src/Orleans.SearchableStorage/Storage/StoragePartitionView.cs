@@ -10,11 +10,14 @@ internal sealed class StoragePartitionView
         ArgumentNullException.ThrowIfNull(records);
         Records = records;
         Indexes = StoragePartitionIndexes.Build(records);
+        OrderedIndexes = StoragePartitionOrderedIndexes.Build(records);
     }
 
     public Dictionary<string, StoredRecord> Records { get; }
 
     public StoragePartitionIndexes Indexes { get; }
+
+    public StoragePartitionOrderedIndexes OrderedIndexes { get; }
 
     public void ApplyUpsert(string recordKey, StoredRecord record)
     {
@@ -24,9 +27,11 @@ internal sealed class StoragePartitionView
         if (Records.TryGetValue(recordKey, out var current))
         {
             Indexes.RemoveRecord(recordKey, current);
+            OrderedIndexes.RemoveRecord(recordKey, current);
         }
 
         Indexes.AddRecord(recordKey, record);
+        OrderedIndexes.AddRecord(recordKey, record);
         Records[recordKey] = record;
     }
 
@@ -39,6 +44,7 @@ internal sealed class StoragePartitionView
         }
 
         Indexes.RemoveRecord(recordKey, current);
+        OrderedIndexes.RemoveRecord(recordKey, current);
         Records.Remove(recordKey);
     }
 }

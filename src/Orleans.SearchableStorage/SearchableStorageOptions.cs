@@ -1,3 +1,4 @@
+using System.Text;
 using Orleans.Storage;
 
 namespace Orleans.SearchableStorage;
@@ -7,6 +8,11 @@ namespace Orleans.SearchableStorage;
 /// </summary>
 public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
 {
+    /// <summary>
+    /// Gets the bounded-query and continuation-protection configuration for this provider.
+    /// </summary>
+    public SearchableStorageQueryOptions Query { get; } = new();
+
     /// <summary>
     /// Gets or sets the number of stable storage partitions.
     /// </summary>
@@ -54,4 +60,194 @@ public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
 
     /// <inheritdoc />
     public IGrainStorageSerializer GrainStorageSerializer { get; set; } = default!;
+}
+
+/// <summary>
+/// Configures bounded query execution for one searchable-storage provider.
+/// </summary>
+public sealed class SearchableStorageQueryOptions
+{
+    /// <summary>The recommended public page size and built-in compatibility traversal page size.</summary>
+    public const int DefaultPageSize = 128;
+
+    /// <summary>The hard upper bound for a requested public page size.</summary>
+    public const int MaximumPageSize = 1_024;
+
+    /// <summary>The default logical-work budget for one partition turn.</summary>
+    public const long DefaultPartitionWorkBudget = 65_536;
+
+    /// <summary>The hard upper bound for one partition turn's logical-work budget.</summary>
+    public const long MaximumPartitionWorkBudget = 1_048_576;
+
+    /// <summary>The default item ceiling for one partition response.</summary>
+    public const int DefaultPartitionResponseItems = 1_024;
+
+    /// <summary>The hard item ceiling for one partition response.</summary>
+    public const int MaximumPartitionResponseItems = 4_096;
+
+    /// <summary>The default encoded-byte ceiling for one partition response.</summary>
+    public const int DefaultPartitionResponseBytes = 256 * 1_024;
+
+    /// <summary>The hard encoded-byte ceiling for one partition response.</summary>
+    public const int MaximumPartitionResponseBytes = 1_024 * 1_024;
+
+    /// <summary>The default coordinator item-buffer ceiling.</summary>
+    public const int DefaultCoordinatorBufferedItems = 8_192;
+
+    /// <summary>The hard coordinator item-buffer ceiling.</summary>
+    public const int MaximumCoordinatorBufferedItems = 65_536;
+
+    /// <summary>The default coordinator encoded-byte-buffer ceiling.</summary>
+    public const int DefaultCoordinatorBufferedBytes = 2 * 1_024 * 1_024;
+
+    /// <summary>The hard coordinator encoded-byte-buffer ceiling.</summary>
+    public const int MaximumCoordinatorBufferedBytes = 16 * 1_024 * 1_024;
+
+    /// <summary>The default encoded-byte ceiling for one public page.</summary>
+    public const int DefaultPageBytes = 1 * 1_024 * 1_024;
+
+    /// <summary>The hard encoded-byte ceiling for one public page.</summary>
+    public const int MaximumPageBytes = 4 * 1_024 * 1_024;
+
+    /// <summary>The default encoded continuation-token length ceiling.</summary>
+    public const int DefaultContinuationTokenBytes = 2_048;
+
+    /// <summary>The hard encoded continuation-token length ceiling.</summary>
+    public const int MaximumContinuationTokenBytes = 16 * 1_024;
+
+    /// <summary>The default aggregate logical-work ceiling for an all-results compatibility query.</summary>
+    public const long DefaultLegacyAggregateWork = 4_194_304;
+
+    /// <summary>The hard aggregate logical-work ceiling for an all-results compatibility query.</summary>
+    public const long MaximumLegacyAggregateWork = 67_108_864;
+
+    /// <summary>The default result-item ceiling for an all-results compatibility query.</summary>
+    public const int DefaultLegacyResultItems = 8_192;
+
+    /// <summary>The hard result-item ceiling for an all-results compatibility query.</summary>
+    public const int MaximumLegacyResultItems = 100_000;
+
+    /// <summary>The default result-byte ceiling for an all-results compatibility query.</summary>
+    public const int DefaultLegacyResultBytes = 8 * 1_024 * 1_024;
+
+    /// <summary>The hard result-byte ceiling for an all-results compatibility query.</summary>
+    public const int MaximumLegacyResultBytes = 64 * 1_024 * 1_024;
+
+    /// <summary>The default round ceiling for an all-results compatibility query.</summary>
+    public const int DefaultLegacyRounds = 64;
+
+    /// <summary>The hard round ceiling for an all-results compatibility query.</summary>
+    public const int MaximumLegacyRounds = 1_024;
+
+    /// <summary>Gets or sets the provider's accepted public page-size ceiling.</summary>
+    public int PageSizeLimit { get; set; } = MaximumPageSize;
+
+    /// <summary>Gets or sets the logical-work budget for one partition turn.</summary>
+    public long PartitionWorkBudget { get; set; } = DefaultPartitionWorkBudget;
+
+    /// <summary>Gets or sets the item ceiling for one partition response before owner-count apportionment.</summary>
+    public int PartitionResponseItemLimit { get; set; } = DefaultPartitionResponseItems;
+
+    /// <summary>Gets or sets the encoded-byte ceiling for one partition response before owner-count apportionment.</summary>
+    public int PartitionResponseByteLimit { get; set; } = DefaultPartitionResponseBytes;
+
+    /// <summary>Gets or sets the coordinator item-buffer ceiling.</summary>
+    public int CoordinatorBufferedItemLimit { get; set; } = DefaultCoordinatorBufferedItems;
+
+    /// <summary>Gets or sets the coordinator encoded-byte-buffer ceiling.</summary>
+    public int CoordinatorBufferedByteLimit { get; set; } = DefaultCoordinatorBufferedBytes;
+
+    /// <summary>Gets or sets the encoded-byte ceiling for one public page.</summary>
+    public int PageByteLimit { get; set; } = DefaultPageBytes;
+
+    /// <summary>Gets or sets the maximum accepted encoded continuation-token length.</summary>
+    public int ContinuationTokenByteLimit { get; set; } = DefaultContinuationTokenBytes;
+
+    /// <summary>Gets or sets the aggregate logical-work ceiling for an all-results compatibility query.</summary>
+    public long LegacyAggregateWorkLimit { get; set; } = DefaultLegacyAggregateWork;
+
+    /// <summary>Gets or sets the result-item ceiling for an all-results compatibility query.</summary>
+    public int LegacyResultItemLimit { get; set; } = DefaultLegacyResultItems;
+
+    /// <summary>Gets or sets the result-byte ceiling for an all-results compatibility query.</summary>
+    public int LegacyResultByteLimit { get; set; } = DefaultLegacyResultBytes;
+
+    /// <summary>Gets or sets the round ceiling for an all-results compatibility query.</summary>
+    public int LegacyRoundLimit { get; set; } = DefaultLegacyRounds;
+
+    /// <summary>Gets the provider-scoped continuation-protection key ring.</summary>
+    public SearchableStorageContinuationProtectionOptions ContinuationProtection { get; } = new();
+}
+
+/// <summary>
+/// Configures provider-scoped authenticated encryption for continuation tokens.
+/// </summary>
+public sealed class SearchableStorageContinuationProtectionOptions
+{
+    /// <summary>
+    /// Gets or sets the key used to encrypt new tokens. Public paging requires this value, while
+    /// point storage operations and token-free compatibility queries do not.
+    /// </summary>
+    public SearchableStorageContinuationKey? CurrentKey { get; set; }
+
+    /// <summary>
+    /// Gets the explicit decrypt-only keys accepted during rotation.
+    /// </summary>
+    public IList<SearchableStorageContinuationKey> DecryptionKeys { get; } = [];
+}
+
+/// <summary>
+/// Holds one AES-256 continuation-protection key and its stable operational identifier.
+/// </summary>
+public sealed class SearchableStorageContinuationKey
+{
+    internal const int RequiredKeyBytes = 32;
+    internal const int MaximumKeyIdBytes = 64;
+    private static readonly Encoding StrictUtf8 = new UTF8Encoding(false, true);
+    private readonly byte[] _keyMaterial;
+
+    /// <summary>
+    /// Initializes a continuation-protection key, defensively copying its material.
+    /// </summary>
+    /// <param name="keyId">The stable, non-secret operational key identifier.</param>
+    /// <param name="keyMaterial">Exactly 32 bytes of application secret key material.</param>
+    /// <exception cref="ArgumentException">The identifier is blank, too long, or invalid UTF-8, or the material is not 32 bytes.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="keyMaterial"/> is null.</exception>
+    public SearchableStorageContinuationKey(string keyId, byte[] keyMaterial)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyId);
+        ArgumentNullException.ThrowIfNull(keyMaterial);
+
+        int keyIdBytes;
+        try
+        {
+            keyIdBytes = StrictUtf8.GetByteCount(keyId);
+        }
+        catch (EncoderFallbackException exception)
+        {
+            throw new ArgumentException("The key identifier must contain valid Unicode text.", nameof(keyId), exception);
+        }
+
+        if (keyIdBytes > MaximumKeyIdBytes)
+        {
+            throw new ArgumentException(
+                $"The UTF-8 key identifier must not exceed {MaximumKeyIdBytes} bytes.",
+                nameof(keyId));
+        }
+
+        if (keyMaterial.Length != RequiredKeyBytes)
+        {
+            throw new ArgumentException(
+                $"Continuation-protection key material must contain exactly {RequiredKeyBytes} bytes.",
+                nameof(keyMaterial));
+        }
+
+        KeyId = keyId;
+        _keyMaterial = [.. keyMaterial];
+    }
+
+    /// <summary>Gets the stable, non-secret operational key identifier.</summary>
+    public string KeyId { get; }
+
+    internal byte[] CopyKeyMaterial() => [.. _keyMaterial];
 }

@@ -122,12 +122,63 @@ public sealed class QueryApiContractTests
         AssertFieldIds<RoutedPartitionQuery>(
             (nameof(RoutedPartitionQuery.Query), 0),
             (nameof(RoutedPartitionQuery.Epoch), 1));
+        AssertFieldIds<RoutedPartitionQueryPageRequest>(
+            (nameof(RoutedPartitionQueryPageRequest.Query), 0),
+            (nameof(RoutedPartitionQueryPageRequest.Epoch), 1),
+            (nameof(RoutedPartitionQueryPageRequest.HasAfter), 2),
+            (nameof(RoutedPartitionQueryPageRequest.After), 3),
+            (nameof(RoutedPartitionQueryPageRequest.WorkBudget), 4),
+            (nameof(RoutedPartitionQueryPageRequest.ItemLimit), 5),
+            (nameof(RoutedPartitionQueryPageRequest.ByteLimit), 6),
+            (nameof(RoutedPartitionQueryPageRequest.ProtocolVersion), 7),
+            (nameof(RoutedPartitionQueryPageRequest.OrderingVersion), 8),
+            (nameof(RoutedPartitionQueryPageRequest.WorkPolicyVersion), 9),
+            (nameof(RoutedPartitionQueryPageRequest.ResponseFamily), 10),
+            (nameof(RoutedPartitionQueryPageRequest.QueryFingerprint), 11),
+            (nameof(RoutedPartitionQueryPageRequest.LayoutFormatVersion), 12),
+            (nameof(RoutedPartitionQueryPageRequest.LayoutFingerprint), 13),
+            (nameof(RoutedPartitionQueryPageRequest.StateName), 14));
+        AssertFieldIds<PartitionQueryPageResult>(
+            (nameof(PartitionQueryPageResult.Items), 0),
+            (nameof(PartitionQueryPageResult.HasFrontier), 1),
+            (nameof(PartitionQueryPageResult.Frontier), 2),
+            (nameof(PartitionQueryPageResult.Exhausted), 3),
+            (nameof(PartitionQueryPageResult.StopReason), 4),
+            (nameof(PartitionQueryPageResult.Work), 5),
+            (nameof(PartitionQueryPageResult.ItemByteCount), 6),
+            (nameof(PartitionQueryPageResult.ProtocolVersion), 7),
+            (nameof(PartitionQueryPageResult.OrderingVersion), 8),
+            (nameof(PartitionQueryPageResult.WorkPolicyVersion), 9),
+            (nameof(PartitionQueryPageResult.ResponseFamily), 10),
+            (nameof(PartitionQueryPageResult.Epoch), 11),
+            (nameof(PartitionQueryPageResult.QueryFingerprint), 12),
+            (nameof(PartitionQueryPageResult.LayoutFormatVersion), 13),
+            (nameof(PartitionQueryPageResult.LayoutFingerprint), 14));
+        AssertFieldIds<PartitionQueryPageWork>(
+            (nameof(PartitionQueryPageWork.OrderedCandidateVisitCount), 0),
+            (nameof(PartitionQueryPageWork.RecordProbeCount), 1),
+            (nameof(PartitionQueryPageWork.PredicateNodeProbeCount), 2),
+            (nameof(PartitionQueryPageWork.IndexEntryProbeCount), 3),
+            (nameof(PartitionQueryPageWork.OwnershipProbeCount), 4),
+            (nameof(PartitionQueryPageWork.PostingSeekCount), 5),
+            (nameof(PartitionQueryPageWork.RangeBucketVisitCount), 6),
+            (nameof(PartitionQueryPageWork.ResultMaterializationCount), 7),
+            (nameof(PartitionQueryPageWork.RangeMergeOperationCount), 8));
+        AssertFieldIds<PartitionQueryBudgetTooSmallException>(
+            (nameof(PartitionQueryBudgetTooSmallException.RequestedLimit), 0),
+            (nameof(PartitionQueryBudgetTooSmallException.MinimumRequired), 1),
+            (nameof(PartitionQueryBudgetTooSmallException.Reason), 2));
         AssertFieldIds<StorageRouteMismatchException>(
             (nameof(StorageRouteMismatchException.ExpectedEpoch), 0),
             (nameof(StorageRouteMismatchException.CurrentEpoch), 1),
             (nameof(StorageRouteMismatchException.RequestedPartition), 2),
             (nameof(StorageRouteMismatchException.Slot), 3),
             (nameof(StorageRouteMismatchException.CurrentOwner), 4));
+
+        ((int)PartitionQueryPageStopReason.Exhausted).Should().Be(0);
+        ((int)PartitionQueryPageStopReason.WorkBudget).Should().Be(1);
+        ((int)PartitionQueryPageStopReason.ItemLimit).Should().Be(2);
+        ((int)PartitionQueryPageStopReason.ByteLimit).Should().Be(3);
 
         AssertFieldIds<StorageLayoutDescriptor>(
             (nameof(StorageLayoutDescriptor.FormatVersion), 0),

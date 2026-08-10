@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using BenchmarkDotNet.Attributes;
+using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
@@ -216,12 +217,27 @@ public class QueryPlanConstructionBenchmarks
 [BenchmarkCategory("Querying", "Evaluation")]
 public class QueryPlanEvaluationBenchmarks
 {
-    private StoragePartitionIndexes _indexes = null!;
+    private StoragePartitionView _view = null!;
     private PartitionQueryPlan _plan = null!;
     private HashSet<string> _expectedRecordKeys = null!;
+    private GrainId[] _expectedGrainIds = null!;
+    private StorageLayoutSnapshot _routing = null!;
+    private byte[] _layoutFingerprint = null!;
+    private byte[] _queryFingerprint = null!;
+    private QueryBenchmarkDiagnostics? _orderedDiagnostics;
 
-    [Params(4_096, 65_536)]
-    public int RecordCount { get; set; }
+    [Params(
+        QueryEvaluationDataset.ShortIds4K,
+        QueryEvaluationDataset.ShortIds64K,
+        QueryEvaluationDataset.LongIds4K)]
+    public QueryEvaluationDataset Dataset { get; set; }
+
+    public int RecordCount => Dataset switch
+    {
+        QueryEvaluationDataset.ShortIds4K or QueryEvaluationDataset.LongIds4K => 4_096,
+        QueryEvaluationDataset.ShortIds64K => 65_536,
+        _ => throw new ArgumentOutOfRangeException(nameof(Dataset), Dataset, null),
+    };
 
     [Params(QueryEvaluationDistribution.Uniform, QueryEvaluationDistribution.HotKeyAndLowRange)]
     public QueryEvaluationDistribution Distribution { get; set; }
@@ -235,16 +251,49 @@ public class QueryPlanEvaluationBenchmarks
         QueryEvaluationScenario.DuplicateHeavyOr)]
     public QueryEvaluationScenario Scenario { get; set; }
 
+    [Params(
+        QueryEvaluationVariant.MaterializingWholePlan,
+        QueryEvaluationVariant.OrderedDefaultPartitionPage,
+        QueryEvaluationVariant.OrderedHardCeilingPartitionTraversal,
+        QueryEvaluationVariant.OrderedConstrainedWorkPartitionPage,
+        QueryEvaluationVariant.OrderedMaximumPolicyPartitionPage,
+        QueryEvaluationVariant.OrderedDefaultRoundWindow)]
+    public QueryEvaluationVariant Variant { get; set; }
+
     [GlobalSetup]
     public void GlobalSetup()
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(RecordCount);
 
-        var records = CreateEvaluationRecords(RecordCount, Distribution);
+        var records = CreateEvaluationRecords(
+            RecordCount,
+            Distribution,
+            GetMinimumGrainKeyLength(Dataset));
         ValidateDistributionShape(records);
-        _indexes = StoragePartitionIndexes.Build(records);
+        _view = new StoragePartitionView(records);
         _plan = CreateEvaluationPlan(RecordCount, Scenario);
-        _expectedRecordKeys = CreateExpectedRecordKeys(RecordCount, Distribution, Scenario);
+        _expectedRecordKeys = CreateExpectedRecordKeys(
+            RecordCount,
+            Distribution,
+            Scenario,
+            GetMinimumGrainKeyLength(Dataset));
+        _expectedGrainIds = CreateExpectedGrainIds(
+            RecordCount,
+            Distribution,
+            Scenario,
+            GetMinimumGrainKeyLength(Dataset));
+        _routing = StorageLayoutSnapshot.FromState(new StorageLayoutState
+        {
+            Initialized = true,
+            FormatVersion = StorageLayout.CurrentFormatVersion,
+            ProviderName = "benchmark-provider",
+            PartitionCount = 1,
+            VirtualSlotCount = 1,
+            SlotAssignments = [0],
+            Epoch = 1,
+        });
+        _queryFingerprint = QueryPlanFingerprint.Compute(BenchmarkData.StateName, _plan);
+        _layoutFingerprint = StorageLayoutFingerprint.Compute(_routing);
 
         // Correctness and fixture selectivity are checked during setup rather than in the timed
         // method. The benchmark measures only the production partition-query evaluator.
@@ -253,12 +302,23 @@ public class QueryPlanEvaluationBenchmarks
     }
 
     [Benchmark]
-    public int EvaluatePartitionPlan() =>
-        StoragePartitionQueryEvaluator.Evaluate(_plan, _indexes).Count;
+    public int EvaluatePartitionPlan() => Variant switch
+    {
+        QueryEvaluationVariant.MaterializingWholePlan =>
+            StoragePartitionQueryEvaluator.Evaluate(_plan, _view.Indexes).Count,
+        QueryEvaluationVariant.OrderedDefaultPartitionPage
+            or QueryEvaluationVariant.OrderedConstrainedWorkPartitionPage
+            or QueryEvaluationVariant.OrderedMaximumPolicyPartitionPage =>
+            EvaluateOrderedPartitionPage(QueryBenchmarkPolicy.For(Variant)).Items.Length,
+        QueryEvaluationVariant.OrderedHardCeilingPartitionTraversal
+            or QueryEvaluationVariant.OrderedDefaultRoundWindow =>
+            EvaluateOrderedTraversal(QueryBenchmarkPolicy.For(Variant), captureItems: false).ItemCount,
+        _ => throw new ArgumentOutOfRangeException(nameof(Variant), Variant, null),
+    };
 
     internal void ValidateFixture()
     {
-        var evaluation = StoragePartitionQueryEvaluator.EvaluateWithWork(_plan, _indexes);
+        var evaluation = StoragePartitionQueryEvaluator.EvaluateWithWork(_plan, _view.Indexes);
         if (!evaluation.RecordKeys.SetEquals(_expectedRecordKeys))
         {
             throw new InvalidOperationException(
@@ -267,9 +327,336 @@ public class QueryPlanEvaluationBenchmarks
         }
 
         ValidateWorkShape(evaluation.Work);
+        ValidateOrderedFixture();
     }
 
     internal int ExpectedResultCount => _expectedRecordKeys.Count;
+
+    internal int ExpectedTimedResultCount => Variant switch
+    {
+        QueryEvaluationVariant.MaterializingWholePlan => ExpectedResultCount,
+        _ => _orderedDiagnostics?.TimedItemCount
+            ?? throw new InvalidOperationException("Ordered query diagnostics were not captured."),
+    };
+
+    internal QueryBenchmarkDiagnostics? OrderedDiagnostics => _orderedDiagnostics;
+
+    private void ValidateOrderedFixture()
+    {
+        if (Variant == QueryEvaluationVariant.MaterializingWholePlan)
+        {
+            _orderedDiagnostics = null;
+            return;
+        }
+
+        var policy = QueryBenchmarkPolicy.For(Variant);
+        var first = EvaluateOrderedPartitionPage(policy);
+        ValidateOrderedPage(first, policy, hasAfter: false, after: default);
+        var expectedFirst = _expectedGrainIds
+            .Where(id => first.Exhausted
+                || GrainIdCanonicalOrder.Compare(id, first.Frontier) <= 0)
+            .ToArray();
+        if (!first.Items.SequenceEqual(expectedFirst))
+        {
+            throw new InvalidOperationException(
+                $"The '{Scenario}' ordered partition page did not return its exact safe prefix.");
+        }
+
+        var repeated = EvaluateOrderedPartitionPage(policy);
+        if (!repeated.Items.SequenceEqual(first.Items)
+            || repeated.Exhausted != first.Exhausted
+            || repeated.HasFrontier != first.HasFrontier
+            || (repeated.HasFrontier
+                && GrainIdCanonicalOrder.Compare(repeated.Frontier, first.Frontier) != 0)
+            || BenchmarkWorkVector.From(repeated.Work) != BenchmarkWorkVector.From(first.Work))
+        {
+            throw new InvalidOperationException(
+                $"The '{Scenario}' ordered page did not reproduce its deterministic prefix and work vector.");
+        }
+
+        var exactDriverCount = GetSelectiveExactDriverCount();
+        if (Scenario == QueryEvaluationScenario.SelectiveExactAndBroadRange
+            && (exactDriverCount <= 0
+                || exactDriverCount >= RecordCount / 64
+                || first.Work.OrderedCandidateVisitCount <= 0
+                || first.Work.OrderedCandidateVisitCount > exactDriverCount))
+        {
+            throw new InvalidOperationException(
+                "The selective exact-and-range benchmark did not use its measured bounded exact posting.");
+        }
+
+        var rangeExecutionStrategy = GetRangeExecutionStrategy(first.Work);
+        ValidateRangeExecutionStrategy(first.Work, rangeExecutionStrategy);
+
+        QueryTraversalDiagnostics? traversalDiagnostics = null;
+        var timedItemCount = first.Items.Length;
+        if (Variant is QueryEvaluationVariant.OrderedHardCeilingPartitionTraversal
+            or QueryEvaluationVariant.OrderedDefaultRoundWindow)
+        {
+            var traversal = EvaluateOrderedTraversal(policy, captureItems: true);
+            timedItemCount = traversal.ItemCount;
+            if (!traversal.Items.SequenceEqual(_expectedGrainIds.Take(traversal.ItemCount)))
+            {
+                throw new InvalidOperationException(
+                    $"The '{Scenario}' ordered traversal did not return an exact ordered result prefix.");
+            }
+
+            if (Variant == QueryEvaluationVariant.OrderedHardCeilingPartitionTraversal
+                && (!traversal.Exhausted || traversal.ItemCount != _expectedGrainIds.Length))
+            {
+                throw new InvalidOperationException(
+                    $"The '{Scenario}' hard-ceiling traversal did not return the complete expected sequence.");
+            }
+
+            if (Scenario == QueryEvaluationScenario.SelectiveExactAndBroadRange
+                && Variant == QueryEvaluationVariant.OrderedHardCeilingPartitionTraversal
+                && traversal.AggregateWork.OrderedCandidateVisitCount != exactDriverCount)
+            {
+                throw new InvalidOperationException(
+                    "The complete selective exact-and-range traversal did not stay on its exact posting driver.");
+            }
+
+            traversalDiagnostics = new QueryTraversalDiagnostics(
+                traversal.Rounds,
+                traversal.Exhausted,
+                traversal.ItemCount,
+                traversal.ItemByteCount,
+                traversal.AggregateWork,
+                traversal.MaximumPageWork,
+                ComputeSequenceSha256(traversal.Items));
+        }
+
+        _orderedDiagnostics = new QueryBenchmarkDiagnostics(
+            Dataset,
+            Distribution,
+            Scenario,
+            Variant,
+            RecordCount,
+            GetMinimumGrainKeyLength(Dataset),
+            ExpectedResultCount,
+            exactDriverCount,
+            rangeExecutionStrategy,
+            policy,
+            timedItemCount,
+            CreatePageDiagnostics(first),
+            traversalDiagnostics);
+    }
+
+    private PartitionQueryPageResult EvaluateOrderedPartitionPage(
+        QueryBenchmarkPolicy policy,
+        bool hasAfter = false,
+        GrainId after = default)
+    {
+        return StoragePartitionQueryPageEvaluator.EvaluateValidated(
+            new RoutedPartitionQueryPageRequest
+            {
+                Query = _plan,
+                Epoch = _routing.Epoch,
+                HasAfter = hasAfter,
+                After = after,
+                WorkBudget = policy.WorkBudget,
+                ItemLimit = policy.PageSize,
+                ByteLimit = policy.ResponseByteLimit,
+                ProtocolVersion = QueryProtocol.PagingVersion,
+                OrderingVersion = QueryProtocol.OrderingVersion,
+                WorkPolicyVersion = QueryProtocol.WorkPolicyVersion,
+                ResponseFamily = PartitionQueryResponseFamily.GrainIdPage,
+                QueryFingerprint = _queryFingerprint,
+                LayoutFormatVersion = _routing.FormatVersion,
+                LayoutFingerprint = _layoutFingerprint,
+                StateName = BenchmarkData.StateName,
+            },
+            _view,
+            _routing,
+            partitionIndex: 0,
+            _queryFingerprint,
+            _layoutFingerprint);
+    }
+
+    private QueryTraversalResult EvaluateOrderedTraversal(
+        QueryBenchmarkPolicy policy,
+        bool captureItems)
+    {
+        var totalItems = 0;
+        var totalBytes = 0;
+        var aggregateWork = default(BenchmarkWorkVector);
+        var maximumPageWork = default(BenchmarkWorkVector);
+        var items = captureItems ? new List<GrainId>() : null;
+        var hasAfter = false;
+        var after = default(GrainId);
+        for (var round = 1; round <= policy.RoundLimit; round++)
+        {
+            var result = EvaluateOrderedPartitionPage(policy, hasAfter, after);
+            ValidateOrderedPage(result, policy, hasAfter, after);
+            totalItems = checked(totalItems + result.Items.Length);
+            totalBytes = checked(totalBytes + result.ItemByteCount);
+            var pageWork = BenchmarkWorkVector.From(result.Work);
+            aggregateWork = aggregateWork.Add(pageWork);
+            maximumPageWork = BenchmarkWorkVector.Max(maximumPageWork, pageWork);
+            items?.AddRange(result.Items);
+
+            if (result.Exhausted)
+            {
+                return new QueryTraversalResult(
+                    totalItems,
+                    totalBytes,
+                    round,
+                    Exhausted: true,
+                    aggregateWork,
+                    maximumPageWork,
+                    items is null ? [] : [.. items]);
+            }
+
+            after = result.Frontier;
+            hasAfter = true;
+        }
+
+        return new QueryTraversalResult(
+            totalItems,
+            totalBytes,
+            policy.RoundLimit,
+            Exhausted: false,
+            aggregateWork,
+            maximumPageWork,
+            items is null ? [] : [.. items]);
+    }
+
+    private static void ValidateOrderedPage(
+        PartitionQueryPageResult page,
+        QueryBenchmarkPolicy policy,
+        bool hasAfter,
+        GrainId after)
+    {
+        if (page.Items.Length > policy.PageSize
+            || page.ItemByteCount < 0
+            || page.ItemByteCount > policy.ResponseByteLimit
+            || page.Work.TotalOperationCount > policy.WorkBudget
+            || page.Exhausted == page.HasFrontier
+            || page.Exhausted != (page.StopReason == PartitionQueryPageStopReason.Exhausted))
+        {
+            throw new InvalidOperationException("The ordered benchmark page violated its configured bounds.");
+        }
+
+        var work = BenchmarkWorkVector.From(page.Work);
+        if (work.TotalOperationCount != page.Work.TotalOperationCount)
+        {
+            throw new InvalidOperationException("The ordered benchmark page reported an inconsistent work total.");
+        }
+
+        if (page.HasFrontier
+            && hasAfter
+            && GrainIdCanonicalOrder.Compare(page.Frontier, after) <= 0)
+        {
+            throw new InvalidOperationException("The ordered benchmark page did not advance its frontier.");
+        }
+
+        GrainId? previous = null;
+        var encodedBytes = 0;
+        foreach (var item in page.Items)
+        {
+            if ((hasAfter && GrainIdCanonicalOrder.Compare(item, after) <= 0)
+                || (page.HasFrontier && GrainIdCanonicalOrder.Compare(item, page.Frontier) > 0)
+                || (previous is { } preceding
+                    && GrainIdCanonicalOrder.Compare(preceding, item) >= 0))
+            {
+                throw new InvalidOperationException(
+                    "The ordered benchmark page was not a sorted, distinct safe prefix.");
+            }
+
+            encodedBytes = checked(encodedBytes + GrainIdCanonicalOrder.GetEncodedLength(item));
+            previous = item;
+        }
+
+        if (encodedBytes != page.ItemByteCount)
+        {
+            throw new InvalidOperationException("The ordered benchmark page reported the wrong item-byte count.");
+        }
+    }
+
+    private int GetSelectiveExactDriverCount()
+    {
+        if (Scenario != QueryEvaluationScenario.SelectiveExactAndBroadRange)
+        {
+            return 0;
+        }
+
+        return _view.OrderedIndexes.GetExactPosting(
+            BenchmarkData.CityScope,
+            SearchableIndexKind.Hash,
+            IndexValue.Create("city-001")).Count;
+    }
+
+    private QueryRangeExecutionStrategy GetRangeExecutionStrategy(PartitionQueryPageWork work) => Scenario switch
+    {
+        QueryEvaluationScenario.Exact => QueryRangeExecutionStrategy.NoRangePlan,
+        QueryEvaluationScenario.SelectiveExactAndBroadRange =>
+            QueryRangeExecutionStrategy.ExactPostingDriver,
+        QueryEvaluationScenario.BroadOr or QueryEvaluationScenario.DuplicateHeavyOr =>
+            QueryRangeExecutionStrategy.CatalogPlanDriver,
+        _ when work.RangeMergeOperationCount > 0 => QueryRangeExecutionStrategy.OrderedRangeMerge,
+        _ => QueryRangeExecutionStrategy.CatalogFallback,
+    };
+
+    private static void ValidateRangeExecutionStrategy(
+        PartitionQueryPageWork work,
+        QueryRangeExecutionStrategy strategy)
+    {
+        var valid = strategy switch
+        {
+            QueryRangeExecutionStrategy.NoRangePlan =>
+                work.RangeBucketVisitCount == 0 && work.RangeMergeOperationCount == 0,
+            QueryRangeExecutionStrategy.ExactPostingDriver =>
+                work.RangeBucketVisitCount == 0 && work.RangeMergeOperationCount == 0,
+            QueryRangeExecutionStrategy.CatalogPlanDriver =>
+                work.PostingSeekCount >= 1
+                && work.RangeBucketVisitCount == 0
+                && work.RangeMergeOperationCount == 0,
+            QueryRangeExecutionStrategy.OrderedRangeMerge =>
+                work.RangeBucketVisitCount > 0 && work.RangeMergeOperationCount > 0,
+            QueryRangeExecutionStrategy.CatalogFallback =>
+                work.PostingSeekCount >= 2
+                && work.RangeBucketVisitCount == 0
+                && work.RangeMergeOperationCount == 0,
+            _ => false,
+        };
+        if (!valid)
+        {
+            throw new InvalidOperationException(
+                $"The ordered benchmark reported work inconsistent with '{strategy}': "
+                + $"{BenchmarkWorkVector.From(work)}.");
+        }
+    }
+
+    private static QueryPageDiagnostics CreatePageDiagnostics(PartitionQueryPageResult page) => new(
+        page.Items.Length,
+        page.ItemByteCount,
+        page.Exhausted,
+        page.StopReason,
+        page.HasFrontier,
+        page.HasFrontier ? Convert.ToHexString(page.Frontier.Type.AsSpan()) : null,
+        page.HasFrontier ? Convert.ToHexString(page.Frontier.Key.AsSpan()) : null,
+        BenchmarkWorkVector.From(page.Work),
+        ComputeSequenceSha256(page.Items));
+
+    private static string ComputeSequenceSha256(IEnumerable<GrainId> items)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+        foreach (var item in items)
+        {
+            var type = item.Type.AsSpan();
+            var key = item.Key.AsSpan();
+            writer.Write(type.Length);
+            writer.Write(type);
+            writer.Write(key.Length);
+            writer.Write(key);
+        }
+
+        writer.Flush();
+        var encodedSequence = stream.GetBuffer().AsSpan(0, checked((int)stream.Length));
+        return Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(encodedSequence));
+    }
 
     private void ValidateScenarioShape()
     {
@@ -431,18 +818,21 @@ public class QueryPlanEvaluationBenchmarks
 
     private static Dictionary<string, StoredRecord> CreateEvaluationRecords(
         int recordCount,
-        QueryEvaluationDistribution distribution)
+        QueryEvaluationDistribution distribution,
+        int minimumGrainKeyLength)
     {
         var records = new Dictionary<string, StoredRecord>(recordCount, StringComparer.Ordinal);
         for (var index = 0; index < recordCount; index++)
         {
-            var recordKey = BenchmarkData.CreateRecordKey(index);
+            var grainId = CreateGrainId(index, minimumGrainKeyLength);
+            var recordKey = CreateStoredRecordKey(grainId);
             records.Add(
                 recordKey,
                 BenchmarkData.CreateRecord(
                     index,
                     salary: CreateSalary(index, recordCount, distribution),
-                    city: CreateCity(index, recordCount, distribution)));
+                    city: CreateCity(index, recordCount, distribution),
+                    grainId: grainId));
         }
 
         return records;
@@ -451,7 +841,8 @@ public class QueryPlanEvaluationBenchmarks
     private static HashSet<string> CreateExpectedRecordKeys(
         int recordCount,
         QueryEvaluationDistribution distribution,
-        QueryEvaluationScenario scenario)
+        QueryEvaluationScenario scenario,
+        int minimumGrainKeyLength)
     {
         var expected = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 0; index < recordCount; index++)
@@ -460,12 +851,48 @@ public class QueryPlanEvaluationBenchmarks
             var salary = CreateSalary(index, recordCount, distribution);
             if (MatchesScenario(city, salary, recordCount, scenario))
             {
-                expected.Add(BenchmarkData.CreateRecordKey(index));
+                expected.Add(CreateStoredRecordKey(CreateGrainId(index, minimumGrainKeyLength)));
             }
         }
 
         return expected;
     }
+
+    private static GrainId[] CreateExpectedGrainIds(
+        int recordCount,
+        QueryEvaluationDistribution distribution,
+        QueryEvaluationScenario scenario,
+        int minimumGrainKeyLength)
+    {
+        var expected = new List<GrainId>();
+        for (var index = 0; index < recordCount; index++)
+        {
+            var city = CreateCity(index, recordCount, distribution);
+            var salary = CreateSalary(index, recordCount, distribution);
+            if (MatchesScenario(city, salary, recordCount, scenario))
+            {
+                expected.Add(CreateGrainId(index, minimumGrainKeyLength));
+            }
+        }
+
+        expected.Sort(GrainIdCanonicalOrder.Comparer);
+        return [.. expected];
+    }
+
+    private static GrainId CreateGrainId(int index, int minimumKeyLength) =>
+        BenchmarkData.CreateGrainId(index, minimumKeyLength);
+
+    private static string CreateStoredRecordKey(GrainId grainId)
+    {
+        return BenchmarkData.CreateStoredRecordKey(BenchmarkData.StateName, grainId);
+    }
+
+    private static int GetMinimumGrainKeyLength(QueryEvaluationDataset dataset) => dataset switch
+    {
+        QueryEvaluationDataset.ShortIds4K or QueryEvaluationDataset.ShortIds64K => 0,
+        QueryEvaluationDataset.LongIds4K => 1_024,
+        _ => throw new ArgumentOutOfRangeException(nameof(dataset), dataset, null),
+    };
 
     private static bool MatchesScenario(
         int city,
@@ -602,3 +1029,162 @@ public enum QueryEvaluationScenario
     BroadOr,
     DuplicateHeavyOr,
 }
+
+public enum QueryEvaluationDataset
+{
+    ShortIds4K,
+    ShortIds64K,
+    LongIds4K,
+}
+
+public enum QueryEvaluationVariant
+{
+    MaterializingWholePlan,
+    OrderedDefaultPartitionPage,
+    OrderedHardCeilingPartitionTraversal,
+    OrderedConstrainedWorkPartitionPage,
+    OrderedMaximumPolicyPartitionPage,
+    OrderedDefaultRoundWindow,
+}
+
+public enum QueryRangeExecutionStrategy
+{
+    NoRangePlan,
+    ExactPostingDriver,
+    CatalogPlanDriver,
+    OrderedRangeMerge,
+    CatalogFallback,
+}
+
+internal sealed record QueryBenchmarkPolicy(
+    int PageSize,
+    long WorkBudget,
+    int ResponseByteLimit,
+    int RoundLimit)
+{
+    public static QueryBenchmarkPolicy For(QueryEvaluationVariant variant) => variant switch
+    {
+        QueryEvaluationVariant.OrderedDefaultPartitionPage => new(
+            SearchableStorageQueryOptions.DefaultPageSize,
+            SearchableStorageQueryOptions.DefaultPartitionWorkBudget,
+            SearchableStorageQueryOptions.DefaultPartitionResponseBytes,
+            RoundLimit: 1),
+        QueryEvaluationVariant.OrderedHardCeilingPartitionTraversal => new(
+            SearchableStorageQueryOptions.DefaultPageSize,
+            SearchableStorageQueryOptions.DefaultPartitionWorkBudget,
+            SearchableStorageQueryOptions.DefaultPartitionResponseBytes,
+            SearchableStorageQueryOptions.MaximumLegacyRounds),
+        QueryEvaluationVariant.OrderedConstrainedWorkPartitionPage => new(
+            SearchableStorageQueryOptions.DefaultPageSize,
+            WorkBudget: 4_096,
+            SearchableStorageQueryOptions.DefaultPartitionResponseBytes,
+            RoundLimit: 1),
+        QueryEvaluationVariant.OrderedMaximumPolicyPartitionPage => new(
+            SearchableStorageQueryOptions.MaximumPageSize,
+            SearchableStorageQueryOptions.MaximumPartitionWorkBudget,
+            SearchableStorageQueryOptions.MaximumPartitionResponseBytes,
+            RoundLimit: 1),
+        QueryEvaluationVariant.OrderedDefaultRoundWindow => new(
+            SearchableStorageQueryOptions.DefaultPageSize,
+            SearchableStorageQueryOptions.DefaultPartitionWorkBudget,
+            SearchableStorageQueryOptions.DefaultPartitionResponseBytes,
+            SearchableStorageQueryOptions.DefaultLegacyRounds),
+        _ => throw new ArgumentOutOfRangeException(nameof(variant), variant, null),
+    };
+}
+
+internal readonly record struct BenchmarkWorkVector(
+    long OrderedCandidateVisitCount,
+    long RecordProbeCount,
+    long PredicateNodeProbeCount,
+    long IndexEntryProbeCount,
+    long OwnershipProbeCount,
+    long PostingSeekCount,
+    long RangeBucketVisitCount,
+    long ResultMaterializationCount,
+    long RangeMergeOperationCount)
+{
+    public long TotalOperationCount => checked(
+        OrderedCandidateVisitCount
+        + RecordProbeCount
+        + PredicateNodeProbeCount
+        + IndexEntryProbeCount
+        + OwnershipProbeCount
+        + PostingSeekCount
+        + RangeBucketVisitCount
+        + ResultMaterializationCount
+        + RangeMergeOperationCount);
+
+    public static BenchmarkWorkVector From(PartitionQueryPageWork work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        return new BenchmarkWorkVector(
+            work.OrderedCandidateVisitCount,
+            work.RecordProbeCount,
+            work.PredicateNodeProbeCount,
+            work.IndexEntryProbeCount,
+            work.OwnershipProbeCount,
+            work.PostingSeekCount,
+            work.RangeBucketVisitCount,
+            work.ResultMaterializationCount,
+            work.RangeMergeOperationCount);
+    }
+
+    public BenchmarkWorkVector Add(BenchmarkWorkVector other) => new(
+        checked(OrderedCandidateVisitCount + other.OrderedCandidateVisitCount),
+        checked(RecordProbeCount + other.RecordProbeCount),
+        checked(PredicateNodeProbeCount + other.PredicateNodeProbeCount),
+        checked(IndexEntryProbeCount + other.IndexEntryProbeCount),
+        checked(OwnershipProbeCount + other.OwnershipProbeCount),
+        checked(PostingSeekCount + other.PostingSeekCount),
+        checked(RangeBucketVisitCount + other.RangeBucketVisitCount),
+        checked(ResultMaterializationCount + other.ResultMaterializationCount),
+        checked(RangeMergeOperationCount + other.RangeMergeOperationCount));
+
+    public static BenchmarkWorkVector Max(BenchmarkWorkVector left, BenchmarkWorkVector right) =>
+        right.TotalOperationCount > left.TotalOperationCount ? right : left;
+}
+
+internal sealed record QueryPageDiagnostics(
+    int ItemCount,
+    int ItemByteCount,
+    bool Exhausted,
+    PartitionQueryPageStopReason StopReason,
+    bool HasFrontier,
+    string? FrontierTypeHex,
+    string? FrontierKeyHex,
+    BenchmarkWorkVector Work,
+    string SequenceSha256);
+
+internal sealed record QueryTraversalDiagnostics(
+    int Rounds,
+    bool Exhausted,
+    int ItemCount,
+    int ItemByteCount,
+    BenchmarkWorkVector AggregateWork,
+    BenchmarkWorkVector MaximumPageWork,
+    string SequenceSha256);
+
+internal sealed record QueryBenchmarkDiagnostics(
+    QueryEvaluationDataset Dataset,
+    QueryEvaluationDistribution Distribution,
+    QueryEvaluationScenario Scenario,
+    QueryEvaluationVariant Variant,
+    int RecordCount,
+    int MinimumGrainKeyLength,
+    int ExpectedResultCount,
+    int SelectiveExactDriverCount,
+    QueryRangeExecutionStrategy RangeExecutionStrategy,
+    QueryBenchmarkPolicy Policy,
+    int TimedItemCount,
+    QueryPageDiagnostics FirstPage,
+    QueryTraversalDiagnostics? Traversal);
+
+internal sealed record QueryTraversalResult(
+    int ItemCount,
+    int ItemByteCount,
+    int Rounds,
+    bool Exhausted,
+    BenchmarkWorkVector AggregateWork,
+    BenchmarkWorkVector MaximumPageWork,
+    GrainId[] Items);

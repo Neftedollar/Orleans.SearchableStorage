@@ -356,6 +356,9 @@ public sealed class SearchableGrainStorageRoutingExecutionTests
         public Task<GrainId[]> QueryRoutedAsync(RoutedPartitionQuery query) =>
             throw new NotSupportedException();
 
+        public Task<PartitionQueryPageResult> QueryPageRoutedAsync(
+            RoutedPartitionQueryPageRequest request) => throw new NotSupportedException();
+
         public Task CompactAsync() => throw new NotSupportedException();
 
         public Task<StoragePartitionPersistenceInfo> GetPersistenceInfoAsync() =>

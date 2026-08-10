@@ -11,6 +11,9 @@ produced reviewed provider, 10-million-record, and capacity artifacts.
 serialization costs. Its cases invoke the same internal production helpers as the storage grains:
 
 - incremental hash/range index mutation and bounded range lookup;
+- activation rebuild of the materializing indexes and the production additive ordered view;
+- steady indexed mutation for production-shaped `state/type-hex/key-hex` record keys across unique
+  and low-cardinality index distributions;
 - expression translation, wire-plan construction, and partition boolean-plan evaluation;
 - Orleans serialization of query plans and journal segments;
 - bounded journal-segment append using an in-memory `IPersistentState` test double;
@@ -18,6 +21,11 @@ serialization costs. Its cases invoke the same internal production helpers as th
 
 The journal-append case measures the state machine and allocations. It does not measure a physical
 provider, network, or durable write. End-to-end provider latency belongs to the load driver.
+
+BenchmarkDotNet's memory diagnoser reports bytes allocated by the timed operation. It does not report
+the managed objects which remain live in an activation after temporary rebuild structures are
+collected. The separate retained-memory evidence command below measures that delta in isolated worker
+processes. It is deliberately labelled retained *managed* memory, not working set or native memory.
 
 `Orleans.SearchableStorage.LoadDriver` is a native Orleans workload driver. It can run an embedded
 single-machine smoke topology or split `serve` and `run` across independently scalable Crank jobs.
@@ -93,6 +101,55 @@ dotnet run --project benchmarks/Orleans.SearchableStorage.Benchmarks \
   --configuration Release -- --filter "*QueryPlan*Benchmarks*"
 ```
 
+For an engine/export smoke rather than a timing sample, pass `--smoke`. This selects one dry
+in-process BenchmarkDotNet iteration while retaining the production runtime/GC declaration and full
+exporters:
+
+```bash
+dotnet run --project benchmarks/Orleans.SearchableStorage.Benchmarks \
+  --configuration Release -- --smoke --filter "*DerivedIndexBuildBenchmarks*" \
+  --artifacts artifacts/bdn-smoke
+```
+
+Smoke provenance is deliberately stamped
+with `ExecutionMode=BenchmarkDotNetInProcessDryRun` and
+`net10-server-smoke;...;nonComparableInProcessDryRun=true`, which the baseline artifact gate rejects.
+Its JSON proves fixture, benchmark-engine, diagnoser, and exporter wiring only; it is not latency or
+allocation evidence and does not validate the out-of-process generated host. Normal comparable BDN
+provenance instead requires `ExecutionMode=BenchmarkDotNet`.
+
+Generate the deterministic ordered-work matrix. `--quick` covers every 4K distribution/scenario/
+ordered-policy combination plus focused long-`GrainId` cases; omit it for the 64K matrix too:
+
+```bash
+dotnet run --project benchmarks/Orleans.SearchableStorage.Benchmarks \
+  --configuration Release -- --query-work-matrix artifacts/query-evidence --quick
+```
+
+The resulting `query-work-matrix.json` contains the complete first-page work vector, item and byte
+counts, stop reason, safe-frontier encoding, sequence digest, selective-exact driver cardinality, and
+for traversal variants the round count, aggregate work vector, maximum-page work vector, terminal
+status, and complete-prefix digest. It also labels the selected range execution strategy; the raw
+`RangeBucketVisitCount` and `RangeMergeOperationCount` distinguish an admitted ordered merge from a
+catalog fallback. Setup independently verifies the full ordered result sequence, not only its count.
+
+Measure retained managed memory after a forced full compacting collection. Each data point is the
+median of three fresh worker processes; the input records exist before the baseline, so the delta is
+the derived representation retained by the activation:
+
+```bash
+dotnet run --project benchmarks/Orleans.SearchableStorage.Benchmarks \
+  --configuration Release -- --retained-memory artifacts/query-evidence --quick
+```
+
+Omit `--quick` to include 65,536 records. `retained-memory.json` states the measurement semantics and
+retains minimum, median, maximum, and median bytes per record. GC-based retained deltas are useful for
+same-runtime comparisons but do not include allocator fragmentation, native allocations, or process
+working set. Both evidence commands write commit/runtime provenance with
+`ExecutionMode=DeterministicEvidence` beside their JSON. `JobIdentity` records the declared runtime/GC
+configuration for reproducibility; the execution mode makes explicit that these manual evaluators
+and isolated child processes did not execute the BenchmarkDotNet job.
+
 Validate or execute a committed scenario:
 
 ```bash
@@ -135,14 +192,19 @@ comparable.
 - Pull requests validate all specifications, run unit/golden tests, execute the microbenchmark
   self-test, and run small deterministic searchable closed-loop, searchable open-loop, and plain
   closed-loop Memory scenarios. The self-test reflects the built benchmark assembly and requires
-  the reviewed set of exactly 15 `[Benchmark]` methods, the exact `[Params]` vectors, the semantic
+  the reviewed set of exactly 16 `[Benchmark]` methods, the exact `[Params]` vectors, the semantic
   fixture results, and the real BenchmarkDotNet config (one .NET 10 server/concurrent-GC job,
   memory diagnostics, p95, full JSON plus GitHub Markdown exporters, and retained benchmark files).
+  The benchmark-smoke job also generates the 62-entry quick ordered-work matrix and four-cell
+  retained-managed-memory document, validates exact counts, work sums and caps, range-strategy
+  coverage, positive isolated-worker samples, deterministic-evidence execution mode, and clean commit
+  provenance, then secret-scans and uploads those raw JSON artifacts.
   The job also restores the exactly pinned Crank Controller and expands both two-client coordinates
   with `--debug`; it checks the exact source SHA, environment, arguments, and download paths without
   executing an agent. The benchmark job
   checks out the exact pull-request head it records, proves that tracked inputs are clean, and has no
-  timing threshold.
+  timing threshold. The quick evidence is a correctness/artifact-contract gate, not a performance
+  baseline.
 
 - Nightly runs are permitted only from trusted `main` on a dedicated benchmark runner. The intended
   searchable matrix is one million records on Memory, PostgreSQL, Redis, and a configured Azure
@@ -180,20 +242,78 @@ searchable partition layer. A large `N` alone is therefore not a meaningful scal
 ### Partition-query evaluation matrix
 
 `QueryPlanEvaluationBenchmarks` keeps one production benchmark identity while expanding it to a
-reviewed 24-case matrix:
+reviewed implementation matrix:
 
-- 4,096 and 65,536 records in one active partition;
+- 4,096 and 65,536 short-id records in one active partition, plus a 4,096-record fixture whose
+  canonical grain key is at least 1,024 bytes;
 - uniform and correlated hot-key/low-cardinality-range distributions;
 - exact, bounded range, selective exact-and-broad-range intersection, broad intersection, broad
-  union, and duplicate-heavy union plans.
+  union, and duplicate-heavy union plans;
+- the unchanged PR13 materializing whole-plan evaluator;
+- one default bounded partition page, a deliberately constrained 4,096-work page, and a page using
+  the public hard page/work/partition-byte caps;
+- complete partition-local traversal under the hard round ceiling and a separately labelled default
+  64-round window.
 
-The timed method calls the ordinary production `StoragePartitionQueryEvaluator.Evaluate` path.
-Setup independently builds the expected record-key set, freezes the intended distribution and
-selectivity shape, and uses the measured work path to prove the actual plan-node and candidate-work
-shape. These cases are a baseline for the current materializing `HashSet<string>` evaluator, not a
-timing result or an endorsement of that representation. The bounded ordered/resumable implementation
-must add its own representation, activation-build, mutation, memory, and evaluation measurements
-before PR14 selects an evaluator or assigns numeric work and page limits.
+That is 216 BenchmarkDotNet cases: three datasets by two distributions by six plans by six variants.
+The separate full work-evidence matrix omits the materializing variant because its PR13 vector is
+already validated in setup, leaving 180 ordered entries. The quick evidence command writes the 60
+short-id 4K ordered entries plus two focused long-id entries.
+
+The materializing variant calls the unchanged production
+`StoragePartitionQueryEvaluator.Evaluate` path. Ordered variants call the production partition-page
+evaluator directly. The traversal variants are intentionally named *partition traversal*: they do
+not measure the coordinator, Orleans transport/serialization, response validation/merge, AEAD token
+protection, or the public paging API. End-to-end public paging requires the load driver and is not
+inferred from these process-local numbers.
+
+Setup independently builds the expected key and `GrainId` sequences, freezes distribution and
+selectivity, proves every page is a sorted/distinct safe prefix with a progressing frontier, and
+compares every captured traversal to the exact ordered oracle. It reproduces a page and requires an
+identical complete work vector. For selective exact-and-broad-range plans it records the exact-posting
+driver cardinality, requires page candidate visits not to exceed that posting, and requires complete
+hard-ceiling traversal to visit exactly that bounded driver.
+
+Range-merge admission deliberately precharges a safe whole-scope upper bound rather than the selected
+range-view cardinality: for `D` range buckets it reserves
+`D × (3 + ceil(log2 D))` logical operations after the initial seek. `SortedSet` does not promise an
+O(log N) rank operation, so using the narrower selected-view count would itself require unbounded
+enumeration. Consequently the uniform 65,536-bucket fixture needs 1,245,184 operations and uses
+`CatalogFallback` even for a narrow range under the public maximum work cap of 1,048,576. The full
+matrix and focused self-test assert that boundary as at least two posting seeks with zero range-bucket
+visits and zero range-merge operations. This is intentional conservative admission, not evidence
+that the selected range was materialized or merged.
+
+`DerivedIndexBuildBenchmarks` compares the old materializing indexes with the production additive
+`StoragePartitionView` (materializing plus ordered indexes). `IndexMutationBenchmarks` makes the same
+comparison for replacement and delete/restore work using real stored-key structure. Both cover a
+unique range distribution and a hot/low-cardinality distribution. MemoryDiagnoser reports transient
+allocation; the isolated retained-memory document reports the live managed delta.
+
+### Interpreting query policy constants
+
+The default 128-item page and 64-round compatibility window are internally aligned with the default
+8,192-item legacy ceiling (`128 × 64`). The work matrix reports whether each default-round case is
+terminal; non-terminal is a bounded outcome, not silent truncation by the production API, whose
+all-results compatibility terminal throws instead.
+
+The configured hard maxima are structural safety/admission caps, not throughput thresholds and not a
+promise that a maximum-sized turn is operationally desirable. In particular:
+
+- item and byte maxima are enforced and covered by boundary tests; the short and long-id BDN variants
+  expose their allocation/latency consequences;
+- work and round maxima bound checked counters and loops; the maximum-policy page is measurement
+  evidence for the current implementation, not permission to raise a deployment to that value without
+  same-hardware testing;
+- coordinator-buffer maxima follow owner-count apportionment and are not justified by this
+  single-partition microbenchmark;
+- the continuation-token cap follows the canonical envelope size proof and hostile-input tests, not
+  query throughput;
+- legacy aggregate maxima are all-or-throw compatibility ceilings, not recommended query sizes.
+
+No wall-clock result from a shared runner freezes these constants. A performance-based threshold may
+be claimed only with the full JSON and provenance from repeated runs on controlled hardware, a
+reviewed comparison table, and an explicitly versioned baseline.
 
 ## Comparison rules and remaining work
 
@@ -211,8 +331,8 @@ credential shape appears in the artifact tree. Follow-up work
 in issue #8 includes
 dedicated nightly artifacts and a same-workload one-million-record plain/searchable provider baseline,
 provider-native bytes and resource telemetry, a persistence-safe bulk seeder, previous-protocol
-baselines, fault/chaos histories, 10M/100M/1B qualification, #5 bounded/paged query work and
-representation comparisons, #7 live-movement workloads, and protected-topology attestation of the
+baselines, fault/chaos histories, 10M/100M/1B qualification, a real coordinator/public paged
+workload for #5, #7 live-movement workloads, and protected-topology attestation of the
 external silo build/configuration plus an out-of-process cleanup fallback or provider TTL. Thresholds
 become enforceable only after a stable same-hardware history exists.
 

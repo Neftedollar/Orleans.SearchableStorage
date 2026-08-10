@@ -17,6 +17,10 @@ builder.Host.UseOrleans(siloBuilder =>
             options.JournalSegmentCapacity = 16;
             options.MaximumJournalReplayEntries = 256;
             options.CompactionThreshold = 64;
+            // Development-only sample key. Production deployments must load a shared 32-byte
+            // provider-scoped key from secret configuration and follow the documented rotation flow.
+            options.Query.ContinuationProtection.CurrentKey =
+                new SearchableStorageContinuationKey("api-sample-v1", new byte[32]);
         });
 });
 
@@ -28,6 +32,7 @@ app.MapPut("/vacancies/{id}", PutVacancyAsync);
 app.MapGet("/vacancies/{id}", GetVacancyAsync);
 app.MapDelete("/vacancies/{id}", DeleteVacancyAsync);
 app.MapGet("/vacancies/search/by-city", VacancySearchEndpoints.FindByCityAsync);
+app.MapGet("/vacancies/search/by-city/page", VacancySearchEndpoints.FindByCityPageAsync);
 app.MapGet("/vacancies/search/by-salary", VacancySearchEndpoints.FindBySalaryAsync);
 app.MapGet("/storage/layout", GetStorageLayoutAsync);
 
@@ -98,6 +103,8 @@ internal sealed record VacancyResponse(string Id, string City, int Salary);
 
 internal sealed record SearchResponse(IReadOnlyList<string> Ids);
 
+internal sealed record SearchPageResponse(IReadOnlyList<string> Ids, string? ContinuationToken);
+
 internal sealed record ApiDescription(string Name, string Storage, IReadOnlyList<string> Endpoints);
 
 internal static class SampleMetadata
@@ -110,6 +117,7 @@ internal static class SampleMetadata
             "GET /vacancies/{id}",
             "DELETE /vacancies/{id}",
             "GET /vacancies/search/by-city?city={city}",
+            "GET /vacancies/search/by-city/page?city={city}&pageSize={size}",
             "GET /vacancies/search/by-salary?lower={value}&upper={value}",
             "GET /storage/layout",
         ]);

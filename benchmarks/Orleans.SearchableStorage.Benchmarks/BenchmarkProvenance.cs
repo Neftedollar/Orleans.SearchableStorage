@@ -11,6 +11,18 @@ internal static class BenchmarkProvenance
 {
     private const string Unknown = "unknown";
 
+    public const string BenchmarkDotNetExecutionMode = "BenchmarkDotNet";
+    public const string BenchmarkDotNetInProcessDryRunExecutionMode =
+        "BenchmarkDotNetInProcessDryRun";
+    public const string DeterministicEvidenceExecutionMode = "DeterministicEvidence";
+
+    internal static IReadOnlyList<string> ExecutionModes { get; } =
+    [
+        BenchmarkDotNetExecutionMode,
+        BenchmarkDotNetInProcessDryRunExecutionMode,
+        DeterministicEvidenceExecutionMode,
+    ];
+
     public static string ResolveArtifactsPath(IReadOnlyList<string> arguments)
     {
         ArgumentNullException.ThrowIfNull(arguments);
@@ -45,14 +57,24 @@ internal static class BenchmarkProvenance
 
     public static void Write(
         string artifactsPath,
-        SearchableStorageBenchmarkConfig config)
+        SearchableStorageBenchmarkConfig config,
+        string executionMode)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactsPath);
         ArgumentNullException.ThrowIfNull(config);
+        if (!ExecutionModes.Contains(executionMode, StringComparer.Ordinal))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(executionMode),
+                executionMode,
+                "Unknown benchmark provenance execution mode.");
+        }
+
         var directory = Path.GetFullPath(artifactsPath);
         Directory.CreateDirectory(directory);
         var payload = new BenchmarkProvenanceDocument(
             SchemaVersion: "oss-benchmarkdotnet-provenance/v1",
+            ExecutionMode: executionMode,
             CapturedAtUtc: DateTimeOffset.UtcNow,
             GitCommit: ReadEnvironment("OSS_BENCHMARK_GIT_COMMIT")
                 ?? ReadEnvironment("GITHUB_SHA")
@@ -127,7 +149,8 @@ internal static class BenchmarkProvenance
 
             return output;
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception exception) when (
+            exception is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             return null;
         }
@@ -148,6 +171,7 @@ internal static class BenchmarkProvenance
 
 internal sealed record BenchmarkProvenanceDocument(
     string SchemaVersion,
+    string ExecutionMode,
     DateTimeOffset CapturedAtUtc,
     string GitCommit,
     bool? GitDirty,

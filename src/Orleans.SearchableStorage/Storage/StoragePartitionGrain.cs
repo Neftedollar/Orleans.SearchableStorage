@@ -258,6 +258,49 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             snapshot);
     }
 
+    public async Task<PartitionQueryPageResult> QueryPageRoutedAsync(
+        RoutedPartitionQueryPageRequest request)
+    {
+        EnsureUsable();
+        ValidatePageRequest(request);
+
+        // Recompute both bindings in the partition. Caller-supplied fingerprints are routing and
+        // continuation assertions, never authoritative descriptions of the plan or layout.
+        var queryFingerprint = QueryPlanFingerprint.Compute(request.StateName, request.Query);
+        if (!QueryPlanFingerprint.Equals(queryFingerprint, request.QueryFingerprint))
+        {
+            throw new ArgumentException(
+                "The partition query fingerprint does not match the state name and query plan.",
+                nameof(request));
+        }
+
+        var snapshot = await ValidateQueryRouteAsync(request.Epoch);
+        if (request.LayoutFormatVersion != snapshot.FormatVersion)
+        {
+            throw new ArgumentException(
+                "The partition query layout format does not match the authoritative routing layout.",
+                nameof(request));
+        }
+
+        var layoutFingerprint = StorageLayoutFingerprint.Compute(snapshot);
+        if (!StorageLayoutFingerprint.Equals(layoutFingerprint, request.LayoutFingerprint))
+        {
+            throw new ArgumentException(
+                "The partition query layout fingerprint does not match the authoritative routing layout.",
+                nameof(request));
+        }
+
+        // The grain is non-reentrant. Candidate grouping, predicate probes, ownership filtering,
+        // and frontier advancement therefore observe one serially consistent local view.
+        return StoragePartitionQueryPageEvaluator.EvaluateValidated(
+            request,
+            _view,
+            snapshot,
+            _partitionIndex,
+            queryFingerprint,
+            layoutFingerprint);
+    }
+
     public async Task CompactAsync()
     {
         EnsureUsable();
@@ -325,6 +368,104 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         {
             PoisonActivation();
             throw;
+        }
+    }
+
+    private static void ValidatePageRequest(RoutedPartitionQueryPageRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Query);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.StateName);
+        ArgumentNullException.ThrowIfNull(request.QueryFingerprint);
+        ArgumentNullException.ThrowIfNull(request.LayoutFingerprint);
+        QueryPlanValidator.Validate(request.Query);
+
+        if (request.QueryFingerprint.Length != 32)
+        {
+            throw new ArgumentException(
+                "A partition query fingerprint must contain exactly 32 bytes.",
+                nameof(request));
+        }
+
+        if (request.LayoutFingerprint.Length != 32)
+        {
+            throw new ArgumentException(
+                "A partition layout fingerprint must contain exactly 32 bytes.",
+                nameof(request));
+        }
+
+        if (request.ProtocolVersion != QueryProtocol.PagingVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.ProtocolVersion,
+                "Unknown partition paging protocol version.");
+        }
+
+        if (request.OrderingVersion != QueryProtocol.OrderingVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.OrderingVersion,
+                "Unknown canonical GrainId ordering version.");
+        }
+
+        if (request.WorkPolicyVersion != QueryProtocol.WorkPolicyVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.WorkPolicyVersion,
+                "Unknown partition work-policy version.");
+        }
+
+        if (request.ResponseFamily != PartitionQueryResponseFamily.GrainIdPage)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.ResponseFamily,
+                "Unknown partition query response family.");
+        }
+
+        if (request.LayoutFormatVersion != StorageLayout.CurrentFormatVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.LayoutFormatVersion,
+                "Unknown storage layout format version.");
+        }
+
+        if (request.HasAfter == request.After.IsDefault)
+        {
+            throw new ArgumentException(
+                "HasAfter must be true exactly when a non-default exclusive boundary is supplied.",
+                nameof(request));
+        }
+
+        if (request.WorkBudget <= 0
+            || request.WorkBudget > SearchableStorageQueryOptions.MaximumPartitionWorkBudget)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.WorkBudget,
+                $"A partition work budget must be between 1 and {SearchableStorageQueryOptions.MaximumPartitionWorkBudget}.");
+        }
+
+        if (request.ItemLimit <= 0
+            || request.ItemLimit > SearchableStorageQueryOptions.MaximumPartitionResponseItems)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.ItemLimit,
+                $"A partition item limit must be between 1 and {SearchableStorageQueryOptions.MaximumPartitionResponseItems}.");
+        }
+
+        if (request.ByteLimit <= 0
+            || request.ByteLimit > SearchableStorageQueryOptions.MaximumPartitionResponseBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.ByteLimit,
+                $"A partition byte limit must be between 1 and {SearchableStorageQueryOptions.MaximumPartitionResponseBytes}.");
         }
     }
 

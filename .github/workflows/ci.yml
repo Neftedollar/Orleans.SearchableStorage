@@ -389,6 +389,102 @@ jobs:
             artifacts/benchmark-smoke/bdn-list.txt \
             "$OSS_BENCHMARK_GIT_COMMIT"
 
+      - name: Generate and validate bounded-query evidence
+        shell: bash
+        run: |
+          evidence=artifacts/benchmark-smoke/query-evidence
+          dotnet run \
+            --project benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj \
+            --configuration Release \
+            --no-build \
+            --no-restore \
+            -- --query-work-matrix "$evidence" --quick
+          dotnet run \
+            --project benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj \
+            --configuration Release \
+            --no-build \
+            --no-restore \
+            -- --retained-memory "$evidence" --quick
+
+          jq --exit-status '
+            .SchemaVersion == "oss-query-work-matrix/v1"
+            and .Quick == true
+            and .DefaultLegacyItemWindow == 8192
+            and (.Entries | length) == 62
+            and all(.Entries[];
+              .RecordCount == 4096
+              and .FirstPage.Work.TotalOperationCount == (
+                .FirstPage.Work.OrderedCandidateVisitCount
+                + .FirstPage.Work.RecordProbeCount
+                + .FirstPage.Work.PredicateNodeProbeCount
+                + .FirstPage.Work.IndexEntryProbeCount
+                + .FirstPage.Work.OwnershipProbeCount
+                + .FirstPage.Work.PostingSeekCount
+                + .FirstPage.Work.RangeBucketVisitCount
+                + .FirstPage.Work.ResultMaterializationCount
+                + .FirstPage.Work.RangeMergeOperationCount)
+              and .FirstPage.Work.TotalOperationCount <= .Policy.WorkBudget
+              and .FirstPage.ItemCount <= .Policy.PageSize
+              and .FirstPage.ItemByteCount <= .Policy.ResponseByteLimit)
+            and ([.Entries[].RangeExecutionStrategy] | index("OrderedRangeMerge")) != null
+            and ([.Entries[].RangeExecutionStrategy] | index("CatalogFallback")) != null
+            and ([.Entries[]
+              | select(.Dataset == "ShortIds4K")
+              | [.Distribution, .Scenario, .Variant]] | length) == 60
+            and ([.Entries[]
+              | select(.Dataset == "ShortIds4K")
+              | [.Distribution, .Scenario, .Variant]] | unique | length) == 60
+            and all(.Entries[] | select(.Dataset == "ShortIds4K");
+              (.Distribution == "Uniform" or .Distribution == "HotKeyAndLowRange")
+              and (.Scenario == "Exact"
+                or .Scenario == "Range"
+                or .Scenario == "SelectiveExactAndBroadRange"
+                or .Scenario == "BroadAnd"
+                or .Scenario == "BroadOr"
+                or .Scenario == "DuplicateHeavyOr")
+              and (.Variant == "OrderedDefaultPartitionPage"
+                or .Variant == "OrderedConstrainedWorkPartitionPage"
+                or .Variant == "OrderedMaximumPolicyPartitionPage"
+                or .Variant == "OrderedHardCeilingPartitionTraversal"
+                or .Variant == "OrderedDefaultRoundWindow"))
+            and ([.Entries[]
+              | select(.Dataset == "LongIds4K")
+              | [.Distribution, .Scenario, .Variant]] | sort) == [
+                ["Uniform", "Range", "OrderedDefaultPartitionPage"],
+                ["Uniform", "Range", "OrderedMaximumPolicyPartitionPage"]]
+            and all(.Entries[]; .Dataset == "ShortIds4K" or .Dataset == "LongIds4K")
+          ' "$evidence/query-work-matrix.json" >/dev/null
+
+          jq --exit-status '
+            .SchemaVersion == "oss-retained-managed-memory/v1"
+            and .Quick == true
+            and (.Measurements | length) == 4
+            and all(.Measurements[];
+              .RecordCount == 4096
+              and .SampleCount == 3
+              and .MinimumRetainedManagedBytes > 0
+              and .MinimumRetainedManagedBytes <= .MedianRetainedManagedBytes
+              and .MedianRetainedManagedBytes <= .MaximumRetainedManagedBytes
+              and .MedianRetainedManagedBytesPerRecord > 0)
+            and ([.Measurements[].Representation] | unique)
+              == ["BoundedOrderedView", "MaterializingHashSets"]
+            and ([.Measurements[].Distribution] | unique)
+              == ["HotLowCardinality", "UniformUniqueRange"]
+            and ([.Measurements[] | [.Representation, .Distribution]] | unique | length) == 4
+          ' "$evidence/retained-memory.json" >/dev/null
+
+          jq --exit-status \
+            --arg commit "$OSS_BENCHMARK_GIT_COMMIT" '
+              .SchemaVersion == "oss-benchmarkdotnet-provenance/v1"
+              and .ExecutionMode == "DeterministicEvidence"
+              and .GitCommit == $commit
+              and .GitDirty == false
+              and .JobIdentity == "net10-server;serverGC=true;concurrentGC=true"
+              and (.BenchmarkAssemblyVersion | length) > 0
+              and (.BenchmarkDotNetVersion | length) > 0
+              and (.SearchableStorageVersion | length) > 0
+            ' "$evidence/provenance.json" >/dev/null
+
       - name: Run searchable embedded Memory smoke
         id: run_searchable_smoke
         run: >-

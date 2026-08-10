@@ -14,11 +14,17 @@ of bounded journal-segment grains, and two reusable snapshot-slot grains. All fo
 through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
 Application grains never address those implementation grains directly.
 
-`SearchableStorageClient` supports direct exact/range primitives and a focused `IQueryable` boundary. The query provider records expression trees without offering synchronous execution. `QueryTranslator` resolves indexed member identity through the same cached PolyType-backed metadata as writes and produces a small explicit query-plan algebra: exact leaf, one- or two-sided range leaf, intersection, union, and empty result. The client converts that semantic plan to one serializable, non-persisted wire plan and sends it once to every distinct owner in one layout snapshot. Each partition validates the epoch, filters record keys by ownership, and evaluates the complete boolean plan synchronously during one non-reentrant grain turn. The client only unions the final partition-local results and returns a sorted, distinct set of `GrainId` values.
+`SearchableStorageClient` supports direct exact/range primitives and a focused `IQueryable`
+boundary. `QueryTranslator` produces an explicit Empty/Exact/Range/And/Or plan. The paged terminal
+sends one bounded request to every distinct owner in one immutable layout snapshot. Each partition
+validates the route and fingerprints, evaluates only a configured logical-work slice against one
+serially consistent activation view, and returns a sorted local prefix plus a safe frontier. The
+coordinator merges the global safe prefix under item and byte caps and protects the next boundary in
+a stateless authenticated-encrypted continuation.
 
 ## Sample topology
 
-`Orleans.SearchableStorage.ApiSample` co-hosts an ASP.NET Core minimal API and one Orleans silo only to provide a zero-infrastructure executable walkthrough. HTTP writes call an application grain, its normal `IPersistentState<T>` uses `SearchableGrainStorage`, and the provider routes the serialized record plus extracted index entries to one storage-partition grain. HTTP search endpoints use `Query<TState>`, `Where`, and `ToGrainIdsAsync` on the named `ISearchableStorageQueryClient` and fan out over the same partition set. ASP.NET Core supplies `HttpContext.RequestAborted` as the endpoint cancellation token, which is passed through the terminal operation.
+`Orleans.SearchableStorage.ApiSample` co-hosts an ASP.NET Core minimal API and one Orleans silo only to provide a zero-infrastructure executable walkthrough. HTTP writes call an application grain, its normal `IPersistentState<T>` uses `SearchableGrainStorage`, and the provider routes the serialized record plus extracted index entries to one storage-partition grain. HTTP search endpoints use `Query<TState>` and `Where` on the named `ISearchableStorageQueryClient`; one endpoint demonstrates `ToGrainIdPageAsync`, while compatibility endpoints demonstrate bounded all-results collection. ASP.NET Core supplies `HttpContext.RequestAborted` as the endpoint cancellation token.
 
 This co-hosting is not an architectural constraint. An API can run in another process as an Orleans client and construct a `SearchableStorageClient` with the same provider namespace and partition count. The sample deliberately uses in-memory physical persistence, so process termination removes its data; backend durability is covered by the reusable provider contract rather than by the sample.
 
@@ -49,10 +55,11 @@ The keyed storage provider and query/admin clients retain a bounded constant num
 process-local snapshots. Caller cancellation does not cancel a shared grain call. Point requests
 carry `GrainId`, slot, and epoch; partitions validate the derived slot and current owner before
 record lookup or ETag logic.
-Query requests carry the epoch and fan out once per distinct owner. If any call reports a routing
-mismatch, the client observes the complete fan-out, discards all results from that attempt,
-conditionally invalidates only the snapshot which was rejected, and retries once. Conditional
-invalidation prevents concurrent stale callers from replacing each other's refresh.
+Page requests carry the epoch and layout fingerprint and fan out once per distinct owner. On a first
+page, a routing-only mismatch makes the client observe and discard the complete attempt,
+conditionally invalidate only the rejected snapshot, and retry once. Conditional invalidation
+prevents concurrent stale callers from replacing each other's refresh. A continuation pins its
+layout and becomes stale instead of refreshing across an ownership change.
 
 A query against an uninitialized namespace returns empty and does not initialize the layout. A
 read-only admin client likewise returns no layout. A persisted version-3 namespace instead requires
@@ -141,7 +148,11 @@ therefore reuse one reserved generation instead of leaking sequence-named snapsh
 
 A point read is routed directly to the record's owning partition. Missing records receive a new state instance from Orleans' configured activator and have no ETag.
 
-Direct exact and bounded-range operations fan out once to each distinct owner in the current routing layout. A focused `IQueryable` execution likewise sends its complete boolean plan once to each distinct owner. The partition grain is non-reentrant and plan evaluation contains no await, so all leaves of that plan observe one serially consistent partition-local activation state. The merged result is not a cross-partition snapshot: different owners can still observe concurrent writes at different points during one distributed query.
+One query page fans out once to each distinct owner in the current routing layout. The partition
+grain is non-reentrant and page evaluation contains no await, so every predicate probe in that turn
+observes one serially consistent partition-local state. Owners can observe different instants and a
+later continuation observes later turns, so the merged traversal is deliberately not a
+cross-partition snapshot.
 
 Each in-memory range index stores its distinct values in a `SortedSet` of mutable buckets. During
 construction, comparer-equal buckets are canonicalized and merged. A mutation adds or removes only
@@ -157,7 +168,7 @@ entries.
 
 ## Query translation and execution
 
-`ISearchableStorageQueryClient.Query<TState>(stateName)` returns an `IQueryable<TState>` only as a familiar expression-building surface. It is not an in-memory state collection and cannot enumerate `TState` values. `ToGrainIdsAsync` is the sole terminal operation. It accepts any query whose provider implements the public `ISearchableStorageAsyncQueryProvider` contract, so external query-client implementations do not need access to library internals.
+`ISearchableStorageQueryClient.Query<TState>(stateName)` returns an `IQueryable<TState>` only as a familiar expression-building surface. It is not an in-memory state collection and cannot enumerate `TState` values. `ToGrainIdPageAsync` opts into the public `ISearchableStoragePagedQueryProvider` contract. `ToGrainIdsAsync` remains an all-results terminal through `ISearchableStorageAsyncQueryProvider`; external providers own and must document their own bounding semantics.
 
 Translation accepts one or more `Queryable.Where` calls. Predicate leaves must compare one direct indexed property with a constant or captured value using equality or an ordered comparison. Boolean `AndAlso` and `OrElse` become plan intersection and union. Reversed operands are normalized. Intersected bounds on the same index are combined before execution; contradictory bounds become an empty plan. Equality can use either index kind, while ordered comparisons require a range index. Null comparison is rejected because null index values are deliberately omitted. An empty plan still validates persisted layout compatibility and cancellation, but skips partition fan-out.
 
@@ -165,22 +176,35 @@ The closed value side is intentionally narrow: constants, captured fields or pro
 
 Supported translation traversal and both semantic and wire plans share fixed limits of 64 levels and 256 visited nodes. Indexed-property and state-parameter conversion chains are independently capped at 64. Recursive conversion and evaluation occur only after those bounds have been checked. Both plan validators require trees rather than cyclic or shared graphs; wire validation also rejects hidden child graphs, payload on the wrong node kind, missing boolean children, malformed leaves, and unknown operations. Associative boolean plans are rebuilt as balanced trees without changing leaf order before serialization.
 
-After translation, `PartitionQueryPlanFactory` creates a recursive Orleans wire message for Empty, Exact, Range, And, and Or nodes. Unlike the existing bounded `RangeIndexQuery`, its lower and upper range bounds are nullable so one-sided predicates do not need sentinel values. `StoragePartitionGrain.QueryRoutedAsync` validates the routing epoch and ownership, then evaluates this complete plan synchronously in one non-reentrant turn. AND intersects and OR unions record keys inside the partition; only that final local result crosses the grain boundary. Exact leaves copy the live index bucket before boolean operations mutate their working set. A compound predicate therefore makes one request per distinct owner rather than one request per leaf.
+After translation, `PartitionQueryPlanFactory` creates a recursive Orleans wire message for Empty,
+Exact, Range, And, and Or nodes. `StoragePartitionGrain.QueryPageRoutedAsync` validates the complete
+plan, protocol versions, response family, route, query fingerprint, layout fingerprint, and hard
+limits before evaluation. Activation-local tree-backed state catalogs and postings use canonical
+`GrainId` order and are rebuilt from durable records. Writes and clears update them synchronously
+with the existing hash/range indexes. Exact and selective exact-AND plans use ordered exact drivers;
+range leaves merge bounded ordered bucket postings; general boolean plans use a bounded ordered
+catalog scan. Every data-dependent step is charged before it runs, and a candidate group must finish
+before its `GrainId` can become a returned item or frontier.
 
-The client starts all partition calls before awaiting `Task.WhenAll`, so a partition failure fails the entire query and no partial result is returned. Cancellation interrupts the local wait, not the Orleans RPCs already in flight. A detached observer awaits the aggregate after cancellation so later transport or partition failures are still observed.
+The client starts every owner call before awaiting the aggregate, so a partition failure fails the
+entire page and no partial items or token escape. Non-canceled attempts classify simultaneous
+failures deterministically in sorted-owner order. Cancellation interrupts the local wait, not the
+Orleans RPCs already in flight; a detached observer still observes their aggregate completion.
 
 `ISearchableStorageClient` intentionally retains only the existing direct `FindAsync` and `RangeAsync` surface. `ISearchableStorageQueryClient` derives from it and adds `Query<TState>`. The keyed registrations for both interfaces point to the same `SearchableStorageClient` instance, which keeps existing direct-client implementations source compatible while making the new expression surface opt-in.
 
-### Bounded paging design target
+### Bounded paging protocol
 
-The [bounded query and paging contract](bounded-query-contract.md) freezes the PR14 design target:
-deterministic logical-work accounting, canonical `GrainId` ordering, partition-local safe frontiers,
-a bounded coordinator merge, AEAD-protected stateless continuations, and weak consistency under
-concurrent writes. PR13 instruments and benchmarks the current materializing evaluator but does not
-implement that wire or public API. In particular, `ToGrainIdsAsync`, `FindAsync`, and `RangeAsync`
-retain their current behavior until PR14. PR14 must build and measure activation-local ordered state
-catalogs and postings, resumable drivers, mutation cost, and retained memory before selecting the
-evaluator or numeric page and work limits.
+The [bounded query and paging contract](bounded-query-contract.md) freezes the implemented
+logical-work accounting, canonical `GrainId` order, partition-local safe frontier, bounded
+coordinator merge, AES-256-GCM stateless continuation, and weak concurrent-write semantics. The
+continuation binds provider, query, response family, ordering/work versions, layout epoch and
+fingerprint, global exclusive frontier, page size, and effective limits. It contains no per-owner
+cursor or buffered result. A non-terminal page may be short or empty; only a null token is terminal.
+
+`ToGrainIdsAsync`, `FindAsync`, and `RangeAsync` call the same page RPC and collect internally under
+aggregate work, item, byte, and round ceilings. They return a complete result or throw
+`SearchableStorageQueryLimitExceededException`; no old unbounded RPC fallback exists.
 
 ## Index metadata
 
@@ -315,16 +339,19 @@ maintenance touches only the changed buckets. The remaining partition-size costs
 compaction: an activation materializes the whole active snapshot, and compaction copies and
 serializes the whole partition while holding its non-reentrant turn. Two stable snapshot slots bound
 object count, not snapshot bytes. Large records also make a bounded-operation journal segment large.
+The activation also retains both the existing lookup indexes and the ordered catalog/postings used by
+paging; benchmark capacity tuples therefore report the additive retained-memory cost rather than
+treating per-operation allocation as activation size.
 
 Queries fan out to every distinct current owner in the layout snapshot. The epoch-1 identity map has
 one owner for each initial partition, so increasing the initial `PartitionCount` reduces records and
-snapshot size per partition but increases query RPC fan-out. `ToGrainIdsAsync` has no `Take`,
-pagination, or result-size limit, so a broad result can allocate a large working set and hold a
-partition turn while matching record ids are collected. The benchmark and capacity plan is tracked in repository
+snapshot size per partition but increases query RPC fan-out. Paging bounds each partition turn,
+owner response, coordinator buffer, public page, and continuation. It does not reduce fan-out or the
+activation's retained whole-partition state, and following a broad traversal still consumes work
+across many pages. The benchmark and capacity plan is tracked in repository
 [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8); results must report
 both total records and records per physical partition instead of extrapolating from one aggregate
 count.
 
-A production-scale layout still needs bounded query-result handling and online ownership movement.
-Slot-based repartitioning is intentionally the next persistence-layer step rather than being hidden
-inside this journal change.
+A production-scale layout still needs online ownership movement. Slot-based repartitioning remains
+a separate fenced persistence protocol rather than being hidden inside query paging.

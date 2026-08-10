@@ -14,19 +14,22 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - Compaction publishes immutable whole-partition snapshots through two generation-fenced physical slots.
 - Mutations within a partition are serialized by one Orleans grain activation.
 - Layout format 4 maps an immutable per-namespace virtual-slot space to physical partitions. Version-3 layouts adopt the identity map in one layout write without moving records or rewriting partition persistence.
-- Routed point operations carry their virtual slot and layout epoch. Queries fan out to each distinct current owner once and return matching `GrainId` values.
+- Routed point operations carry their virtual slot and layout epoch. Each bounded query page fans out
+  to every distinct current owner and returns a sorted, distinct `GrainId` prefix.
 - A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
-- One complete boolean query plan is evaluated in one non-reentrant call per partition.
+- Every partition evaluates at most one configured logical-work slice in a non-reentrant turn;
+  continuations are stateless, authenticated-encrypted, and bound to the query and routing epoch.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
 The journal removes partition-sized writes from the mutation path, but it does not make the current
 layout an unbounded database. A partition activation still loads its whole active snapshot into
 memory, compaction still serializes that whole partition, and a configured segment capacity bounds
 operations rather than bytes: one large record can still produce a large segment. Range indexes now
-use logarithmic bucket seeks and incremental bucket updates. Every query still contacts every
-distinct current owner—all initial partitions in this identity-map release—and `ToGrainIdsAsync`
-currently has no `Take`, pagination, or result-size limit. Increasing the initial `PartitionCount`
-spreads ownership, snapshots, and writes but does not reduce read fan-out. Queries
+use logarithmic bucket seeks and incremental bucket updates. Paging adds activation-local ordered
+catalogs/postings, so retained index memory is higher even though live updates remain logarithmic.
+Every query page still contacts every
+distinct current owner—all initial partitions in this identity-map release. Increasing the initial
+`PartitionCount` spreads ownership, snapshots, and writes but does not reduce read fan-out. Queries
 do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes,
 arbitrary LINQ beyond the documented focused subset, and live virtual-slot movement are not
 implemented yet. This release establishes zero-movement virtual routing; its assignment map remains
@@ -49,8 +52,18 @@ siloBuilder.AddSearchableGrainStorage(
         options.JournalSegmentCapacity = 64;
         options.MaximumJournalReplayEntries = 4_096;
         options.CompactionThreshold = 1_024;
+        options.Query.ContinuationProtection.CurrentKey =
+            new SearchableStorageContinuationKey(
+                "searchable-v1",
+                Convert.FromBase64String(
+                    configuration["SearchableStorage:ContinuationKey"]!));
     });
 ```
+
+The continuation key is an application secret containing exactly 32 decoded bytes. Give the same
+provider-scoped key id and material to every silo and external Orleans client which can create or
+resume pages; do not commit the material, store it in provider state, or generate a different key in
+each process. See [key rotation and rollout](docs/bounded-query-contract.md#continuation-token).
 
 `PartitionCount` seeds the initial physical owners. On first format-4 initialization, the provider
 rounds `VirtualSlotTargetCount` up to the smallest multiple of that count and persists the exact
@@ -90,20 +103,34 @@ public sealed class VacancyGrain(
 ```
 
 Resolve the named query client inside the silo so it shares the provider configuration. Build a
-deferred predicate and execute it explicitly as a `GrainId` query:
+deferred predicate and follow its continuation until the final page:
 
 ```csharp
 var search = services.GetRequiredKeyedService<ISearchableStorageQueryClient>("Searchable");
 
 var minimumSalary = 5;
 var maximumSalary = 8;
-var matches = await search
+var query = search
     .Query<VacancyState>("vacancy")
     .Where(state =>
         state.City == "Helsinki" &&
         state.Salary > minimumSalary &&
-        state.Salary <= maximumSalary)
-    .ToGrainIdsAsync(cancellationToken);
+        state.Salary <= maximumSalary);
+
+string? continuation = null;
+do
+{
+    var page = await query.ToGrainIdPageAsync(
+        new SearchableStorageQueryPageRequest(128, continuation),
+        cancellationToken);
+    foreach (var grainId in page.Items)
+    {
+        // Hydrate only the page the application is ready to consume.
+    }
+
+    continuation = page.ContinuationToken;
+}
+while (continuation is not null);
 ```
 
 The keyed admin client exposes the persisted routing summary without returning its mutable
@@ -127,23 +154,24 @@ numeric information are rejected instead of being translated with different CLR 
 conversions on the closed value side are interpreted; user-defined value conversions are rejected.
 Supported query traversal and semantic and serialized plans are limited to 64 levels and 256
 visited nodes, while property and state-parameter conversion chains are independently capped at 64.
-`ToGrainIdsAsync` is the only execution operation: synchronous enumeration, projections, ordering,
-grouping, joins, and other general LINQ operators throw `NotSupportedException` with a diagnostic.
-Execution sends the complete translated predicate to each distinct owner once. AND and OR are evaluated
-against one serially consistent view inside that partition, then the client merges the partition-local
-results into a sorted, distinct list. The merge is not a snapshot across partitions.
-Because the result is currently unbounded, callers must use this API only where the expected match
-set is operationally bounded by the application until a bounded result protocol is added.
+`ToGrainIdPageAsync` and the compatibility `ToGrainIdsAsync` terminal are the execution operations:
+synchronous enumeration, projections, ordering, grouping, joins, and other general LINQ operators
+throw `NotSupportedException` with a diagnostic. Each page uses a deterministic partition-work,
+item, and byte budget. The coordinator merges only a globally safe canonical prefix. A non-terminal
+page can therefore be short or empty; only a null continuation means completion. Pages are weakly
+consistent rather than a distributed snapshot, so concurrent writes have the precise consequences
+documented in the paging contract.
 
-The [bounded query and paging contract](docs/bounded-query-contract.md) records the measured work
-vocabulary and the proposed ordered-prefix protocol for issue #5. That document is an implementation
-target, not a current API claim: this PR13 design phase leaves `ToGrainIdsAsync` behavior unchanged.
-The planned continuation is explicitly weakly consistent across pages rather than a distributed
-snapshot. PR13 measures only the current materializing evaluator; PR14 must add ordered/resumable
-implementation benchmarks before selecting a strategy or its default and maximum budgets.
+The [bounded query and paging contract](docs/bounded-query-contract.md) is the normative description
+of the implemented work accounting, ordered partition prefix, coordinator merge, continuation
+protection, weak consistency, and rollout rules. Continuations contain no activation-local cursor or
+buffered result state.
 
-`FindAsync` and `RangeAsync` remain available as lower-level compatibility APIs for callers which
-already express one exact lookup or one bounded range directly. They remain on
+`FindAsync`, `RangeAsync`, and `ToGrainIdsAsync` remain available as all-results compatibility APIs
+for known-small results. The built-in client implements them by collecting the same bounded pages
+under aggregate work, item, byte, and round ceilings. It returns the complete sorted result or throws
+`SearchableStorageQueryLimitExceededException`; it never truncates or falls back to the old
+unbounded RPC. `FindAsync` and `RangeAsync` remain on
 `ISearchableStorageClient`; the focused LINQ surface is opt-in through
 `ISearchableStorageQueryClient : ISearchableStorageClient`. Both keyed registrations resolve the
 same built-in client instance. An alternative `IQueryable` implementation can use
@@ -152,15 +180,26 @@ same built-in client instance. An alternative `IQueryable` implementation can us
 
 The cancellation token cancels the caller's wait. Orleans partition calls already in flight cannot
 be canceled by that local token, so the client observes their eventual completion while returning
-cancellation promptly to the caller.
+cancellation promptly to the caller. No partial page, partial compatibility result, or advanced
+continuation is returned.
 
 `SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and initial
-partition count. It reads the persisted virtual map before fan-out. An epoch or ownership mismatch
-discards the complete attempt, refreshes the shared layout cache, and retries once; results from
-different epochs are never merged.
+partition count. The overload accepting `SearchableStorageQueryOptions` supplies the same page
+limits and continuation key ring used by external Orleans clients. It reads the persisted virtual
+map before fan-out. An epoch or ownership mismatch
+discards a first-page attempt, refreshes the shared layout cache, and retries once. A resumed page
+is pinned to its authenticated layout and throws `SearchableStorageStaleContinuationTokenException`
+instead of moving the old frontier into a new epoch; results from different epochs are never merged.
 
-This format transition is not an online mixed-version rollout. Quiesce searchable storage and query
-traffic, deploy this package to every silo and Orleans client, verify that no version-3 process
+The bounded query RPC is additive but replaces the built-in client's legacy unbounded query path.
+For this upgrade, quiesce searchable query traffic, deploy every partition-hosting silo and query
+client, configure the same provider key ring wherever public paging is used, and only then resume
+queries. Point reads, writes, and clears may continue because persistence and their routed protocol
+do not change. Mixed-version paging and fallback to an old array-returning RPC are unsupported.
+
+Separately, adopting a version-3 layout into format 4 is not an online mixed-version rollout.
+Quiesce searchable storage and query traffic, deploy this package to every silo and Orleans client,
+verify that no version-3 process
 remains, and keep traffic paused while one normal grain-state storage operation adopts each provider
 namespace. Verify that the admin read succeeds for every persisted layout and reports epoch 1, then
 resume traffic; the admin path returns a snapshot only for format 4. Query and admin reads

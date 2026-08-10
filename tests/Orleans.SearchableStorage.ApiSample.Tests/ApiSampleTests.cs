@@ -30,7 +30,7 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         description.Should().NotBeNull();
         description!.Name.Should().Be("Orleans.SearchableStorage API sample");
         description.Storage.Should().Be("Journaled Orleans storage over in-memory physical persistence");
-        description.Endpoints.Should().HaveCount(6);
+        description.Endpoints.Should().HaveCount(7);
     }
 
     [Fact]
@@ -45,6 +45,8 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         options.JournalSegmentCapacity.Should().Be(16);
         options.MaximumJournalReplayEntries.Should().Be(256);
         options.CompactionThreshold.Should().Be(64);
+        options.Query.ContinuationProtection.CurrentKey.Should().NotBeNull();
+        options.Query.ContinuationProtection.CurrentKey!.KeyId.Should().Be("api-sample-v1");
     }
 
     [Fact]
@@ -97,6 +99,18 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         var cityMatches = await GetSearchAsync($"/vacancies/search/by-city?city={encodedCity}");
         cityMatches.Ids.Should().BeEquivalentTo([firstId, secondId]);
 
+        var firstPage = await GetSearchPageAsync(
+            $"/vacancies/search/by-city/page?city={encodedCity}&pageSize=1");
+        firstPage.Ids.Should().ContainSingle();
+        firstPage.ContinuationToken.Should().NotBeNullOrWhiteSpace();
+        var secondPage = await GetSearchPageAsync(
+            $"/vacancies/search/by-city/page?city={encodedCity}&pageSize=1"
+            + $"&continuation={Uri.EscapeDataString(firstPage.ContinuationToken!)}");
+        secondPage.Ids.Should().ContainSingle();
+        secondPage.ContinuationToken.Should().BeNull();
+        firstPage.Ids.Concat(secondPage.Ids)
+            .Should().BeEquivalentTo([firstId, secondId]);
+
         var salaryMatches = await GetSearchAsync(
             "/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false");
         salaryMatches.Ids.Should().BeEquivalentTo([firstId, secondId]);
@@ -144,6 +158,15 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         return result!;
     }
 
+    private async Task<SearchPageResponse> GetSearchPageAsync(string path)
+    {
+        var response = await _client.GetAsync(path);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<SearchPageResponse>();
+        result.Should().NotBeNull();
+        return result!;
+    }
+
     private sealed record ApiDescription(string Name, string Storage, IReadOnlyList<string> Endpoints);
 
     private sealed record VacancyWriteRequest(string City, int Salary);
@@ -151,4 +174,6 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
     private sealed record VacancyResponse(string Id, string City, int Salary);
 
     private sealed record SearchResponse(IReadOnlyList<string> Ids);
+
+    private sealed record SearchPageResponse(IReadOnlyList<string> Ids, string? ContinuationToken);
 }

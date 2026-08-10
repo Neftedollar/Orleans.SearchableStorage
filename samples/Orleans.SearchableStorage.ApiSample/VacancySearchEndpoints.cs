@@ -22,6 +22,39 @@ internal static class VacancySearchEndpoints
         return Results.Ok(ToSearchResponse(matches));
     }
 
+    public static async Task<IResult> FindByCityPageAsync(
+        string city,
+        int? pageSize,
+        string? continuation,
+        [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageQueryClient search,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(city))
+        {
+            return ValidationError(nameof(city), "A city is required.");
+        }
+
+        var effectivePageSize = pageSize ?? SearchableStorageQueryOptions.DefaultPageSize;
+        if (effectivePageSize <= 0
+            || effectivePageSize > SearchableStorageQueryOptions.MaximumPageSize)
+        {
+            return ValidationError(
+                nameof(pageSize),
+                $"Page size must be between 1 and {SearchableStorageQueryOptions.MaximumPageSize}.");
+        }
+
+        var normalizedCity = city.Trim();
+        var page = await search
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == normalizedCity)
+            .ToGrainIdPageAsync(
+                new SearchableStorageQueryPageRequest(effectivePageSize, continuation),
+                cancellationToken);
+        return Results.Ok(new SearchPageResponse(
+            page.Items.Select(static grainId => grainId.Key.ToString()).ToArray(),
+            page.ContinuationToken));
+    }
+
     public static async Task<IResult> FindBySalaryAsync(
         int lower,
         int upper,

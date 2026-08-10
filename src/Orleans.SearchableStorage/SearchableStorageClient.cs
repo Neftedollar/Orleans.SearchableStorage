@@ -16,6 +16,9 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
     private readonly string _providerName;
     private readonly Func<int, IStoragePartitionGrain> _getPartition;
     private readonly StorageLayoutCache _layoutCache;
+    private readonly SearchableStorageQueryConfiguration _queryConfiguration;
+    private readonly ContinuationTokenCodec _tokenCodec;
+    private readonly Action<Task> _observeDetachedFanout;
 
     /// <summary>
     /// Initializes a client for one searchable storage provider.
@@ -27,12 +30,35 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
     /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="partitionCount"/> is not positive.</exception>
     public SearchableStorageClient(IGrainFactory grainFactory, string providerName, int partitionCount)
+        : this(grainFactory, providerName, partitionCount, new SearchableStorageQueryOptions())
+    {
+    }
+
+    /// <summary>
+    /// Initializes a client for one searchable storage provider with bounded-query options.
+    /// </summary>
+    /// <param name="grainFactory">The Orleans grain factory used to contact storage grains.</param>
+    /// <param name="providerName">The searchable storage-provider name.</param>
+    /// <param name="partitionCount">The partition count configured for that provider.</param>
+    /// <param name="queryOptions">The provider-scoped bounded-query and continuation settings.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="grainFactory"/> or <paramref name="queryOptions"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="partitionCount"/> is not positive.</exception>
+    public SearchableStorageClient(
+        IGrainFactory grainFactory,
+        string providerName,
+        int partitionCount,
+        SearchableStorageQueryOptions queryOptions)
     {
         ArgumentNullException.ThrowIfNull(grainFactory);
+        ArgumentNullException.ThrowIfNull(queryOptions);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(partitionCount);
 
         _providerName = providerName;
+        _queryConfiguration = SearchableStorageQueryConfiguration.Create(queryOptions);
+        _tokenCodec = new ContinuationTokenCodec(providerName, _queryConfiguration);
+        _observeDetachedFanout = ObserveDetachedFanout;
         var layout = StorageLayout.CreateIdentity(providerName, partitionCount);
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
         _layoutCache = new StorageLayoutCache(() => layoutGrain.GetLayoutAsync(layout));
@@ -46,7 +72,10 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
     internal SearchableStorageClient(
         string providerName,
         IReadOnlyList<IStoragePartitionGrain> partitions,
-        Func<Task<bool>> validateLayout)
+        Func<Task<bool>> validateLayout,
+        SearchableStorageQueryOptions? queryOptions = null,
+        ContinuationTokenCodec? tokenCodec = null,
+        Action<Task>? detachedFanoutObserver = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentNullException.ThrowIfNull(partitions);
@@ -54,6 +83,10 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         ArgumentOutOfRangeException.ThrowIfZero(partitions.Count);
 
         _providerName = providerName;
+        _queryConfiguration = SearchableStorageQueryConfiguration.Create(
+            queryOptions ?? new SearchableStorageQueryOptions());
+        _tokenCodec = tokenCodec ?? new ContinuationTokenCodec(providerName, _queryConfiguration);
+        _observeDetachedFanout = detachedFanoutObserver ?? ObserveDetachedFanout;
         var staticLayout = CreateStaticLayout(providerName, partitions.Count);
         _layoutCache = new StorageLayoutCache(
             async () => await validateLayout() ? staticLayout : null);
@@ -63,13 +96,20 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
     internal SearchableStorageClient(
         string providerName,
         StorageLayoutCache layoutCache,
-        Func<int, IStoragePartitionGrain> getPartition)
+        Func<int, IStoragePartitionGrain> getPartition,
+        SearchableStorageQueryOptions? queryOptions = null,
+        ContinuationTokenCodec? tokenCodec = null,
+        Action<Task>? detachedFanoutObserver = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentNullException.ThrowIfNull(layoutCache);
         ArgumentNullException.ThrowIfNull(getPartition);
 
         _providerName = providerName;
+        _queryConfiguration = SearchableStorageQueryConfiguration.Create(
+            queryOptions ?? new SearchableStorageQueryOptions());
+        _tokenCodec = tokenCodec ?? new ContinuationTokenCodec(providerName, _queryConfiguration);
+        _observeDetachedFanout = detachedFanoutObserver ?? ObserveDetachedFanout;
         _layoutCache = layoutCache;
         _getPartition = getPartition;
     }
@@ -92,20 +132,15 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         var index = IndexMetadataProvider.GetSelectedIndex(stateName, propertySelector);
         var indexValue = CreateQueryValue(index, value, nameof(value));
 
-        var query = new ExactIndexQuery
+        var query = new PartitionQueryPlan
         {
+            Operation = PartitionQueryOperation.Exact,
             Scope = index.Scope,
-            Kind = index.Kind,
+            IndexKind = index.Kind,
             Value = indexValue,
         };
 
-        return await ExecuteRoutedQueryAsync(
-            (partition, epoch) => partition.FindRoutedAsync(new RoutedExactIndexQuery
-            {
-                Query = query,
-                Epoch = epoch,
-            }),
-            cancellationToken);
+        return await ExecuteLegacyQueryAsync(stateName, query, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -131,8 +166,9 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             throw new ArgumentException("The lower range bound must not be greater than the upper range bound.", nameof(lowerBound));
         }
 
-        var query = new RangeIndexQuery
+        var query = new PartitionQueryPlan
         {
+            Operation = PartitionQueryOperation.Range,
             Scope = index.Scope,
             LowerBound = lowerValue,
             UpperBound = upperValue,
@@ -140,13 +176,7 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             IncludeUpperBound = includeUpperBound,
         };
 
-        return await ExecuteRoutedQueryAsync(
-            (partition, epoch) => partition.RangeRoutedAsync(new RoutedRangeIndexQuery
-            {
-                Query = query,
-                Epoch = epoch,
-            }),
-            cancellationToken);
+        return await ExecuteLegacyQueryAsync(stateName, query, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -162,25 +192,24 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
     {
         cancellationToken.ThrowIfCancellationRequested();
         var plan = QueryTranslator.Translate<TState>(stateName, expression);
-        var layout = await _layoutCache.GetAsync(cancellationToken);
-        if (layout is null)
-        {
-            return [];
-        }
-
-        if (plan is EmptyQueryPlan)
-        {
-            return [];
-        }
-
         var partitionPlan = PartitionQueryPlanFactory.Create(plan);
-        return await ExecuteRoutedQueryAsync(
-            layout,
-            (partition, epoch) => partition.QueryRoutedAsync(new RoutedPartitionQuery
-            {
-                Query = partitionPlan,
-                Epoch = epoch,
-            }),
+        return await ExecuteLegacyQueryAsync(stateName, partitionPlan, cancellationToken);
+    }
+
+    internal async Task<SearchableStorageQueryPage> ExecuteQueryPageAsync<TState>(
+        string stateName,
+        Expression expression,
+        SearchableStorageQueryPageRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+        var plan = QueryTranslator.Translate<TState>(stateName, expression);
+        var partitionPlan = PartitionQueryPlanFactory.Create(plan);
+        return await ExecutePublicPageAsync(
+            stateName,
+            partitionPlan,
+            request,
             cancellationToken);
     }
 
@@ -203,34 +232,102 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
             ?? throw new InvalidOperationException("A non-null query value unexpectedly converted to null.");
     }
 
-    private async Task<IReadOnlyList<GrainId>> ExecuteRoutedQueryAsync(
-        Func<IStoragePartitionGrain, long, Task<GrainId[]>> query,
+    private async Task<SearchableStorageQueryPage> ExecutePublicPageAsync(
+        string stateName,
+        PartitionQueryPlan query,
+        SearchableStorageQueryPageRequest request,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (request.PageSize > _queryConfiguration.PageSizeLimit)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.PageSize,
+                $"PageSize must not exceed the configured limit of {_queryConfiguration.PageSizeLimit}.");
+        }
+
+        if (_queryConfiguration.CurrentKey is null)
+        {
+            throw new SearchableStorageQueryConfigurationException(
+                "A current continuation-protection key must be configured before public query paging can be used.");
+        }
+
+        var queryFingerprint = QueryPlanFingerprint.Compute(stateName, query);
+        var isContinuation = request.ContinuationToken is not null;
         var layout = await _layoutCache.GetAsync(cancellationToken);
         if (layout is null)
         {
-            return [];
+            if (isContinuation)
+            {
+                throw new SearchableStorageInvalidContinuationTokenException(
+                    "A continuation cannot resume an uninitialized storage namespace.");
+            }
+
+            return new SearchableStorageQueryPage([], continuationToken: null);
         }
 
-        return await ExecuteRoutedQueryAsync(layout, query, cancellationToken);
-    }
+        if (query.Operation == PartitionQueryOperation.Empty)
+        {
+            if (isContinuation)
+            {
+                throw new SearchableStorageInvalidContinuationTokenException(
+                    "An empty query has no valid continuation.");
+            }
 
-    private async Task<IReadOnlyList<GrainId>> ExecuteRoutedQueryAsync(
-        StorageLayoutSnapshot layout,
-        Func<IStoragePartitionGrain, long, Task<GrainId[]>> query,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(query);
+            return new SearchableStorageQueryPage([], continuationToken: null);
+        }
+
         for (var attempt = 0; ; attempt++)
         {
-            var tasks = layout
-                .GetDistinctOwners()
-                .Select(owner => StartRoutedQuery(owner, layout.Epoch, query));
+            cancellationToken.ThrowIfCancellationRequested();
+            var owners = layout.GetDistinctOwners();
+            var policy = QueryExecutionPolicy.Create(
+                _queryConfiguration,
+                request.PageSize,
+                owners.Length);
+            var layoutFingerprint = StorageLayoutFingerprint.Compute(layout);
+            var binding = CreateTokenBinding(
+                queryFingerprint,
+                layout,
+                layoutFingerprint,
+                policy);
+            var cursor = isContinuation
+                ? QueryCursor.AfterValue(
+                    _tokenCodec.Unprotect(request.ContinuationToken!, binding).After)
+                : QueryCursor.Initial;
+
             try
             {
-                var results = await WaitForFanoutAsync(tasks, cancellationToken);
-                return Merge(results);
+                var page = await ExecutePageAttemptAsync(
+                    stateName,
+                    query,
+                    queryFingerprint,
+                    layout,
+                    layoutFingerprint,
+                    owners,
+                    policy,
+                    cursor,
+                    cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                var continuationToken = page.HasContinuation
+                    ? _tokenCodec.Protect(
+                        new ContinuationTokenPayload(binding, page.ContinuationAfter))
+                    : null;
+                cancellationToken.ThrowIfCancellationRequested();
+                return new SearchableStorageQueryPage(page.Items, continuationToken);
+            }
+            catch (PartitionQueryBudgetTooSmallException exception)
+            {
+                throw new SearchableStorageQueryLimitExceededException(
+                    "The searchable-storage query page cannot make progress within its bounded execution limits.",
+                    exception);
+            }
+            catch (StorageRouteMismatchException exception) when (isContinuation)
+            {
+                throw new SearchableStorageStaleContinuationTokenException(
+                    "The routing layout changed while resuming the searchable-storage query.",
+                    exception);
             }
             catch (StorageRouteMismatchException) when (attempt == 0)
             {
@@ -242,20 +339,218 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         }
     }
 
-    private Task<GrainId[]> StartRoutedQuery(
+    private async Task<IReadOnlyList<GrainId>> ExecuteLegacyQueryAsync(
+        string stateName,
+        PartitionQueryPlan query,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var queryFingerprint = QueryPlanFingerprint.Compute(stateName, query);
+        var layout = await _layoutCache.GetAsync(cancellationToken);
+        if (layout is null || query.Operation == PartitionQueryOperation.Empty)
+        {
+            return [];
+        }
+
+        var results = new List<GrainId>(
+            Math.Min(
+                _queryConfiguration.LegacyResultItemLimit,
+                SearchableStorageQueryOptions.DefaultPageSize));
+        var cursor = QueryCursor.Initial;
+        var allowRouteRefresh = true;
+        long totalWork = 0;
+        var totalBytes = 0;
+        var rounds = 0;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rounds >= _queryConfiguration.LegacyRoundLimit)
+            {
+                throw CreateLegacyLimitException("round");
+            }
+
+            rounds = checked(rounds + 1);
+            var owners = layout.GetDistinctOwners();
+            var remainingWork = _queryConfiguration.LegacyAggregateWorkLimit - totalWork;
+            var remainingItems = _queryConfiguration.LegacyResultItemLimit - results.Count;
+            var remainingBytes = _queryConfiguration.LegacyResultByteLimit - totalBytes;
+            if (remainingWork <= 0 || remainingItems <= 0 || remainingBytes <= 0)
+            {
+                throw CreateLegacyLimitException("aggregate");
+            }
+
+            var apportionedWork = remainingWork / owners.Length;
+            if (apportionedWork <= 0)
+            {
+                throw CreateLegacyLimitException("logical-work");
+            }
+
+            var pageSize = Math.Min(
+                Math.Min(
+                    SearchableStorageQueryOptions.DefaultPageSize,
+                    _queryConfiguration.PageSizeLimit),
+                remainingItems);
+            var policy = QueryExecutionPolicy.Create(
+                _queryConfiguration,
+                pageSize,
+                owners.Length) with
+            {
+                PartitionWorkBudget = Math.Min(
+                    _queryConfiguration.PartitionWorkBudget,
+                    apportionedWork),
+                PageByteLimit = Math.Min(
+                    _queryConfiguration.PageByteLimit,
+                    remainingBytes),
+            };
+            var layoutFingerprint = StorageLayoutFingerprint.Compute(layout);
+
+            PageAttemptResult page;
+            try
+            {
+                page = await ExecutePageAttemptAsync(
+                    stateName,
+                    query,
+                    queryFingerprint,
+                    layout,
+                    layoutFingerprint,
+                    owners,
+                    policy,
+                    cursor,
+                    cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            catch (StorageRouteMismatchException) when (allowRouteRefresh && !cursor.HasAfter)
+            {
+                allowRouteRefresh = false;
+                _layoutCache.Invalidate(layout);
+                layout = await _layoutCache.GetAsync(cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        "The storage layout disappeared while a routed query was refreshing.");
+                continue;
+            }
+            catch (PartitionQueryBudgetTooSmallException exception)
+            {
+                throw new SearchableStorageQueryLimitExceededException(
+                    "The searchable-storage compatibility query cannot make progress within its bounded execution limits.",
+                    exception);
+            }
+
+            allowRouteRefresh = false;
+            try
+            {
+                totalWork = checked(totalWork + page.TotalWork);
+                totalBytes = checked(totalBytes + page.ItemByteCount);
+            }
+            catch (OverflowException exception)
+            {
+                throw new SearchableStorageQueryLimitExceededException(
+                    "The searchable-storage compatibility query exceeded an aggregate limit.",
+                    exception);
+            }
+
+            if (totalWork > _queryConfiguration.LegacyAggregateWorkLimit
+                || (page.HasContinuation
+                    && totalWork == _queryConfiguration.LegacyAggregateWorkLimit))
+            {
+                throw CreateLegacyLimitException("logical-work");
+            }
+
+            if (totalBytes > _queryConfiguration.LegacyResultByteLimit
+                || (page.HasContinuation
+                    && totalBytes == _queryConfiguration.LegacyResultByteLimit))
+            {
+                throw CreateLegacyLimitException("result-byte");
+            }
+
+            var nextItemCount = checked(results.Count + page.Items.Length);
+            if (nextItemCount > _queryConfiguration.LegacyResultItemLimit
+                || (page.HasContinuation
+                    && nextItemCount == _queryConfiguration.LegacyResultItemLimit))
+            {
+                throw CreateLegacyLimitException("result-item");
+            }
+
+            if (page.HasContinuation && rounds == _queryConfiguration.LegacyRoundLimit)
+            {
+                throw CreateLegacyLimitException("round");
+            }
+
+            results.AddRange(page.Items);
+            if (!page.HasContinuation)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return results;
+            }
+
+            cursor = QueryCursor.AfterValue(page.ContinuationAfter);
+        }
+    }
+
+    private async Task<PageAttemptResult> ExecutePageAttemptAsync(
+        string stateName,
+        PartitionQueryPlan query,
+        byte[] queryFingerprint,
+        StorageLayoutSnapshot layout,
+        byte[] layoutFingerprint,
+        int[] owners,
+        QueryExecutionPolicy policy,
+        QueryCursor cursor,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var calls = new PartitionPageCall[owners.Length];
+        for (var index = 0; index < owners.Length; index++)
+        {
+            var owner = owners[index];
+            var request = new RoutedPartitionQueryPageRequest
+            {
+                Query = query,
+                Epoch = layout.Epoch,
+                HasAfter = cursor.HasAfter,
+                After = cursor.After,
+                WorkBudget = policy.PartitionWorkBudget,
+                ItemLimit = policy.PartitionResponseItemLimit,
+                ByteLimit = policy.PartitionResponseByteLimit,
+                ProtocolVersion = QueryProtocol.PagingVersion,
+                OrderingVersion = QueryProtocol.OrderingVersion,
+                WorkPolicyVersion = QueryProtocol.WorkPolicyVersion,
+                ResponseFamily = PartitionQueryResponseFamily.GrainIdPage,
+                QueryFingerprint = [.. queryFingerprint],
+                LayoutFormatVersion = layout.FormatVersion,
+                LayoutFingerprint = [.. layoutFingerprint],
+                StateName = stateName,
+            };
+            calls[index] = new PartitionPageCall(owner, StartPageQuery(owner, request));
+        }
+
+        var responses = await WaitForFanoutAsync(calls, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValidateAndMergeResponses(
+            responses,
+            queryFingerprint,
+            layout,
+            layoutFingerprint,
+            policy,
+            cursor);
+    }
+
+    private Task<PartitionQueryPageResult> StartPageQuery(
         int owner,
-        long epoch,
-        Func<IStoragePartitionGrain, long, Task<GrainId[]>> query)
+        RoutedPartitionQueryPageRequest request)
     {
         try
         {
-            return query(_getPartition(owner), epoch);
+            return _getPartition(owner).QueryPageRoutedAsync(request)
+                ?? Task.FromException<PartitionQueryPageResult>(
+                    new InvalidOperationException(
+                        $"Storage owner {owner} returned a null partition query task."));
         }
         catch (Exception exception)
         {
-            // Normalize synchronous test doubles, client lookup failures, and custom Orleans
-            // proxies into the same all-partitions completion path as faulted RPC tasks.
-            return Task.FromException<GrainId[]>(exception);
+            // Normalize synchronous test doubles, lookup failures, and custom Orleans proxies into
+            // the same all-owner completion and deterministic failure-classification path.
+            return Task.FromException<PartitionQueryPageResult>(exception);
         }
     }
 
@@ -274,21 +569,321 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         });
     }
 
-    private static GrainId[] Merge(IEnumerable<GrainId[]> results)
+    private ContinuationTokenBinding CreateTokenBinding(
+        byte[] queryFingerprint,
+        StorageLayoutSnapshot layout,
+        byte[] layoutFingerprint,
+        QueryExecutionPolicy policy)
     {
-        return results
-            .SelectMany(static result => result)
-            .Distinct()
-            .Order()
-            .ToArray();
+        return new ContinuationTokenBinding(
+            _providerName,
+            PartitionQueryResponseFamily.GrainIdPage,
+            queryFingerprint,
+            QueryProtocol.OrderingVersion,
+            layout.FormatVersion,
+            layout.Epoch,
+            layoutFingerprint,
+            policy);
     }
 
-    private static async Task<T[]> WaitForFanoutAsync<T>(
-        IEnumerable<Task<T>> tasks,
+    private static PageAttemptResult ValidateAndMergeResponses(
+        PartitionQueryPageResult[] responses,
+        byte[] queryFingerprint,
+        StorageLayoutSnapshot layout,
+        byte[] layoutFingerprint,
+        QueryExecutionPolicy policy,
+        QueryCursor cursor)
+    {
+        var bufferedItems = 0;
+        var bufferedBytes = 0;
+        long totalWork = 0;
+        try
+        {
+            for (var index = 0; index < responses.Length; index++)
+            {
+                var response = responses[index]
+                    ?? throw InvalidPartitionResponse(index, "returned a null response");
+                ValidatePartitionResponse(
+                    index,
+                    response,
+                    queryFingerprint,
+                    layout,
+                    layoutFingerprint,
+                    policy,
+                    cursor);
+                bufferedItems = checked(bufferedItems + response.Items.Length);
+                bufferedBytes = checked(bufferedBytes + response.ItemByteCount);
+                totalWork = checked(totalWork + response.Work.TotalOperationCount);
+            }
+        }
+        catch (OverflowException exception)
+        {
+            throw new InvalidOperationException(
+                "A partition page response overflowed coordinator accounting.",
+                exception);
+        }
+
+        if (bufferedItems > policy.CoordinatorBufferedItemLimit
+            || bufferedBytes > policy.CoordinatorBufferedByteLimit)
+        {
+            throw new InvalidOperationException(
+                "Partition page responses exceeded the coordinator buffer policy.");
+        }
+
+        return MergePartitionResponses(responses, policy, totalWork);
+    }
+
+    private static void ValidatePartitionResponse(
+        int responseIndex,
+        PartitionQueryPageResult response,
+        byte[] queryFingerprint,
+        StorageLayoutSnapshot layout,
+        byte[] layoutFingerprint,
+        QueryExecutionPolicy policy,
+        QueryCursor cursor)
+    {
+        if (response.ProtocolVersion != QueryProtocol.PagingVersion
+            || response.OrderingVersion != QueryProtocol.OrderingVersion
+            || response.WorkPolicyVersion != QueryProtocol.WorkPolicyVersion
+            || response.ResponseFamily != PartitionQueryResponseFamily.GrainIdPage)
+        {
+            throw InvalidPartitionResponse(responseIndex, "returned incompatible protocol metadata");
+        }
+
+        if (response.Epoch != layout.Epoch
+            || response.LayoutFormatVersion != layout.FormatVersion
+            || response.LayoutFingerprint is null
+            || !StorageLayoutFingerprint.Equals(response.LayoutFingerprint, layoutFingerprint))
+        {
+            throw InvalidPartitionResponse(responseIndex, "returned mismatched routing metadata");
+        }
+
+        if (response.QueryFingerprint is null
+            || !QueryPlanFingerprint.Equals(response.QueryFingerprint, queryFingerprint))
+        {
+            throw InvalidPartitionResponse(responseIndex, "returned a mismatched query fingerprint");
+        }
+
+        if (response.Items is null || response.Work is null)
+        {
+            throw InvalidPartitionResponse(responseIndex, "omitted a required payload");
+        }
+
+        if (response.Items.Length > policy.PartitionResponseItemLimit
+            || response.ItemByteCount < 0
+            || response.ItemByteCount > policy.PartitionResponseByteLimit
+            || HasNegativeWorkComponent(response.Work)
+            || response.Work.TotalOperationCount > policy.PartitionWorkBudget)
+        {
+            throw InvalidPartitionResponse(responseIndex, "exceeded its effective response policy");
+        }
+
+        if (!Enum.IsDefined(response.StopReason)
+            || response.Exhausted != (response.StopReason == PartitionQueryPageStopReason.Exhausted)
+            || response.Exhausted == response.HasFrontier
+            || (response.HasFrontier && response.Frontier.IsDefault)
+            || (response.Exhausted && !response.Frontier.IsDefault))
+        {
+            throw InvalidPartitionResponse(responseIndex, "returned an invalid frontier or stop reason");
+        }
+
+        if (response.HasFrontier
+            && cursor.HasAfter
+            && GrainIdCanonicalOrder.Compare(response.Frontier, cursor.After) <= 0)
+        {
+            throw InvalidPartitionResponse(responseIndex, "returned a non-progressing frontier");
+        }
+
+        GrainId? previous = null;
+        foreach (var item in response.Items)
+        {
+            if (item.IsDefault)
+            {
+                throw InvalidPartitionResponse(responseIndex, "returned a default GrainId");
+            }
+
+            if (cursor.HasAfter && GrainIdCanonicalOrder.Compare(item, cursor.After) <= 0)
+            {
+                throw InvalidPartitionResponse(responseIndex, "returned an item at or before the input boundary");
+            }
+
+            if (response.HasFrontier
+                && GrainIdCanonicalOrder.Compare(item, response.Frontier) > 0)
+            {
+                throw InvalidPartitionResponse(responseIndex, "returned an item beyond its safe frontier");
+            }
+
+            if (previous is { } preceding
+                && GrainIdCanonicalOrder.Compare(preceding, item) >= 0)
+            {
+                throw InvalidPartitionResponse(responseIndex, "returned items which are not sorted and distinct");
+            }
+
+            previous = item;
+        }
+
+        var encodedBytes = GetEncodedLength(response.Items);
+        if (encodedBytes != response.ItemByteCount)
+        {
+            throw InvalidPartitionResponse(responseIndex, "reported an incorrect encoded item size");
+        }
+    }
+
+    private static bool HasNegativeWorkComponent(PartitionQueryPageWork work)
+    {
+        return work.OrderedCandidateVisitCount < 0
+            || work.RecordProbeCount < 0
+            || work.PredicateNodeProbeCount < 0
+            || work.IndexEntryProbeCount < 0
+            || work.OwnershipProbeCount < 0
+            || work.PostingSeekCount < 0
+            || work.RangeBucketVisitCount < 0
+            || work.RangeMergeOperationCount < 0
+            || work.ResultMaterializationCount < 0;
+    }
+
+    private static PageAttemptResult MergePartitionResponses(
+        PartitionQueryPageResult[] responses,
+        QueryExecutionPolicy policy,
+        long totalWork)
+    {
+        var allExhausted = true;
+        var hasGlobalFrontier = false;
+        var globalFrontier = default(GrainId);
+        foreach (var response in responses)
+        {
+            if (response.Exhausted)
+            {
+                continue;
+            }
+
+            allExhausted = false;
+            if (!hasGlobalFrontier
+                || GrainIdCanonicalOrder.Compare(response.Frontier, globalFrontier) < 0)
+            {
+                hasGlobalFrontier = true;
+                globalFrontier = response.Frontier;
+            }
+        }
+
+        var pending = new PriorityQueue<MergeCursor, GrainId>(GrainIdCanonicalOrder.Comparer);
+        for (var responseIndex = 0; responseIndex < responses.Length; responseIndex++)
+        {
+            var items = responses[responseIndex].Items;
+            if (items.Length > 0
+                && (!hasGlobalFrontier
+                    || GrainIdCanonicalOrder.Compare(items[0], globalFrontier) <= 0))
+            {
+                pending.Enqueue(new MergeCursor(responseIndex, ItemIndex: 0), items[0]);
+            }
+        }
+
+        var pageItems = new List<GrainId>(policy.PageSize);
+        var pageBytes = 0;
+        var truncated = false;
+        var hasLast = false;
+        var last = default(GrainId);
+        while (pending.TryDequeue(out var cursor, out var item))
+        {
+            if (!hasLast || GrainIdCanonicalOrder.Compare(last, item) != 0)
+            {
+                var itemBytes = GrainIdCanonicalOrder.GetEncodedLength(item);
+                if (pageItems.Count >= policy.PageSize
+                    || itemBytes > policy.PageByteLimit - pageBytes)
+                {
+                    if (pageItems.Count == 0)
+                    {
+                        throw new SearchableStorageQueryLimitExceededException(
+                            "One matching GrainId cannot fit the configured public page-byte limit.");
+                    }
+
+                    truncated = true;
+                    break;
+                }
+
+                pageItems.Add(item);
+                pageBytes = checked(pageBytes + itemBytes);
+                last = item;
+                hasLast = true;
+            }
+
+            var nextItemIndex = cursor.ItemIndex + 1;
+            var responseItems = responses[cursor.ResponseIndex].Items;
+            if (nextItemIndex < responseItems.Length)
+            {
+                var next = responseItems[nextItemIndex];
+                if (!hasGlobalFrontier
+                    || GrainIdCanonicalOrder.Compare(next, globalFrontier) <= 0)
+                {
+                    pending.Enqueue(
+                        new MergeCursor(cursor.ResponseIndex, nextItemIndex),
+                        next);
+                }
+            }
+        }
+
+        if (truncated)
+        {
+            return new PageAttemptResult(
+                [.. pageItems],
+                HasContinuation: true,
+                ContinuationAfter: pageItems[^1],
+                TotalWork: totalWork,
+                ItemByteCount: pageBytes);
+        }
+
+        if (allExhausted)
+        {
+            return new PageAttemptResult(
+                [.. pageItems],
+                HasContinuation: false,
+                ContinuationAfter: default,
+                TotalWork: totalWork,
+                ItemByteCount: pageBytes);
+        }
+
+        if (!hasGlobalFrontier)
+        {
+            throw new InvalidOperationException(
+                "A non-terminal partition page attempt did not produce a global frontier.");
+        }
+
+        return new PageAttemptResult(
+            [.. pageItems],
+            HasContinuation: true,
+            ContinuationAfter: globalFrontier,
+            TotalWork: totalWork,
+            ItemByteCount: pageBytes);
+    }
+
+    private static int GetEncodedLength(IEnumerable<GrainId> items)
+    {
+        var result = 0;
+        foreach (var item in items)
+        {
+            result = checked(result + GrainIdCanonicalOrder.GetEncodedLength(item));
+        }
+
+        return result;
+    }
+
+    private static InvalidOperationException InvalidPartitionResponse(int index, string reason)
+    {
+        return new InvalidOperationException($"Storage owner response {index} {reason}.");
+    }
+
+    private static SearchableStorageQueryLimitExceededException CreateLegacyLimitException(
+        string limit)
+    {
+        return new SearchableStorageQueryLimitExceededException(
+            $"The searchable-storage compatibility query exceeded its {limit} limit.");
+    }
+
+    private async Task<PartitionQueryPageResult[]> WaitForFanoutAsync(
+        PartitionPageCall[] calls,
         CancellationToken cancellationToken)
     {
-        var partitionTasks = tasks.ToArray();
-        var aggregate = Task.WhenAll(partitionTasks);
+        var aggregate = Task.WhenAll(calls.Select(static call => call.Task));
         try
         {
             return await aggregate.WaitAsync(cancellationToken);
@@ -297,46 +892,86 @@ public sealed class SearchableStorageClient : ISearchableStorageQueryClient
         {
             // Orleans calls do not accept this local cancellation token. Observe their eventual
             // completion so a later transport or partition failure cannot become unobserved.
-            _ = ObserveCompletionAsync(aggregate);
+            _observeDetachedFanout(aggregate);
             throw;
         }
         catch
         {
-            var failures = aggregate.Exception?.Flatten().InnerExceptions;
-            var nonRoutingFailure = failures?.FirstOrDefault(
-                static failure => failure is not StorageRouteMismatchException);
-            if (nonRoutingFailure is not null)
+            foreach (var call in calls)
             {
-                ExceptionDispatchInfo.Capture(nonRoutingFailure).Throw();
-            }
-
-            var canceledPartition = partitionTasks.FirstOrDefault(static task => task.IsCanceled);
-            if (canceledPartition is not null)
-            {
-                // Task.WhenAll is faulted rather than canceled when another child also faults, and
-                // canceled children are absent from AggregateException.InnerExceptions. Surface the
-                // cancellation before classifying the remaining failures as routing-only.
-                _ = await canceledPartition;
-                throw new InvalidOperationException("A canceled partition task completed successfully.");
-            }
-
-            if (failures is not null)
-            {
-                var newestMismatch = failures
-                    .OfType<StorageRouteMismatchException>()
-                    .MaxBy(static failure => failure.CurrentEpoch);
-                if (newestMismatch is not null)
+                if (call.Task.Exception is not { } taskFailure)
                 {
-                    ExceptionDispatchInfo.Capture(newestMismatch).Throw();
+                    continue;
+                }
+
+                var nonRoutingFailure = taskFailure
+                    .Flatten()
+                    .InnerExceptions
+                    .FirstOrDefault(static failure => failure is not StorageRouteMismatchException);
+                if (nonRoutingFailure is not null)
+                {
+                    ExceptionDispatchInfo.Capture(nonRoutingFailure).Throw();
                 }
             }
 
-            throw;
+            var canceledCall = calls.FirstOrDefault(static call => call.Task.IsCanceled);
+            if (canceledCall is not null)
+            {
+                _ = await canceledCall.Task;
+                throw new InvalidOperationException("A canceled partition task completed successfully.");
+            }
+
+            var newestMismatch = calls
+                .SelectMany(static call => call.Task.Exception?
+                    .Flatten()
+                    .InnerExceptions
+                    .OfType<StorageRouteMismatchException>()
+                    .Select(exception => new OwnedRouteMismatch(call.Owner, exception))
+                    ?? [])
+                .OrderByDescending(static candidate => candidate.Exception.CurrentEpoch)
+                .ThenBy(static candidate => candidate.Owner)
+                .FirstOrDefault();
+            if (newestMismatch is not null)
+            {
+                ExceptionDispatchInfo.Capture(newestMismatch.Exception).Throw();
+            }
+
+            throw new InvalidOperationException(
+                "A partition page fan-out failed without an observable failure.");
         }
     }
+
+    private sealed record PartitionPageCall(
+        int Owner,
+        Task<PartitionQueryPageResult> Task);
+
+    private sealed record OwnedRouteMismatch(
+        int Owner,
+        StorageRouteMismatchException Exception);
+
+    private readonly record struct MergeCursor(int ResponseIndex, int ItemIndex);
+
+    private readonly record struct QueryCursor(bool HasAfter, GrainId After)
+    {
+        public static QueryCursor Initial => default;
+
+        public static QueryCursor AfterValue(GrainId after) => new(HasAfter: true, after);
+    }
+
+    private sealed record PageAttemptResult(
+        GrainId[] Items,
+        bool HasContinuation,
+        GrainId ContinuationAfter,
+        long TotalWork,
+        int ItemByteCount);
 
     private static async Task ObserveCompletionAsync(Task task)
     {
         await task.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+    }
+
+    private static void ObserveDetachedFanout(Task task)
+    {
+        _ = ObserveCompletionAsync(task);
     }
 }

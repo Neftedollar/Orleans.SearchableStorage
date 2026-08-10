@@ -164,6 +164,7 @@ case "$1" in
 
     jq --exit-status --arg commit "$expected_commit" '
       .SchemaVersion == "oss-benchmarkdotnet-provenance/v1"
+      and .ExecutionMode == "BenchmarkDotNet"
       and .GitCommit == $commit
       and .GitDirty == false
       and (.BenchmarkAssemblyVersion | length > 0 and . != "unknown")
@@ -179,13 +180,14 @@ case "$1" in
     mapfile -t listed_benchmarks < <(
       grep --extended-regexp '^Orleans\.SearchableStorage\.Benchmarks\.[A-Za-z0-9_+]+\.[A-Za-z0-9_]+$' "$list_output" || true
     )
-    if [[ ${#listed_benchmarks[@]} -ne 15 ]]; then
-      echo "BenchmarkDotNet must list exactly 15 benchmark methods; found ${#listed_benchmarks[@]}." >&2
+    if [[ ${#listed_benchmarks[@]} -ne 16 ]]; then
+      echo "BenchmarkDotNet must list exactly 16 benchmark methods; found ${#listed_benchmarks[@]}." >&2
       exit 1
     fi
 
     mapfile -t actual_benchmarks < <(printf '%s\n' "${listed_benchmarks[@]}" | LC_ALL=C sort)
     mapfile -t expected_benchmarks <<'EOF'
+Orleans.SearchableStorage.Benchmarks.DerivedIndexBuildBenchmarks.BuildDerivedIndexes
 Orleans.SearchableStorage.Benchmarks.ExactRangeLookupBenchmarks.ExactRangeValueLookup
 Orleans.SearchableStorage.Benchmarks.IndexMutationBenchmarks.DeleteAndRestoreIndexedRecord
 Orleans.SearchableStorage.Benchmarks.IndexMutationBenchmarks.ReplaceIndexedRecord
@@ -205,7 +207,7 @@ EOF
     if ! diff --unified \
       <(printf '%s\n' "${expected_benchmarks[@]}") \
       <(printf '%s\n' "${actual_benchmarks[@]}") >&2; then
-      echo "BenchmarkDotNet listed a method set outside the reviewed 15-method contract." >&2
+      echo "BenchmarkDotNet listed a method set outside the reviewed 16-method contract." >&2
       exit 1
     fi
     ;;

@@ -1,17 +1,12 @@
 # Bounded query and paging contract
 
-This document freezes the design target for bounded query delivery tracked by
-[issue #5](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/5). It separates the
-measurement work in PR13 from the wire and public API implementation planned for PR14.
+This document freezes the implemented bounded-query delivery contract tracked by
+[issue #5](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/5). PR13 introduced the
+materializing-evaluator work baseline and protocol design; PR14 adds the ordered partition engine,
+public paging API, bounded compatibility terminals, authenticated-encrypted continuations, and
+implementation-specific benchmarks described here.
 
-PR13 adds deterministic work instrumentation, benchmark distributions for the current
-hash-set/materializing evaluator, and this protocol contract. It does **not** change
-`ToGrainIdsAsync`, add a paging API, or make the current evaluator resumable. Until PR14 lands, the
-current public query behavior and its documented unbounded-result limitation remain unchanged.
-
-The keywords **must**, **must not**, **should**, and **may** below describe the PR14 implementation
-gate. Proposed message and response names are descriptive, not claims that those public types exist
-in PR13.
+The keywords **must**, **must not**, **should**, and **may** are normative for protocol version 1.
 
 ## Required properties
 
@@ -33,7 +28,7 @@ increment the layout epoch and therefore invalidate continuations created under 
 
 ## Logical work accounting
 
-PR13 measures logical work as the following checked component vector:
+The retained PR13 materializing baseline measures this checked component vector:
 
 | Component | Charge rule |
 | --- | --- |
@@ -69,24 +64,36 @@ new helper. This is a deterministic logical-work measure, not elapsed time, CPU 
 assertion that every component has equal physical cost; latency and allocation remain benchmark
 outputs alongside it.
 
-PR13 observes this work after the existing whole-plan evaluation; that is instrumentation, not a
-limit. PR14 must charge before performing the next data-dependent step and stop at a safe cursor
-boundary before the effective per-partition budget would be exceeded. Bulk collection and vectorized
-operations must charge their logical contents, not one operation for an arbitrarily large input. If
-the resumable evaluator introduces work which is not represented above—for example ordered-driver
-advances, predicate membership probes, heap comparisons, or result materialization—it must either map
-that work to an existing candidate component with an exact documented rule or add a versioned,
-non-zero component to the vector and to `TotalOperationCount` before the protocol is enabled.
+That baseline observes work after whole-plan evaluation; it remains comparative instrumentation, not
+the bounded page budget. Work-policy version 1 charges this production page vector:
+
+| Component | Charge rule |
+| --- | --- |
+| `OrderedCandidateVisitCount` | One before visiting a complete canonical candidate group. |
+| `RecordProbeCount` | One before inspecting each live record occurrence in that group. |
+| `PredicateNodeProbeCount` | One before evaluating each plan-node occurrence against a record. |
+| `IndexEntryProbeCount` | One before inspecting each record index-entry occurrence. |
+| `OwnershipProbeCount` | One before the routing-ownership lookup for a candidate group. |
+| `PostingSeekCount` | One before each ordered catalog, exact-posting, range-bucket, or posting-boundary seek. |
+| `RangeBucketVisitCount` | One before accessing each selected ordered range bucket. |
+| `ResultMaterializationCount` | One before adding a matching `GrainId` to a response. |
+| `RangeMergeOperationCount` | One before loading each range-posting candidate occurrence and before each canonical comparison used to merge or group occurrences. |
+
+Its checked `TotalOperationCount` is the sum of all nine fields. The partition charges before each
+data-dependent step and stops at a safe cursor boundary before the effective budget would be
+exceeded. Bulk collection and vectorized operations charge their logical contents, not one operation
+for an arbitrarily large input. A future representation which introduces another kind of work must
+map it to an exact documented rule or increment the work-policy version with a new non-zero field.
 
 The existing plan limits of 64 levels and 256 nodes remain independent admission limits. Request
 validation, token decoding, and plan validation are bounded by their own size limits; they must happen
 before partition fan-out where possible.
 
-The PR13 matrix is a baseline for the current evaluator only. It cannot select a production strategy
-or numeric budget for code which does not exist yet. PR14 must first extend the checked-in matrix with
-the ordered, resumable, and candidate-driven implementation described below, including its activation
-build, mutation, memory, query-latency, allocation, and logical-work costs. Only that implementation
-evidence may select the default and maximum values for these named policy constants:
+The PR13 matrix remains a baseline for the materializing evaluator only. The checked-in matrix also
+covers the ordered, resumable, and candidate-driven implementation described below, including its
+activation build, mutation, retained memory, query latency, allocation, progress, and logical-work
+costs. Defaults are conservative operating choices within hard structural safety caps, not latency
+SLOs or capacity claims. The named policy constants are:
 
 - `DefaultPartitionWorkBudget` and `MaximumPartitionWorkBudget`;
 - `DefaultPageSize` and `MaximumPageSize`;
@@ -95,9 +102,9 @@ evidence may select the default and maximum values for these named policy consta
 - `MaximumContinuationTokenBytes`;
 - the legacy aggregate work and result ceilings described below.
 
-PR14 must retain both the PR13 materializing baseline and every implementation-specific comparison,
-plus dataset distribution, records-per-partition value, runtime configuration, and decision
-rationale. A client request cannot raise an effective value above a server-side maximum.
+The repository retains both the PR13 materializing baseline and every implementation-specific
+comparison, plus dataset distribution, records-per-partition value, runtime configuration, and
+decision rationale. A client request cannot raise an effective value above a server-side maximum.
 
 ## Canonical ordering
 
@@ -105,6 +112,11 @@ The version-1 page order is the existing ascending `GrainId` order: compare the 
 lexicographically as unsigned bytes, then compare the grain key bytes the same way. Equality uses the
 complete type and key byte sequences. Pages and partition responses are sorted and distinct under
 this comparator.
+
+A canonical version-1 `GrainId` contains 1–1,024 type bytes and 1–4,096 key bytes. The same bounds
+are enforced before sizing, encoding, protecting, and decoding a frontier. The 16 KiB hard token cap
+covers the maximum canonical frontier plus the versioned AEAD envelope; a smaller configured token
+limit can still reject an unusually large frontier without emitting an unusable continuation.
 
 The ordering algorithm has an explicit version in requests, responses, fingerprints, and
 continuations. It must not depend on:
@@ -120,10 +132,9 @@ that, for one state name, its ordinal order is exactly equivalent to the version
 The public frontier and token still carry a canonical `GrainId` encoding, not the internal record
 key and never an activation-local id.
 
-## Required derived-access baseline for PR14
+## Derived ordered-access implementation
 
-PR14 must implement and measure at least one feasible resumable baseline before choosing a different
-strategy:
+Version 1 implements and measures this resumable baseline:
 
 - an activation-local ordered catalog for every state name, keyed by canonical version-1 `GrainId`
   order and pointing to the corresponding live record;
@@ -142,10 +153,13 @@ The baseline query access paths are:
 - an exact leaf streams its ordered exact posting;
 - a selective exact `AND` range query uses the ordered exact posting as its driver and tests the
   remaining range predicate for each candidate instead of materializing the broad range side;
-- a range leaf may perform a bounded k-way merge of the ordered postings in its selected buckets;
+- a range leaf performs a bounded k-way merge of the ordered postings in its selected buckets;
   bucket enumeration, posting seeks, heap initialization, comparisons, and duplicate candidates all
   consume logical work, and a query which cannot initialize that merge within its budget falls back
-  to the ordered state catalog;
+  to the ordered state catalog. Version 1 admits the merge with a conservative whole-scope bucket
+  bound because the underlying balanced tree does not expose an O(log N) selected-range rank; a
+  narrow range over a high-cardinality scope can therefore choose the catalog fallback even when
+  only a small bucket window would match;
 - `OR` and a general plan without a proven selective driver fall back to a bounded scan of the
   ordered state catalog and test the complete predicate for each candidate.
 
@@ -157,7 +171,7 @@ advances. If the remaining work cannot cover the complete group, execution stops
 frontier; it must not serialize an internal heap, bucket cursor, or partial predicate state into the
 public token.
 
-PR14 benchmarks must report ordered-catalog and posting rebuild time, steady mutation latency and
+Benchmarks report ordered-catalog and posting rebuild time, steady mutation latency and
 allocation, retained activation memory, page latency/allocation, and the complete work vector for
 exact, range, selective exact-and-range, broad `AND`, broad `OR`, duplicate-heavy `OR`, and catalog
 fallback cases. The current hash-set/materializing results remain the baseline; they do not by
@@ -283,8 +297,9 @@ operational identifiers and are not secret.
 The configured key ring has exactly one current encryption key and may have explicit decrypt-only
 keys with distinct stable ids. New tokens use the current key. Resumption selects a configured key by
 id and accepts an older token only while that decrypt key remains configured; removing it invalidates
-the token. PR14 must define the concrete configuration/DI surface, validate key length and unique ids
-at startup, and document how the same protected configuration reaches external clients and silos.
+the token. `SearchableStorageQueryOptions.ContinuationProtection` is the concrete configuration
+surface. It validates the current/decrypt-only key ring and snapshots every id and 32-byte key before
+use; the public `SearchableStorageClient` overload supplies the same snapshot to external clients.
 Paging must fail closed when the provider has no valid current key. There is no process-random key,
 plaintext, MAC-only, checksum-only, or other insecure fallback.
 
@@ -361,9 +376,8 @@ page.
 
 ## Legacy `ToGrainIdsAsync` policy
 
-PR13 leaves `ToGrainIdsAsync` unchanged. For the built-in `SearchableStorageClient`, PR14 must
-preserve its all-results-or-exception shape while removing its ability to consume unbounded work or
-memory:
+The built-in `SearchableStorageClient` preserves `ToGrainIdsAsync`'s all-results-or-exception shape
+while bounding its work and memory:
 
 - it executes through the bounded engine under hard aggregate work, item, byte, and round ceilings;
 - it returns the complete sorted, distinct result only if every owner is exhausted within all of
@@ -373,32 +387,28 @@ memory:
 - it never silently truncates and never exposes an internal continuation;
 - cancellation and failure retain the all-or-nothing rules above.
 
-The default and maximum legacy ceilings are selected only after the PR14 ordered/resumable matrix is
-measured against the PR13 materializing baseline. This terminal remains suitable for known-small
-result sets and compatibility. New code which can consume multiple pages should use the queryable
-paged terminal once it exists.
+This terminal remains suitable for known-small result sets and compatibility. New code which can
+consume multiple pages should use the queryable paged terminal.
 
 An external `IQueryable` provider already controls `ExecuteToGrainIdsAsync` through
 `ISearchableStorageAsyncQueryProvider`; an extension method cannot retrofit partition budgets into
-that implementation. PR14 must update the public provider contract and documentation so external
-providers state equivalent bounded behavior or explicitly document that they do not use the built-in
-distributed protocol.
+that implementation. The public provider contract therefore requires external providers to own and
+document their bounding semantics; it does not claim they use the built-in distributed protocol.
 
-PR13 also leaves the lower-level `FindAsync` and `RangeAsync` methods unchanged. In PR14, the built-in
-implementations must route exact and range evaluation through the same bounded partition paging RPC
+The built-in lower-level `FindAsync` and `RangeAsync` implementations route exact and range
+evaluation through the same bounded partition paging RPC
 and aggregate internally under the same hard legacy work, item, byte, and round ceilings. They return
 the complete sorted, distinct result only when every owner is exhausted; otherwise they throw the
 same dedicated limit exception without a partial list. A bounded value interval does not imply a
 bounded match count. These compatibility methods do not expose continuation, so callers which need
 to traverse a larger exact or range result must express it through the queryable paged terminal.
-Neither the client nor a partition may fall back to the old unbounded array-returning RPC after PR14
-is enabled.
+Neither the client nor a partition falls back to the old unbounded array-returning RPC.
 
 ## Typed response families
 
-The paging header and query fingerprint reserve a closed response-family discriminator. PR14 enables
-only the typed `GrainIdPage` family. Unknown values are rejected before evaluation, and a token for
-one family cannot resume another.
+The paging header and query fingerprint reserve a closed response-family discriminator. Version 1
+enables only the typed `GrainIdPage` family. Unknown values are rejected before evaluation, and a
+token for one family cannot resume another.
 
 Issue #9 may later add independently typed families such as count, facet buckets, and top-N. Each
 family requires its own request parameters, partition result, coordinator reducer, count/byte/work
@@ -414,7 +424,7 @@ state. Unknown protocol, ordering, work-policy, response-family, or token versio
 Changes which alter cursor interpretation or work accounting require a new version and invalidate old
 continuations rather than guessing.
 
-The implementation adds no persistence or layout migration, but PR14 routes `ToGrainIdsAsync`,
+The implementation adds no persistence or layout migration, but routes `ToGrainIdsAsync`,
 `FindAsync`, and `RangeAsync` through new paging RPCs. Operators must therefore quiesce all searchable
 query traffic before the first silo or query client is upgraded and keep it quiesced until every silo
 which can activate a storage partition and every built-in query client has been upgraded and shares
@@ -428,9 +438,9 @@ protocol version cannot cross the upgrade. The earlier version-3 to version-4 la
 remain a separate concern: PR14 does not repeat that migration for an already valid format-4
 namespace.
 
-## PR14 acceptance evidence
+## Acceptance evidence
 
-Implementation is not complete until tests prove:
+The test and benchmark suites prove:
 
 - exact work-vector and `TotalOperationCount` values for exact, range, selective `AND`, broad
   `AND`/`OR`, and duplicate-heavy `OR` fixtures;
@@ -452,7 +462,7 @@ Implementation is not complete until tests prove:
 - serializer round trips and frozen IDs for every new internal message;
 - the same shared contract through Memory, PostgreSQL, Redis, and Azure Blob providers.
 
-The selected evaluator, numeric defaults, and maxima additionally require the PR14 implementation
-matrix under the evidence rules in [benchmarks.md](benchmarks.md), including activation build,
+The selected evaluator, numeric defaults, and maxima additionally use the implementation matrix
+under the evidence rules in [benchmarks.md](benchmarks.md), including activation build,
 mutation, memory, and paged-query costs. Faster representation is useful only inside this boundary;
 it does not replace the boundary.

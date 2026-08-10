@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using AwesomeAssertions;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
@@ -30,6 +31,8 @@ public sealed class SearchableStorageRoutingExecutionTests
 
         first.FindCallCount.Should().Be(1);
         second.FindCallCount.Should().Be(1);
+        first.UnboundedFindCallCount.Should().Be(0);
+        second.UnboundedFindCallCount.Should().Be(0);
         first.ObservedEpochs.Should().Equal(1);
         second.ObservedEpochs.Should().Equal(1);
         result.Should().BeEquivalentTo([firstId, secondId]);
@@ -374,24 +377,26 @@ public sealed class SearchableStorageRoutingExecutionTests
 
     private sealed class ControlledPartition : IStoragePartitionGrain
     {
-        private readonly Func<RoutedExactIndexQuery, Task<GrainId[]>> _find;
+        private readonly Func<RoutedPartitionQueryPageRequest, Task<GrainId[]>> _find;
         private readonly ConcurrentQueue<long> _observedEpochs = new();
         private int _findCallCount;
+        private int _unboundedFindCallCount;
 
-        public ControlledPartition(Func<RoutedExactIndexQuery, Task<GrainId[]>> find)
+        public ControlledPartition(Func<RoutedPartitionQueryPageRequest, Task<GrainId[]>> find)
         {
             _find = find;
         }
 
         public int FindCallCount => Volatile.Read(ref _findCallCount);
 
+        public int UnboundedFindCallCount => Volatile.Read(ref _unboundedFindCallCount);
+
         public long[] ObservedEpochs => _observedEpochs.ToArray();
 
         public Task<GrainId[]> FindRoutedAsync(RoutedExactIndexQuery query)
         {
-            Interlocked.Increment(ref _findCallCount);
-            _observedEpochs.Enqueue(query.Epoch);
-            return _find(query);
+            Interlocked.Increment(ref _unboundedFindCallCount);
+            throw new NotSupportedException("The unbounded exact RPC must not be used.");
         }
 
         public Task<StorageReadResult> ReadAsync(string recordKey) => throw new NotSupportedException();
@@ -419,6 +424,42 @@ public sealed class SearchableStorageRoutingExecutionTests
 
         public Task<GrainId[]> QueryRoutedAsync(RoutedPartitionQuery query) =>
             throw new NotSupportedException();
+
+        public Task<PartitionQueryPageResult> QueryPageRoutedAsync(
+            RoutedPartitionQueryPageRequest request)
+        {
+            Interlocked.Increment(ref _findCallCount);
+            _observedEpochs.Enqueue(request.Epoch);
+            return CreatePageResultAsync(_find(request), request);
+        }
+
+        private static async Task<PartitionQueryPageResult> CreatePageResultAsync(
+            Task<GrainId[]> task,
+            RoutedPartitionQueryPageRequest request)
+        {
+            var items = (await task)
+                .Where(item => !request.HasAfter
+                    || GrainIdCanonicalOrder.Compare(item, request.After) > 0)
+                .Distinct(GrainIdCanonicalOrder.EqualityComparer)
+                .Order(GrainIdCanonicalOrder.Comparer)
+                .ToArray();
+            return new PartitionQueryPageResult
+            {
+                Items = items,
+                Exhausted = true,
+                StopReason = PartitionQueryPageStopReason.Exhausted,
+                Work = new PartitionQueryPageWork(),
+                ItemByteCount = items.Sum(GrainIdCanonicalOrder.GetEncodedLength),
+                ProtocolVersion = request.ProtocolVersion,
+                OrderingVersion = request.OrderingVersion,
+                WorkPolicyVersion = request.WorkPolicyVersion,
+                ResponseFamily = request.ResponseFamily,
+                Epoch = request.Epoch,
+                QueryFingerprint = [.. request.QueryFingerprint],
+                LayoutFormatVersion = request.LayoutFormatVersion,
+                LayoutFingerprint = [.. request.LayoutFingerprint],
+            };
+        }
 
         public Task CompactAsync() => throw new NotSupportedException();
 

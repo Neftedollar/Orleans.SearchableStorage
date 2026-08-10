@@ -18,9 +18,16 @@ public interface ISearchableStorageClient
     /// <param name="value">The exact value to find. Null values are not indexed.</param>
     /// <param name="cancellationToken">A token which cancels waiting for the distributed query.</param>
     /// <returns>A sorted, distinct list of matching grain identifiers.</returns>
-    /// <remarks>The result is assembled from consistent partition-local reads, not from a cross-partition snapshot.</remarks>
+    /// <remarks>
+    /// The result is assembled from consistent partition-local reads, not from a cross-partition
+    /// snapshot. The built-in client collects bounded pages and returns the complete result or
+    /// throws without returning a partial list. Express potentially large traversals through
+    /// <see cref="ISearchableStorageQueryClient.Query{TState}(string)"/> and
+    /// <see cref="SearchableStorageQueryableExtensions.ToGrainIdPageAsync{TState}(IQueryable{TState}, SearchableStorageQueryPageRequest, CancellationToken)"/>.
+    /// </remarks>
     /// <exception cref="ArgumentException">The selector or value does not match a declared index.</exception>
     /// <exception cref="InvalidOperationException">The configured client layout differs from the persisted layout.</exception>
+    /// <exception cref="SearchableStorageQueryLimitExceededException">The complete result cannot be collected within the configured aggregate ceilings.</exception>
     /// <exception cref="OperationCanceledException">The operation was canceled.</exception>
     Task<IReadOnlyList<GrainId>> FindAsync<TState, TValue>(
         string stateName,
@@ -41,9 +48,16 @@ public interface ISearchableStorageClient
     /// <param name="includeUpperBound">Whether values equal to <paramref name="upperBound"/> are included.</param>
     /// <param name="cancellationToken">A token which cancels waiting for the distributed query.</param>
     /// <returns>A sorted, distinct list of matching grain identifiers.</returns>
-    /// <remarks>The result is assembled from consistent partition-local reads, not from a cross-partition snapshot.</remarks>
+    /// <remarks>
+    /// The result is assembled from consistent partition-local reads, not from a cross-partition
+    /// snapshot. The built-in client collects bounded pages and returns the complete result or
+    /// throws without returning a partial list. Express potentially large traversals through
+    /// <see cref="ISearchableStorageQueryClient.Query{TState}(string)"/> and
+    /// <see cref="SearchableStorageQueryableExtensions.ToGrainIdPageAsync{TState}(IQueryable{TState}, SearchableStorageQueryPageRequest, CancellationToken)"/>.
+    /// </remarks>
     /// <exception cref="ArgumentException">The selector, value type, or range bounds are invalid.</exception>
     /// <exception cref="InvalidOperationException">The configured client layout differs from the persisted layout.</exception>
+    /// <exception cref="SearchableStorageQueryLimitExceededException">The complete result cannot be collected within the configured aggregate ceilings.</exception>
     /// <exception cref="OperationCanceledException">The operation was canceled.</exception>
     Task<IReadOnlyList<GrainId>> RangeAsync<TState, TValue>(
         string stateName,
