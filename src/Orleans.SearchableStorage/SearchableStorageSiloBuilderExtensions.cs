@@ -65,7 +65,7 @@ public static class SearchableStorageSiloBuilderExtensions
             providerName,
             (serviceProvider, _) => SearchableGrainStorageFactory.Create(serviceProvider, providerName));
 
-        services.AddKeyedSingleton<ISearchableStorageClient>(
+        services.AddKeyedSingleton<ISearchableStorageQueryClient>(
             providerName,
             (serviceProvider, _) =>
             {
@@ -77,6 +77,10 @@ public static class SearchableStorageSiloBuilderExtensions
                     providerName,
                     configuredOptions.PartitionCount);
             });
+
+        services.AddKeyedSingleton<ISearchableStorageClient>(
+            providerName,
+            (serviceProvider, _) => serviceProvider.GetRequiredKeyedService<ISearchableStorageQueryClient>(providerName));
 
         return services;
     }

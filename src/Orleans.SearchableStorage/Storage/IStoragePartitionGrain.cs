@@ -13,4 +13,6 @@ internal interface IStoragePartitionGrain : IGrainWithStringKey
     Task<GrainId[]> FindAsync(ExactIndexQuery query);
 
     Task<GrainId[]> RangeAsync(RangeIndexQuery query);
+
+    Task<GrainId[]> QueryAsync(PartitionQueryPlan query);
 }

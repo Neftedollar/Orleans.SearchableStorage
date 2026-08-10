@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace Orleans.SearchableStorage.ApiSample.Tests;
 
+[Collection(ApiSampleTestGroup.Name)]
 public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly HttpClient _client;

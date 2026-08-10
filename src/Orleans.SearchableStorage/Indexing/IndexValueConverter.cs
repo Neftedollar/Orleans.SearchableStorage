@@ -15,6 +15,8 @@ internal abstract class IndexValueConverter
 
     public abstract bool SupportsRange { get; }
 
+    public abstract IndexQueryValueDomain? QueryValueDomain { get; }
+
     public abstract IndexValue? ConvertObject(object? value);
 }
 
@@ -22,13 +24,16 @@ internal sealed class IndexValueConverter<T>(
     Func<T, IndexValue?> converter,
     bool supportsRange,
     Type? runtimeValueType = null,
-    Func<object, IndexValue?>? objectConverter = null) : IndexValueConverter
+    Func<object, IndexValue?>? objectConverter = null,
+    IndexQueryValueDomain? queryValueDomain = null) : IndexValueConverter
 {
     public override Type ValueType => typeof(T);
 
     public override Type RuntimeValueType { get; } = runtimeValueType ?? typeof(T);
 
     public override bool SupportsRange { get; } = supportsRange;
+
+    public override IndexQueryValueDomain? QueryValueDomain { get; } = queryValueDomain;
 
     public IndexValue? Convert(T value)
     {
@@ -62,6 +67,23 @@ internal sealed class IndexValueConverter<T>(
 
         return converter(typedValue);
     }
+}
+
+internal abstract record IndexQueryValueDomain;
+
+internal sealed record IntegralIndexQueryValueDomain(
+    decimal Minimum,
+    decimal Maximum,
+    Func<decimal, IndexValue> Convert) : IndexQueryValueDomain;
+
+internal sealed record FloatingPointIndexQueryValueDomain : IndexQueryValueDomain
+{
+    public static FloatingPointIndexQueryValueDomain Instance { get; } = new();
+}
+
+internal sealed record DecimalIndexQueryValueDomain : IndexQueryValueDomain
+{
+    public static DecimalIndexQueryValueDomain Instance { get; } = new();
 }
 
 internal static class IndexValueConverterProvider
@@ -120,54 +142,87 @@ internal static class IndexValueConverterProvider
             {
                 return new IndexValueConverter<char>(
                     static value => new IndexValue { Kind = IndexValueKind.String, Text = value.ToString() },
-                    supportsRange: true);
+                    supportsRange: true,
+                    queryValueDomain: new IntegralIndexQueryValueDomain(
+                        char.MinValue,
+                        char.MaxValue,
+                        static value => new IndexValue
+                        {
+                            Kind = IndexValueKind.String,
+                            Text = ((char)decimal.ToUInt16(value)).ToString(),
+                        }));
             }
 
             if (typeof(T) == typeof(sbyte))
             {
-                return new IndexValueConverter<sbyte>(static value => IndexValue.FromSignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<sbyte>(
+                    static value => IndexValue.FromSignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateSignedIntegralDomain(sbyte.MinValue, sbyte.MaxValue));
             }
 
             if (typeof(T) == typeof(short))
             {
-                return new IndexValueConverter<short>(static value => IndexValue.FromSignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<short>(
+                    static value => IndexValue.FromSignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateSignedIntegralDomain(short.MinValue, short.MaxValue));
             }
 
             if (typeof(T) == typeof(int))
             {
-                return new IndexValueConverter<int>(static value => IndexValue.FromSignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<int>(
+                    static value => IndexValue.FromSignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateSignedIntegralDomain(int.MinValue, int.MaxValue));
             }
 
             if (typeof(T) == typeof(long))
             {
-                return new IndexValueConverter<long>(static value => IndexValue.FromSignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<long>(
+                    static value => IndexValue.FromSignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateSignedIntegralDomain(long.MinValue, long.MaxValue));
             }
 
             if (typeof(T) == typeof(byte))
             {
-                return new IndexValueConverter<byte>(static value => IndexValue.FromUnsignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<byte>(
+                    static value => IndexValue.FromUnsignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateUnsignedIntegralDomain(byte.MinValue, byte.MaxValue));
             }
 
             if (typeof(T) == typeof(ushort))
             {
-                return new IndexValueConverter<ushort>(static value => IndexValue.FromUnsignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<ushort>(
+                    static value => IndexValue.FromUnsignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateUnsignedIntegralDomain(ushort.MinValue, ushort.MaxValue));
             }
 
             if (typeof(T) == typeof(uint))
             {
-                return new IndexValueConverter<uint>(static value => IndexValue.FromUnsignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<uint>(
+                    static value => IndexValue.FromUnsignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateUnsignedIntegralDomain(uint.MinValue, uint.MaxValue));
             }
 
             if (typeof(T) == typeof(ulong))
             {
-                return new IndexValueConverter<ulong>(static value => IndexValue.FromUnsignedInteger(value), supportsRange: true);
+                return new IndexValueConverter<ulong>(
+                    static value => IndexValue.FromUnsignedInteger(value),
+                    supportsRange: true,
+                    queryValueDomain: CreateUnsignedIntegralDomain(ulong.MinValue, ulong.MaxValue));
             }
 
             if (typeof(T) == typeof(decimal))
             {
                 return new IndexValueConverter<decimal>(
                     static value => new IndexValue { Kind = IndexValueKind.Decimal, Decimal = value },
-                    supportsRange: true);
+                    supportsRange: true,
+                    queryValueDomain: DecimalIndexQueryValueDomain.Instance);
             }
 
             if (typeof(T) == typeof(float))
@@ -176,7 +231,8 @@ internal static class IndexValueConverterProvider
                     static value => !float.IsNaN(value)
                         ? new IndexValue { Kind = IndexValueKind.FloatingPoint, FloatingPoint = value }
                         : throw new NotSupportedException("NaN values cannot be indexed."),
-                    supportsRange: true);
+                    supportsRange: true,
+                    queryValueDomain: FloatingPointIndexQueryValueDomain.Instance);
             }
 
             if (typeof(T) == typeof(double))
@@ -185,7 +241,8 @@ internal static class IndexValueConverterProvider
                     static value => !double.IsNaN(value)
                         ? new IndexValue { Kind = IndexValueKind.FloatingPoint, FloatingPoint = value }
                         : throw new NotSupportedException("NaN values cannot be indexed."),
-                    supportsRange: true);
+                    supportsRange: true,
+                    queryValueDomain: FloatingPointIndexQueryValueDomain.Instance);
             }
 
             if (typeof(T) == typeof(DateTime))
@@ -223,6 +280,26 @@ internal static class IndexValueConverterProvider
                 : null;
         }
 
+        private static IntegralIndexQueryValueDomain CreateSignedIntegralDomain(
+            decimal minimum,
+            decimal maximum)
+        {
+            return new IntegralIndexQueryValueDomain(
+                minimum,
+                maximum,
+                static value => IndexValue.FromSignedInteger(decimal.ToInt64(value)));
+        }
+
+        private static IntegralIndexQueryValueDomain CreateUnsignedIntegralDomain(
+            decimal minimum,
+            decimal maximum)
+        {
+            return new IntegralIndexQueryValueDomain(
+                minimum,
+                maximum,
+                static value => IndexValue.FromUnsignedInteger(decimal.ToUInt64(value)));
+        }
+
         public override object? VisitEnum<TEnum, TUnderlying>(
             IEnumTypeShape<TEnum, TUnderlying> enumShape,
             object? state = null)
@@ -234,7 +311,8 @@ internal static class IndexValueConverterProvider
             // BitCast keeps this path strongly typed without boxing or reflection-based conversion.
             return new IndexValueConverter<TEnum>(
                 value => underlyingConverter.Convert(Unsafe.BitCast<TEnum, TUnderlying>(value)),
-                supportsRange: true);
+                supportsRange: true,
+                queryValueDomain: underlyingConverter.QueryValueDomain);
         }
 
         public override object? VisitOptional<TOptional, TElement>(
@@ -256,7 +334,8 @@ internal static class IndexValueConverterProvider
                     : null,
                 elementConverter.SupportsRange,
                 runtimeValueType: elementConverter.RuntimeValueType,
-                objectConverter: elementConverter.ConvertObject);
+                objectConverter: elementConverter.ConvertObject,
+                queryValueDomain: elementConverter.QueryValueDomain);
         }
     }
 }

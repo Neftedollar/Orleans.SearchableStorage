@@ -8,11 +8,11 @@ This document describes the maintainer-facing design of the first Orleans.Search
 
 Each searchable provider owns one `StorageLayoutGrain` and a fixed set of `StoragePartitionGrain` instances. A partition persists records together with each record's index entries in one `StoragePartitionState`. Hash and range bucket maps are derived in memory from those durable entries on activation and after each successful mutation. The durable state is written through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
 
-`SearchableStorageClient` derives index metadata from a typed property selector, sends the query to every partition, and returns a sorted, distinct set of `GrainId` values.
+`SearchableStorageClient` supports direct exact/range primitives and a focused `IQueryable` boundary. The query provider records expression trees without offering synchronous execution. `QueryTranslator` resolves indexed member identity through the same cached PolyType-backed metadata as writes and produces a small explicit query-plan algebra: exact leaf, one- or two-sided range leaf, intersection, union, and empty result. The client converts that semantic plan to one serializable, non-persisted wire plan and sends it once to every partition. Each partition evaluates the complete boolean plan synchronously during one non-reentrant grain turn. The client only unions the final partition-local results and returns a sorted, distinct set of `GrainId` values.
 
 ## Sample topology
 
-`Orleans.SearchableStorage.ApiSample` co-hosts an ASP.NET Core minimal API and one Orleans silo only to provide a zero-infrastructure executable walkthrough. HTTP writes call an application grain, its normal `IPersistentState<T>` uses `SearchableGrainStorage`, and the provider routes the serialized record plus extracted index entries to one storage-partition grain. HTTP search endpoints use the named `ISearchableStorageClient` and fan out over the same partition set.
+`Orleans.SearchableStorage.ApiSample` co-hosts an ASP.NET Core minimal API and one Orleans silo only to provide a zero-infrastructure executable walkthrough. HTTP writes call an application grain, its normal `IPersistentState<T>` uses `SearchableGrainStorage`, and the provider routes the serialized record plus extracted index entries to one storage-partition grain. HTTP search endpoints use `Query<TState>`, `Where`, and `ToGrainIdsAsync` on the named `ISearchableStorageQueryClient` and fan out over the same partition set. ASP.NET Core supplies `HttpContext.RequestAborted` as the endpoint cancellation token, which is passed through the terminal operation.
 
 This co-hosting is not an architectural constraint. An API can run in another process as an Orleans client and construct a `SearchableStorageClient` with the same provider namespace and partition count. The sample deliberately uses in-memory physical persistence, so process termination removes its data; backend durability is covered by the reusable provider contract rather than by the sample.
 
@@ -46,11 +46,27 @@ The contract suite injects both sides of this ambiguity. A failure before the ph
 
 A point read is routed directly to the record's owning partition. Missing records receive a new state instance from Orleans' configured activator and have no ETag.
 
-Exact and range queries fan out to all configured partitions. Each individual partition answers from a serially consistent activation state. The merged result is not a cross-partition snapshot: concurrent writes can become visible at different points during one query.
+Direct exact and bounded-range operations fan out to all configured partitions. A focused `IQueryable` execution instead sends its complete boolean plan once to each partition. The partition grain is non-reentrant and plan evaluation contains no await, so all leaves of that plan observe one serially consistent partition-local activation state. The merged result is not a cross-partition snapshot: different partitions can still observe concurrent writes at different points during one distributed query.
 
-Each in-memory range index stores its distinct values in a `SortedList`. During construction, input buckets are first canonicalized by the index ordering comparer and comparer-equal buckets are merged. Partition activation therefore does not depend on hash equality and ordering equality remaining identical as persisted value kinds evolve. A bounded query performs a binary lower-bound lookup through the indexed key view and then visits only buckets inside the requested window. Its local index traversal is therefore O(log d + k), where d is the number of distinct indexed values in the partition and k is the number of buckets in the requested window.
+Each in-memory range index stores its distinct values in a `SortedList`. During construction, input buckets are first canonicalized by the index ordering comparer and comparer-equal buckets are merged. Partition activation therefore does not depend on hash equality and ordering equality remaining identical as persisted value kinds evolve. A range with a lower bound performs a binary lower-bound lookup through the indexed key view and then visits only buckets inside the requested window; a range without a lower bound starts at the first bucket. Its local traversal is O(log d + k) with a lower bound and O(k) without one, where d is the number of distinct indexed values and k is the number of visited buckets.
 
 Once a successful write returns, that partition's activation already contains the committed state and corresponding index entries. No asynchronous index-maintenance pipeline exists in this version.
+
+## Query translation and execution
+
+`ISearchableStorageQueryClient.Query<TState>(stateName)` returns an `IQueryable<TState>` only as a familiar expression-building surface. It is not an in-memory state collection and cannot enumerate `TState` values. `ToGrainIdsAsync` is the sole terminal operation. It accepts any query whose provider implements the public `ISearchableStorageAsyncQueryProvider` contract, so external query-client implementations do not need access to library internals.
+
+Translation accepts one or more `Queryable.Where` calls. Predicate leaves must compare one direct indexed property with a constant or captured value using equality or an ordered comparison. Boolean `AndAlso` and `OrElse` become plan intersection and union. Reversed operands are normalized. Intersected bounds on the same index are combined before execution; contradictory bounds become an empty plan. Equality can use either index kind, while ordered comparisons require a range index. Null comparison is rejected because null index values are deliberately omitted. An empty plan still validates persisted layout compatibility and cancellation, but skips partition fan-out.
+
+The closed value side is intentionally narrow: constants, captured fields or properties, and built-in conversion nodes are evaluated using the expression interpreter. Method calls, calculations, user-defined value conversions, state-to-state comparisons, nested state member access, and arbitrary LINQ operators are rejected with `NotSupportedException`. Compiler-generated integral and enum promotions are normalized through the indexed property's PolyType-derived value domain. A conversion of the indexed property is accepted only when it represents that complete domain exactly and preserves equality and ordering. Out-of-domain integral equality becomes an empty plan, and ordered bounds are saturated to a correct full or empty domain window. Boxing, reference, narrowing, user-defined, and lossy floating-point conversions of the indexed property are rejected rather than silently changing C# semantics. Custom binary comparison methods are also rejected; only the corresponding BCL operators for supported built-in value types are accepted.
+
+Supported translation traversal and both semantic and wire plans share fixed limits of 64 levels and 256 visited nodes. Indexed-property and state-parameter conversion chains are independently capped at 64. Recursive conversion and evaluation occur only after those bounds have been checked. Both plan validators require trees rather than cyclic or shared graphs; wire validation also rejects hidden child graphs, payload on the wrong node kind, missing boolean children, malformed leaves, and unknown operations. Associative boolean plans are rebuilt as balanced trees without changing leaf order before serialization.
+
+After translation, `PartitionQueryPlanFactory` creates a recursive Orleans wire message for Empty, Exact, Range, And, and Or nodes. Unlike the existing bounded `RangeIndexQuery`, its lower and upper range bounds are nullable so one-sided predicates do not need sentinel values. `StoragePartitionGrain.QueryAsync` validates and evaluates this complete plan synchronously in one non-reentrant turn. AND intersects and OR unions record keys inside the partition; only that final local result crosses the grain boundary. Exact leaves copy the live index bucket before boolean operations mutate their working set. A compound predicate therefore makes one request per partition rather than one request per leaf.
+
+The client starts all partition calls before awaiting `Task.WhenAll`, so a partition failure fails the entire query and no partial result is returned. Cancellation interrupts the local wait, not the Orleans RPCs already in flight. A detached observer awaits the aggregate after cancellation so later transport or partition failures are still observed.
+
+`ISearchableStorageClient` intentionally retains only the existing direct `FindAsync` and `RangeAsync` surface. `ISearchableStorageQueryClient` derives from it and adds `Query<TState>`. The keyed registrations for both interfaces point to the same `SearchableStorageClient` instance, which keeps existing direct-client implementations source compatible while making the new expression surface opt-in.
 
 ## Index metadata
 
@@ -58,7 +74,7 @@ Public readable state properties marked with `SearchableIndexAttribute` are inde
 
 `IndexMetadataProvider` builds one `SearchableTypeModel<TState>` through PolyType's reflection provider and caches each valid model for the process lifetime. A non-object PolyType shape, such as a collection or scalar state type, produces an empty model and remains writable through the provider. An object model contains the indexed member identity, index kind, normalized index name, value converter, stable persisted type identity, and a strongly typed PolyType getter delegate. Each indexed property caches its complete scope per Orleans state name. Steady-state writes therefore neither call `PropertyInfo.GetValue` nor repeat assembly identity reflection; they invoke the cached getter, converter, and scope. Failed model construction is not cached so an invalid state declaration continues to produce its direct validation exception.
 
-PolyType usage is contained behind the indexing model. Storage grains and persisted messages do not depend on type-shape objects. Query selectors are still expression trees: the expression boundary reads the selected `PropertyInfo` only to match it to the member identity supplied by PolyType, while value discovery and access remain type-shape operations. The same model is used by writes and queries so future query APIs can share one definition of indexed fields.
+PolyType usage is contained behind the indexing model. Storage grains and persisted messages do not depend on type-shape objects. Query selectors and predicates are expression trees: the expression boundary reads the selected `PropertyInfo` only to match it to the member identity supplied by PolyType, while persisted value discovery and access remain type-shape operations. The same model is used by writes and queries, so index kind, converter, and scope have one definition.
 
 The runtime reflection provider is intentional. Orleans `IGrainStorage` accepts unconstrained application state types, and this project does not require consumers to annotate those types for PolyType source generation. Native AOT and trimming are not supported.
 
@@ -74,6 +90,15 @@ Format version 2 introduces the recursive, assembly-version-independent type ide
 
 Orleans serializer `[Id]` values on persisted layout, partition, record, index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or renumbered after release. New fields must use new IDs and remain readable when absent from older data.
 
+The existing `RangeIndexQuery` protocol remains a strictly bounded message: both lower and upper
+bounds are required and retain field IDs 1 and 2. Open bounds exist only on the new recursive
+`PartitionQueryPlan`, which is transmitted between participants but is never persisted. Its field
+IDs and operation values are still wire compatibility and are frozen by contract tests.
+
+The query-plan RPC changes the internal grain contract. A rollout must update all silos and Orleans
+clients before the `IQueryable` surface is used; mixed-version query execution is not supported.
+Direct `FindAsync` and bounded `RangeAsync` retain their previous messages during that rollout.
+
 Physical providers can use serializers other than Orleans' binary serializer. With JSON persistence, CLR type and property names plus configured JSON converters are part of the compatibility surface; Orleans `[Id]` values do not rename JSON members. The memory contract suite explicitly uses `JsonGrainStorageSerializer` so partition and layout reactivation exercise that representation.
 
 ## Physical backend contract
@@ -86,6 +111,6 @@ The regular suite currently uses Orleans in-memory persistence with `JsonGrainSt
 
 ## Current scaling limit
 
-One physical write serializes the entire owning partition snapshot, and the activation rebuilds its bucket maps from durable record entries after each successful mutation. This deliberately makes the initial consistency boundary small and observable, but produces work and write amplification proportional to partition size. Range reads now seek to their lower bound, but queries still fan out to every partition and a large result window can hold a non-reentrant partition turn while its matching record ids are collected.
+One physical write serializes the entire owning partition snapshot, and the activation rebuilds its bucket maps from durable record entries after each successful mutation. This deliberately makes the initial consistency boundary small and observable, but produces work and write amplification proportional to partition size. Range reads now seek to their lower bound, but queries still fan out to every partition. Increasing `PartitionCount` distributes ownership and write work but does not route a query to fewer partitions. `ToGrainIdsAsync` has no `Take`, pagination, or result-size limit, so a broad result can allocate a large working set and hold a non-reentrant partition turn while matching record ids are collected.
 
 A production-scale layout will need smaller durable units and bounded query-result handling while preserving the record-and-index atomicity described above.

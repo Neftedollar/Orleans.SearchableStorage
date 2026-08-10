@@ -12,9 +12,11 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - Mutations within a partition are serialized by one Orleans grain activation.
 - Persisted layout metadata rejects a mismatched storage-format version or partition count within one provider namespace before incomplete results can be returned.
 - Queries fan out over a fixed number of partitions and return matching `GrainId` values.
+- A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
+- One complete boolean query plan is evaluated in one non-reentrant call per partition.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
-The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Bounded range queries use binary search to seek to the lower bound and then enumerate only the requested ordered window. Queries do not provide a snapshot across partitions. Text search, composite indexes, a query language, online repartitioning, and backend integration suites are not implemented yet.
+The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Every query still contacts every partition, and `ToGrainIdsAsync` currently has no `Take`, pagination, or result-size limit. Increasing `PartitionCount` spreads ownership and writes but does not reduce read fan-out. Queries do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes, arbitrary LINQ, online repartitioning, and backend integration suites are not implemented yet.
 
 ## Example
 
@@ -58,25 +60,60 @@ public sealed class VacancyGrain(
 }
 ```
 
-Resolve the named query client inside the silo so it shares the provider configuration:
+Resolve the named query client inside the silo so it shares the provider configuration. Build a
+deferred predicate and execute it explicitly as a `GrainId` query:
 
 ```csharp
-var search = services.GetRequiredKeyedService<ISearchableStorageClient>("Searchable");
+var search = services.GetRequiredKeyedService<ISearchableStorageQueryClient>("Searchable");
 
-var inHelsinki = await search.FindAsync<VacancyState, string>(
-    "vacancy",
-    state => state.City,
-    "Helsinki");
-
-var salaryRange = await search.RangeAsync<VacancyState, int>(
-    "vacancy",
-    state => state.Salary,
-    lowerBound: 5,
-    upperBound: 8,
-    includeLowerBound: false);
+var minimumSalary = 5;
+var maximumSalary = 8;
+var matches = await search
+    .Query<VacancyState>("vacancy")
+    .Where(state =>
+        state.City == "Helsinki" &&
+        state.Salary > minimumSalary &&
+        state.Salary <= maximumSalary)
+    .ToGrainIdsAsync(cancellationToken);
 ```
 
+The focused query layer accepts direct indexed-property comparisons using `==`, `<`, `<=`, `>`,
+and `>=`. Comparisons can be combined with `&&` and `||`, and additional `Where` calls are treated
+as `&&`. The other side of a comparison must be a constant or captured value; method calls and
+calculations inside the expression are rejected. Relational operators require a range index.
+Compiler-generated integral and enum promotions are accepted only when they preserve every indexed
+value exactly. Conversions of the indexed property which box, narrow, invoke user code, or lose
+numeric information are rejected instead of being translated with different CLR semantics. Built-in
+conversions on the closed value side are interpreted; user-defined value conversions are rejected.
+Supported query traversal and semantic and serialized plans are limited to 64 levels and 256
+visited nodes, while property and state-parameter conversion chains are independently capped at 64.
+`ToGrainIdsAsync` is the only execution operation: synchronous enumeration, projections, ordering,
+grouping, joins, and other general LINQ operators throw `NotSupportedException` with a diagnostic.
+Execution sends the complete translated predicate to each partition once. AND and OR are evaluated
+against one serially consistent view inside that partition, then the client merges the partition-local
+results into a sorted, distinct list. The merge is not a snapshot across partitions.
+Because the result is currently unbounded, callers must use this API only where the expected match
+set is operationally bounded by the application until a bounded result protocol is added.
+
+`FindAsync` and `RangeAsync` remain available as lower-level compatibility APIs for callers which
+already express one exact lookup or one bounded range directly. They remain on
+`ISearchableStorageClient`; the focused LINQ surface is opt-in through
+`ISearchableStorageQueryClient : ISearchableStorageClient`. Both keyed registrations resolve the
+same built-in client instance. An alternative `IQueryable` implementation can use
+`ToGrainIdsAsync` by exposing an `IQueryProvider` which also implements the public
+`ISearchableStorageAsyncQueryProvider` terminal contract.
+
+The cancellation token cancels the caller's wait. Orleans partition calls already in flight cannot
+be canceled by that local token, so the client observes their eventual completion while returning
+cancellation promptly to the caller.
+
 `SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and partition count. Its partition count and storage-format version are validated against the persisted layout; a mismatch throws instead of returning partial results.
+
+Before using the `IQueryable` surface during an upgrade, deploy this package version to every silo
+and Orleans client which can execute searches. The existing bounded `RangeAsync` wire message keeps
+its required lower and upper fields, while the new nullable open-bound plan is a separate,
+non-persisted protocol message. Existing direct-query consumers can continue resolving
+`ISearchableStorageClient` without implementing or depending on the new query surface.
 
 The provider name identifies a storage namespace. Using another name selects a separate, initially empty namespace, so renaming a provider requires an explicit migration. `PartitionCount` and storage-format version are validated within that namespace and must not change without migration. Index names, kinds, and property types are also persisted schema: adding an index does not backfill existing records, and changing or renaming one requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime` values must use `DateTimeKind.Utc`.
 
@@ -92,7 +129,7 @@ The runnable sample co-hosts an ASP.NET Core minimal API and an Orleans silo:
 dotnet run --project samples/Orleans.SearchableStorage.ApiSample
 ```
 
-Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies, read one by id, search the hash index by city, search the range index by salary, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md) follows each request from HTTP through the application grain, searchable provider, storage-partition grain, and physical provider.
+Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies, read one by id, execute the `IQueryable` layer over the city and salary indexes, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md) follows each request from HTTP through the application grain, query plan, searchable provider, storage-partition grain, and physical provider.
 
 The one-process topology and in-memory physical storage keep the sample easy to run; neither is a library requirement.
 
