@@ -61,7 +61,9 @@ internal static class BenchmarkSelfTest
             [$"{prefix}JournalReplayBenchmarks.EntryCount"] = [64, 4_096],
             [$"{prefix}JournalSerializationBenchmarks.EntryCount"] = [1, 64],
             [$"{prefix}QueryPlanConstructionBenchmarks.LeafCount"] = [2, 16, 64],
-            [$"{prefix}QueryPlanEvaluationBenchmarks.LeafCount"] = [2, 16, 64],
+            [$"{prefix}QueryPlanEvaluationBenchmarks.Distribution"] = [0, 1],
+            [$"{prefix}QueryPlanEvaluationBenchmarks.RecordCount"] = [4_096, 65_536],
+            [$"{prefix}QueryPlanEvaluationBenchmarks.Scenario"] = [0, 1, 2, 3, 4, 5],
             [$"{prefix}QueryPlanSerializationBenchmarks.LeafCount"] = [4, 64],
             [$"{prefix}RangeQueryBenchmarks.BucketCount"] = [4_096, 65_536],
             [$"{prefix}RangeQueryBenchmarks.MatchCount"] = [1, 256],
@@ -125,10 +127,23 @@ internal static class BenchmarkSelfTest
         Ensure(wire is not null, "wire-plan construction");
         construction.ValidateFixture(translated!, wire!);
 
-        var evaluation = new QueryPlanEvaluationBenchmarks { LeafCount = 16 };
-        evaluation.GlobalSetup();
-        Ensure(evaluation.EvaluatePartitionPlan() == 64, "partition query evaluation");
-        evaluation.ValidateFixture();
+        foreach (var distribution in Enum.GetValues<QueryEvaluationDistribution>())
+        {
+            foreach (var scenario in Enum.GetValues<QueryEvaluationScenario>())
+            {
+                var evaluation = new QueryPlanEvaluationBenchmarks
+                {
+                    RecordCount = 4_096,
+                    Distribution = distribution,
+                    Scenario = scenario,
+                };
+                evaluation.GlobalSetup();
+                Ensure(
+                    evaluation.EvaluatePartitionPlan() == evaluation.ExpectedResultCount,
+                    $"partition query evaluation ({distribution}/{scenario})");
+                evaluation.ValidateFixture();
+            }
+        }
     }
 
     private static void ValidateQuerySerialization()

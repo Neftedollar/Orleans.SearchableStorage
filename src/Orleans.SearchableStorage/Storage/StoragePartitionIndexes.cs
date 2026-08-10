@@ -113,6 +113,27 @@ internal sealed class StoragePartitionIndexes
         bool includeUpperBound,
         HashSet<string> destination)
     {
+        var work = default(NoPartitionQueryWorkSink);
+        UnionRange(
+            scope,
+            lowerBound,
+            upperBound,
+            includeLowerBound,
+            includeUpperBound,
+            destination,
+            ref work);
+    }
+
+    internal void UnionRange<TWorkSink>(
+        string scope,
+        IndexValue? lowerBound,
+        IndexValue? upperBound,
+        bool includeLowerBound,
+        bool includeUpperBound,
+        HashSet<string> destination,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentNullException.ThrowIfNull(destination);
 
@@ -123,7 +144,8 @@ internal sealed class StoragePartitionIndexes
                 upperBound,
                 includeLowerBound,
                 includeUpperBound,
-                destination);
+                destination,
+                ref work);
         }
     }
 

@@ -97,6 +97,25 @@ internal sealed class RangeIndex
         bool includeUpperBound,
         HashSet<string> destination)
     {
+        var work = default(NoPartitionQueryWorkSink);
+        UnionRange(
+            lowerBound,
+            upperBound,
+            includeLowerBound,
+            includeUpperBound,
+            destination,
+            ref work);
+    }
+
+    internal void UnionRange<TWorkSink>(
+        IndexValue? lowerBound,
+        IndexValue? upperBound,
+        bool includeLowerBound,
+        bool includeUpperBound,
+        HashSet<string> destination,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
+    {
         ArgumentNullException.ThrowIfNull(destination);
 
         if (lowerBound is not null
@@ -138,6 +157,7 @@ internal sealed class RangeIndex
                 && !includeLowerBound
                 && _valueComparer.Compare(bucket.Value, lowerBound) == 0)
             {
+                work.RecordRangeBucket(candidateCount: 0);
                 continue;
             }
 
@@ -145,9 +165,11 @@ internal sealed class RangeIndex
                 && !includeUpperBound
                 && _valueComparer.Compare(bucket.Value, upperBound) == 0)
             {
+                work.RecordRangeBucket(candidateCount: 0);
                 continue;
             }
 
+            work.RecordRangeBucket(bucket.RecordKeys.Count);
             destination.UnionWith(bucket.RecordKeys);
         }
     }

@@ -17,26 +17,46 @@ internal static class StoragePartitionQueryEvaluator
         return EvaluateValidated(query, indexes);
     }
 
+    /// <summary>
+    /// Evaluates a query and reports deterministic logical work without changing the wire plan or
+    /// the result-set semantics used by normal partition calls.
+    /// </summary>
+    internal static StoragePartitionQueryEvaluation EvaluateWithWork(
+        PartitionQueryPlan query,
+        StoragePartitionIndexes indexes)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(indexes);
+        QueryPlanValidator.Validate(query);
+
+        var work = default(CountingPartitionQueryWorkSink);
+        var recordKeys = EvaluateCore(query, indexes, ref work);
+        return new StoragePartitionQueryEvaluation(recordKeys, work.Snapshot);
+    }
+
     internal static HashSet<string> EvaluateValidated(
         PartitionQueryPlan query,
         StoragePartitionIndexes indexes)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(indexes);
-        return EvaluateCore(query, indexes);
+        var work = default(NoPartitionQueryWorkSink);
+        return EvaluateCore(query, indexes, ref work);
     }
 
-    private static HashSet<string> EvaluateCore(
+    private static HashSet<string> EvaluateCore<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionIndexes indexes,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
     {
         return query.Operation switch
         {
-            PartitionQueryOperation.Empty => new HashSet<string>(StringComparer.Ordinal),
-            PartitionQueryOperation.Exact => EvaluateExact(query, indexes),
-            PartitionQueryOperation.Range => EvaluateRange(query, indexes),
-            PartitionQueryOperation.And => EvaluateAnd(query, indexes),
-            PartitionQueryOperation.Or => EvaluateOr(query, indexes),
+            PartitionQueryOperation.Empty => EvaluateEmpty(ref work),
+            PartitionQueryOperation.Exact => EvaluateExact(query, indexes, ref work),
+            PartitionQueryOperation.Range => EvaluateRange(query, indexes, ref work),
+            PartitionQueryOperation.And => EvaluateAnd(query, indexes, ref work),
+            PartitionQueryOperation.Or => EvaluateOr(query, indexes, ref work),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(query),
                 query.Operation,
@@ -44,9 +64,18 @@ internal static class StoragePartitionQueryEvaluator
         };
     }
 
-    private static HashSet<string> EvaluateExact(
+    private static HashSet<string> EvaluateEmpty<TWorkSink>(ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
+    {
+        work.RecordEmpty();
+        return new HashSet<string>(StringComparer.Ordinal);
+    }
+
+    private static HashSet<string> EvaluateExact<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionIndexes indexes,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
     {
         var scope = query.Scope
             ?? throw new ArgumentException("An exact query requires an index scope.", nameof(query));
@@ -62,14 +91,17 @@ internal static class StoragePartitionQueryEvaluator
                 "Unknown index kind."),
         };
 
+        work.RecordExact(records.Count);
         // Lookup methods return live buckets. Boolean nodes mutate only this private copy so a
         // query cannot corrupt the derived indexes used by later reads.
         return new HashSet<string>(records, StringComparer.Ordinal);
     }
 
-    private static HashSet<string> EvaluateRange(
+    private static HashSet<string> EvaluateRange<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionIndexes indexes,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
     {
         var scope = query.Scope
             ?? throw new ArgumentException("A range query requires an index scope.", nameof(query));
@@ -87,6 +119,7 @@ internal static class StoragePartitionQueryEvaluator
                 nameof(query));
         }
 
+        work.RecordRange();
         var records = new HashSet<string>(StringComparer.Ordinal);
         indexes.UnionRange(
             scope,
@@ -94,25 +127,34 @@ internal static class StoragePartitionQueryEvaluator
             query.UpperBound,
             query.IncludeLowerBound,
             query.IncludeUpperBound,
-            records);
+            records,
+            ref work);
         return records;
     }
 
-    private static HashSet<string> EvaluateAnd(
+    private static HashSet<string> EvaluateAnd<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionIndexes indexes,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
     {
-        var left = EvaluateCore(GetRequiredChild(query.Left, "left", query), indexes);
-        left.IntersectWith(EvaluateCore(GetRequiredChild(query.Right, "right", query), indexes));
+        var left = EvaluateCore(GetRequiredChild(query.Left, "left", query), indexes, ref work);
+        var right = EvaluateCore(GetRequiredChild(query.Right, "right", query), indexes, ref work);
+        work.RecordAnd(left.Count);
+        left.IntersectWith(right);
         return left;
     }
 
-    private static HashSet<string> EvaluateOr(
+    private static HashSet<string> EvaluateOr<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionIndexes indexes,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
     {
-        var left = EvaluateCore(GetRequiredChild(query.Left, "left", query), indexes);
-        left.UnionWith(EvaluateCore(GetRequiredChild(query.Right, "right", query), indexes));
+        var left = EvaluateCore(GetRequiredChild(query.Left, "left", query), indexes, ref work);
+        var right = EvaluateCore(GetRequiredChild(query.Right, "right", query), indexes, ref work);
+        work.RecordOr(right.Count);
+        left.UnionWith(right);
         return left;
     }
 

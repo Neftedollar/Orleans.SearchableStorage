@@ -68,6 +68,12 @@ out to all distinct current owners, so the sample endpoints are suitable for lea
 test data rather than as an unmodified production search API. The current identity map has every
 initial partition as an owner; a future moved layout would still receive only one query call per
 distinct owner.
+
+The [bounded query and paging contract](../../docs/bounded-query-contract.md) defines the planned
+PR14 behavior and the logical-work measurements which precede it. It is not an API available in this
+sample yet: PR13 deliberately keeps these endpoints on `ToGrainIdsAsync`, so their small fixture is
+an application-level bound rather than a storage-enforced page or work limit.
+
 ASP.NET Core passes request cancellation to both search handlers, and each handler forwards it to
 `ToGrainIdsAsync`.
 

@@ -135,6 +135,13 @@ results into a sorted, distinct list. The merge is not a snapshot across partiti
 Because the result is currently unbounded, callers must use this API only where the expected match
 set is operationally bounded by the application until a bounded result protocol is added.
 
+The [bounded query and paging contract](docs/bounded-query-contract.md) records the measured work
+vocabulary and the proposed ordered-prefix protocol for issue #5. That document is an implementation
+target, not a current API claim: this PR13 design phase leaves `ToGrainIdsAsync` behavior unchanged.
+The planned continuation is explicitly weakly consistent across pages rather than a distributed
+snapshot. PR13 measures only the current materializing evaluator; PR14 must add ordered/resumable
+implementation benchmarks before selecting a strategy or its default and maximum budgets.
+
 `FindAsync` and `RangeAsync` remain available as lower-level compatibility APIs for callers which
 already express one exact lookup or one bounded range directly. They remain on
 `ISearchableStorageClient`; the focused LINQ surface is opt-in through

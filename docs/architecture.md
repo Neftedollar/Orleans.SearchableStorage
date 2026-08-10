@@ -171,6 +171,17 @@ The client starts all partition calls before awaiting `Task.WhenAll`, so a parti
 
 `ISearchableStorageClient` intentionally retains only the existing direct `FindAsync` and `RangeAsync` surface. `ISearchableStorageQueryClient` derives from it and adds `Query<TState>`. The keyed registrations for both interfaces point to the same `SearchableStorageClient` instance, which keeps existing direct-client implementations source compatible while making the new expression surface opt-in.
 
+### Bounded paging design target
+
+The [bounded query and paging contract](bounded-query-contract.md) freezes the PR14 design target:
+deterministic logical-work accounting, canonical `GrainId` ordering, partition-local safe frontiers,
+a bounded coordinator merge, AEAD-protected stateless continuations, and weak consistency under
+concurrent writes. PR13 instruments and benchmarks the current materializing evaluator but does not
+implement that wire or public API. In particular, `ToGrainIdsAsync`, `FindAsync`, and `RangeAsync`
+retain their current behavior until PR14. PR14 must build and measure activation-local ordered state
+catalogs and postings, resumable drivers, mutation cost, and retained memory before selecting the
+evaluator or numeric page and work limits.
+
 ## Index metadata
 
 Public readable state properties marked with `SearchableIndexAttribute` are indexed. Index scope combines a length-prefixed persisted state-type identity, Orleans state name, and stable index name. A named type identity contains its assembly simple name, culture, public-key token, and full type name. Constructed generic identities contain the generic definition followed by recursively encoded argument identities; arrays encode their shape and element identity. Assembly versions are deliberately excluded. Length prefixes make every boundary unambiguous and prevent unrelated states from sharing buckets accidentally.
