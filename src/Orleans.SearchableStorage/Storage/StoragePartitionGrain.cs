@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Extensions.Logging;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
@@ -8,28 +9,44 @@ namespace Orleans.SearchableStorage.Storage;
 
 internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 {
-    private readonly IPersistentState<StoragePartitionState> _state;
-    private Dictionary<string, Dictionary<IndexValue, HashSet<string>>> _hashIndexes = new(StringComparer.Ordinal);
-    private Dictionary<string, RangeIndex> _rangeIndexes = new(StringComparer.Ordinal);
+    private readonly ILogger<StoragePartitionGrain> _logger;
+    private readonly IPersistentState<StoragePartitionManifestState> _manifest;
+    private StoragePartitionView _view = new(
+        new Dictionary<string, StoredRecord>(StringComparer.Ordinal));
+    private StoragePartitionPersistence? _persistence;
+    private bool _usable;
 
     public StoragePartitionGrain(
-        [PersistentState("partition", SearchableStorageConstants.PhysicalStorageProviderName)]
-        IPersistentState<StoragePartitionState> state)
+        [PersistentState("manifest", SearchableStorageConstants.PhysicalStorageProviderName)]
+        IPersistentState<StoragePartitionManifestState> manifest,
+        ILogger<StoragePartitionGrain> logger)
     {
-        _state = state;
+        _manifest = manifest;
+        _logger = logger;
     }
 
-    public override Task OnActivateAsync(CancellationToken cancellationToken)
+    private StoragePartitionPersistence Persistence => _persistence
+        ?? throw new InvalidOperationException("The storage partition has not completed activation.");
+
+    public override async Task OnActivateAsync(CancellationToken cancellationToken)
     {
-        SetIndexes(BuildIndexes(_state.State));
-        return base.OnActivateAsync(cancellationToken);
+        _persistence = new StoragePartitionPersistence(
+            _manifest,
+            GrainFactory,
+            this.GetPrimaryKeyString(),
+            PoisonActivation,
+            _logger);
+        _view = new StoragePartitionView(await _persistence.ActivateAsync());
+        _usable = true;
+        await base.OnActivateAsync(cancellationToken);
     }
 
     public Task<StorageReadResult> ReadAsync(string recordKey)
     {
+        EnsureUsable();
         ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
 
-        if (!_state.State.Records.TryGetValue(recordKey, out var record))
+        if (!_view.Records.TryGetValue(recordKey, out var record))
         {
             return Task.FromResult(new StorageReadResult { Found = false });
         }
@@ -37,59 +54,97 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         return Task.FromResult(new StorageReadResult
         {
             Found = true,
-            Payload = record.Payload,
+            Payload = [.. record.Payload],
             ETag = record.ETag,
         });
     }
 
     public async Task<string> WriteAsync(StorageWriteRequest request)
     {
+        EnsureUsable();
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
+        ArgumentNullException.ThrowIfNull(request.Payload);
+        ArgumentNullException.ThrowIfNull(request.IndexEntries);
+        StoragePartitionPersistence.ValidateSettings(request.Persistence);
+        Persistence.EnsureSettingsMatch(request.Persistence);
 
-        _state.State.Records.TryGetValue(request.RecordKey, out var currentRecord);
+        _view.Records.TryGetValue(request.RecordKey, out var currentRecord);
         EnsureETagMatches(request.RecordKey, currentRecord?.ETag, request.ExpectedETag, "write");
 
-        var candidate = _state.State.Copy();
-        var etag = candidate.NextVersion.ToString(CultureInfo.InvariantCulture);
-        candidate.NextVersion++;
-        var storedRecord = new StoredRecord
+        var nextVersion = Persistence.NextVersion;
+        var etag = nextVersion.ToString(CultureInfo.InvariantCulture);
+        var storedRecord = StoragePersistenceStateCopy.CopyRecord(new StoredRecord
         {
             GrainId = request.GrainId,
             Payload = request.Payload,
             ETag = etag,
             IndexEntries = request.IndexEntries,
-        };
-        candidate.Records[request.RecordKey] = storedRecord;
+        })!;
+        StoragePartitionIndexes.ValidateRecord(storedRecord);
 
-        await PersistAsync(candidate, BuildIndexes(candidate));
+        await PrepareForMutationAsync(request.Persistence);
+        var entry = new StorageJournalEntry
+        {
+            Sequence = Persistence.NextSequence,
+            WriterEpoch = Persistence.WriterEpoch,
+            OperationId = Guid.NewGuid(),
+            PreviousOperationId = Persistence.CommittedOperationId,
+            Operation = StorageJournalOperation.Upsert,
+            RecordKey = request.RecordKey,
+            ExpectedETag = request.ExpectedETag,
+            Record = storedRecord,
+            NextVersionAfter = checked(nextVersion + 1),
+        };
+
+        await CommitAsync(entry);
+        ApplyCommittedUpsert(request.RecordKey, storedRecord);
+        await Persistence.CompactIfRequiredAsync(_view.Records, request.Persistence.CompactionThreshold);
         return etag;
     }
 
-    public async Task ClearAsync(string recordKey, string? expectedETag)
+    public async Task ClearAsync(StorageClearRequest request)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        EnsureUsable();
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
+        StoragePartitionPersistence.ValidateSettings(request.Persistence);
+        Persistence.EnsureSettingsMatch(request.Persistence);
 
-        if (!_state.State.Records.TryGetValue(recordKey, out var currentRecord))
+        if (!_view.Records.TryGetValue(request.RecordKey, out var currentRecord))
         {
-            EnsureETagMatches(recordKey, null, expectedETag, "clear");
+            EnsureETagMatches(request.RecordKey, null, request.ExpectedETag, "clear");
             return;
         }
 
-        EnsureETagMatches(recordKey, currentRecord.ETag, expectedETag, "clear");
+        EnsureETagMatches(request.RecordKey, currentRecord.ETag, request.ExpectedETag, "clear");
+        await PrepareForMutationAsync(request.Persistence);
+        var entry = new StorageJournalEntry
+        {
+            Sequence = Persistence.NextSequence,
+            WriterEpoch = Persistence.WriterEpoch,
+            OperationId = Guid.NewGuid(),
+            PreviousOperationId = Persistence.CommittedOperationId,
+            Operation = StorageJournalOperation.Delete,
+            RecordKey = request.RecordKey,
+            ExpectedETag = request.ExpectedETag,
+            NextVersionAfter = Persistence.NextVersion,
+        };
 
-        var candidate = _state.State.Copy();
-        candidate.Records.Remove(recordKey);
-        await PersistAsync(candidate, BuildIndexes(candidate));
+        await CommitAsync(entry);
+        ApplyCommittedDelete(request.RecordKey);
+        await Persistence.CompactIfRequiredAsync(_view.Records, request.Persistence.CompactionThreshold);
     }
 
     public Task<GrainId[]> FindAsync(ExactIndexQuery query)
     {
+        EnsureUsable();
         ArgumentNullException.ThrowIfNull(query);
 
         IEnumerable<string> recordKeys = query.Kind switch
         {
-            SearchableIndexKind.Hash => FindHashEntries(query.Scope, query.Value),
-            SearchableIndexKind.Range => FindRangeEntries(query.Scope, query.Value),
+            SearchableIndexKind.Hash => _view.Indexes.FindHashEntries(query.Scope, query.Value),
+            SearchableIndexKind.Range => _view.Indexes.FindRangeEntries(query.Scope, query.Value),
             _ => throw new ArgumentOutOfRangeException(nameof(query), query.Kind, "Unknown index kind."),
         };
 
@@ -98,6 +153,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 
     public Task<GrainId[]> RangeAsync(RangeIndexQuery query)
     {
+        EnsureUsable();
         ArgumentNullException.ThrowIfNull(query);
         if (query.LowerBound is null || query.UpperBound is null)
         {
@@ -108,27 +164,25 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 
         if (query.LowerBound.CompareTo(query.UpperBound) > 0)
         {
-            throw new ArgumentException("The lower range bound must not be greater than the upper range bound.", nameof(query));
-        }
-
-        if (!_rangeIndexes.TryGetValue(query.Scope, out var index))
-        {
-            return Task.FromResult(Array.Empty<GrainId>());
+            throw new ArgumentException(
+                "The lower range bound must not be greater than the upper range bound.",
+                nameof(query));
         }
 
         var recordKeys = new HashSet<string>(StringComparer.Ordinal);
-        index.UnionRange(
+        _view.Indexes.UnionRange(
+            query.Scope,
             query.LowerBound,
             query.UpperBound,
             query.IncludeLowerBound,
             query.IncludeUpperBound,
             recordKeys);
-
         return Task.FromResult(ResolveGrainIds(recordKeys));
     }
 
     public Task<GrainId[]> QueryAsync(PartitionQueryPlan query)
     {
+        EnsureUsable();
         ArgumentNullException.ThrowIfNull(query);
         QueryPlanValidator.Validate(query);
 
@@ -136,6 +190,26 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         // this call gives AND and OR one serially consistent partition-local view.
         var recordKeys = EvaluateQuery(query);
         return Task.FromResult(ResolveGrainIds(recordKeys));
+    }
+
+    public async Task CompactAsync()
+    {
+        EnsureUsable();
+        try
+        {
+            await Persistence.CompactAsync(_view.Records);
+        }
+        catch
+        {
+            PoisonActivation();
+            throw;
+        }
+    }
+
+    public Task<StoragePartitionPersistenceInfo> GetPersistenceInfoAsync()
+    {
+        EnsureUsable();
+        return Task.FromResult(Persistence.CreateInfo(_view.Records.Count));
     }
 
     private HashSet<string> EvaluateQuery(PartitionQueryPlan query)
@@ -162,15 +236,15 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             ?? throw new ArgumentException("An exact query requires an index value.", nameof(query));
         var records = query.IndexKind switch
         {
-            SearchableIndexKind.Hash => FindHashEntries(scope, value),
-            SearchableIndexKind.Range => FindRangeEntries(scope, value),
+            SearchableIndexKind.Hash => _view.Indexes.FindHashEntries(scope, value),
+            SearchableIndexKind.Range => _view.Indexes.FindRangeEntries(scope, value),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(query),
                 query.IndexKind,
                 "Unknown index kind."),
         };
-        // Index lookup methods return live buckets. Every boolean node mutates its own fresh set,
-        // so copying here prevents an intersection or union from corrupting the derived indexes.
+        // Lookup methods return live buckets. Boolean nodes mutate only their private copy so a
+        // query cannot corrupt the derived indexes used by later reads.
         return new HashSet<string>(records, StringComparer.Ordinal);
     }
 
@@ -193,16 +267,13 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
 
         var records = new HashSet<string>(StringComparer.Ordinal);
-        if (_rangeIndexes.TryGetValue(scope, out var index))
-        {
-            index.UnionRange(
-                query.LowerBound,
-                query.UpperBound,
-                query.IncludeLowerBound,
-                query.IncludeUpperBound,
-                records);
-        }
-
+        _view.Indexes.UnionRange(
+            scope,
+            query.LowerBound,
+            query.UpperBound,
+            query.IncludeLowerBound,
+            query.IncludeUpperBound,
+            records);
         return records;
     }
 
@@ -231,113 +302,90 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 nameof(query));
     }
 
-    private static PartitionIndexes BuildIndexes(StoragePartitionState state)
+    private async Task PrepareForMutationAsync(StoragePersistenceSettings settings)
     {
-        var hashIndexes = new Dictionary<string, Dictionary<IndexValue, HashSet<string>>>(StringComparer.Ordinal);
-        var rangeBuckets = new Dictionary<string, Dictionary<IndexValue, HashSet<string>>>(StringComparer.Ordinal);
-        foreach (var pair in state.Records)
+        try
         {
-            foreach (var entry in pair.Value.IndexEntries)
-            {
-                switch (entry.Kind)
-                {
-                    case SearchableIndexKind.Hash:
-                        AddIndexEntry(hashIndexes, entry.Scope, entry.Value, pair.Key);
-                        break;
-                    case SearchableIndexKind.Range:
-                        AddIndexEntry(rangeBuckets, entry.Scope, entry.Value, pair.Key);
-                        break;
-                    default:
-                        throw new InvalidOperationException($"Unknown index kind '{entry.Kind}'.");
-                }
-            }
+            await Persistence.PrepareForMutationAsync(_view.Records, settings);
         }
-
-        var rangeIndexes = rangeBuckets.ToDictionary(
-            static pair => pair.Key,
-            static pair => new RangeIndex(pair.Value),
-            StringComparer.Ordinal);
-        return new PartitionIndexes(hashIndexes, rangeIndexes);
+        catch
+        {
+            PoisonActivation();
+            throw;
+        }
     }
 
-    private static void AddIndexEntry(
-        Dictionary<string, Dictionary<IndexValue, HashSet<string>>> indexes,
-        string scope,
-        IndexValue value,
-        string recordKey)
+    private async Task CommitAsync(StorageJournalEntry entry)
     {
-        if (!indexes.TryGetValue(scope, out var index))
+        try
         {
-            index = [];
-            indexes.Add(scope, index);
+            await Persistence.CommitAsync(entry);
         }
-
-        if (!index.TryGetValue(value, out var bucket))
+        catch
         {
-            bucket = new HashSet<string>(StringComparer.Ordinal);
-            index.Add(value, bucket);
+            PoisonActivation();
+            throw;
         }
-
-        bucket.Add(recordKey);
     }
 
-    private HashSet<string> FindHashEntries(string scope, IndexValue value)
+    private void ApplyCommittedUpsert(
+        string recordKey,
+        StoredRecord storedRecord)
     {
-        if (_hashIndexes.TryGetValue(scope, out var index)
-            && index.TryGetValue(value, out var bucket))
+        try
         {
-            return bucket;
+            _view.ApplyUpsert(recordKey, storedRecord);
         }
-
-        return new HashSet<string>(StringComparer.Ordinal);
+        catch
+        {
+            // The manifest is already durable. Any unexpected local apply failure poisons this
+            // activation so the next call reconstructs records and indexes from committed storage.
+            PoisonActivation();
+            throw;
+        }
     }
 
-    private HashSet<string> FindRangeEntries(string scope, IndexValue value)
+    private void ApplyCommittedDelete(string recordKey)
     {
-        if (_rangeIndexes.TryGetValue(scope, out var index)
-            && index.TryGetValue(value, out var bucket))
+        try
         {
-            return bucket;
+            _view.ApplyDelete(recordKey);
         }
-
-        return new HashSet<string>(StringComparer.Ordinal);
+        catch
+        {
+            PoisonActivation();
+            throw;
+        }
     }
 
     private GrainId[] ResolveGrainIds(IEnumerable<string> recordKeys)
     {
         return recordKeys
-            .Select(recordKey => _state.State.Records[recordKey].GrainId)
+            .Select(recordKey => _view.Records[recordKey].GrainId)
             .Distinct()
             .ToArray();
     }
 
-    private async Task PersistAsync(StoragePartitionState candidate, PartitionIndexes indexes)
+    private void EnsureUsable()
     {
-        var previous = _state.State;
-        _state.State = candidate;
-        try
+        if (!_usable)
         {
-            // Records and their local index entries share one physical write. A failed write must
-            // never leave this activation serving the uncommitted candidate state.
-            await _state.WriteStateAsync();
+            throw new InvalidOperationException(
+                "The storage partition activation is retiring after an ambiguous persistence outcome.");
         }
-        catch
-        {
-            _state.State = previous;
-            DeactivateOnIdle();
-            throw;
-        }
-
-        SetIndexes(indexes);
     }
 
-    private void SetIndexes(PartitionIndexes indexes)
+    private void PoisonActivation()
     {
-        _hashIndexes = indexes.Hash;
-        _rangeIndexes = indexes.Range;
+        _usable = false;
+        DeactivateOnIdle();
     }
 
-    private static void EnsureETagMatches(string recordKey, string? storedETag, string? expectedETag, string operation)
+    private static void EnsureETagMatches(
+        string recordKey,
+        string? storedETag,
+        string? expectedETag,
+        string operation)
     {
         if (string.Equals(storedETag, expectedETag, StringComparison.Ordinal))
         {
@@ -348,14 +396,5 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             $"Version conflict during {operation} for searchable storage record '{recordKey}'.",
             storedETag,
             expectedETag);
-    }
-
-    private sealed class PartitionIndexes(
-        Dictionary<string, Dictionary<IndexValue, HashSet<string>>> hash,
-        Dictionary<string, RangeIndex> range)
-    {
-        public Dictionary<string, Dictionary<IndexValue, HashSet<string>>> Hash { get; } = hash;
-
-        public Dictionary<string, RangeIndex> Range { get; } = range;
     }
 }

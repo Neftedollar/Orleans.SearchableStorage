@@ -6,7 +6,12 @@ This document describes the maintainer-facing design of the first Orleans.Search
 
 `SearchableGrainStorage` implements Orleans `IGrainStorage`. Application grains use it through normal `IPersistentState<T>` injection and do not coordinate index updates themselves.
 
-Each searchable provider owns one `StorageLayoutGrain` and a fixed set of `StoragePartitionGrain` instances. A partition persists records together with each record's index entries in one `StoragePartitionState`. Hash and range bucket maps are derived in memory from those durable entries on activation and after each successful mutation. The durable state is written through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
+Each searchable provider owns one `StorageLayoutGrain` and a fixed set of
+`StoragePartitionGrain` instances. A partition keeps its records and derived hash and range buckets
+in the activation. Its durable representation is split into one constant-size manifest, a fixed ring
+of bounded journal-segment grains, and two reusable snapshot-slot grains. All four grain kinds write
+through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
+Application grains never address those implementation grains directly.
 
 `SearchableStorageClient` supports direct exact/range primitives and a focused `IQueryable` boundary. The query provider records expression trees without offering synchronous execution. `QueryTranslator` resolves indexed member identity through the same cached PolyType-backed metadata as writes and produces a small explicit query-plan algebra: exact leaf, one- or two-sided range leaf, intersection, union, and empty result. The client converts that semantic plan to one serializable, non-persisted wire plan and sends it once to every partition. Each partition evaluates the complete boolean plan synchronously during one non-reentrant grain turn. The client only unions the final partition-local results and returns a sorted, distinct set of `GrainId` values.
 
@@ -22,25 +27,89 @@ A record key contains the state name and the raw Orleans grain type and key byte
 
 The searchable provider name is the key of its layout grain and part of every partition grain key. This isolates logical providers even though their grains use the same physical storage-provider registration. A different or renamed provider name selects a separate, initially uninitialized namespace; it cannot be detected as a mismatch against the old namespace and therefore requires an explicit migration when existing data must move with it.
 
-The layout grain durably records the provider name, storage-format version, and partition count. Storage operations initialize that record on first use. Query clients validate the storage-format version and partition count within that provider namespace before fan-out and fail instead of silently returning an incomplete result when either value differs. A query made before any storage operation returns an empty result and does not initialize the layout.
+The layout grain durably records the provider name, storage-format version, partition count, journal
+segment capacity, and maximum replay entries. Storage operations initialize that record on first
+use. The first three values and both journal-layout values are immutable without migration. The
+compaction threshold is deliberately absent from the layout and can be tuned between deployments.
+Query clients validate the storage-format version and partition count within that provider namespace
+before fan-out; they do not need persistence-tuning values to execute a read-only plan. A query made
+before any storage operation returns an empty result and does not initialize the layout.
 
 `PartitionCount` is part of the persisted layout. Changing it after data has been written makes existing records unreachable without an explicit migration. Online repartitioning is outside the current scope.
 
-## Write invariant
+## Journal commit protocol
 
-For one record, the serialized state and every local secondary-index entry are one logical mutation:
+For one record, the serialized state and every local secondary-index entry are one logical mutation.
+The manifest is the only authoritative commit point:
 
 1. The storage provider serializes the application state and extracts index entries.
 2. The owning partition grain checks the expected record ETag.
-3. It creates a copy of the current partition state, replaces the record and its index entries, and builds candidate in-memory bucket maps.
-4. It persists the candidate partition state with one physical `IPersistentState.WriteStateAsync()` call.
-5. Only after that call succeeds does the new record ETag return to the application grain.
+3. Before the first mutation of an activation, the partition advances a writer epoch with a manifest
+   compare-and-swap. This fences journal writes from an older activation.
+4. It creates one journal entry containing the absolute sequence, writer epoch, unique operation id,
+   previous committed operation id, expected record ETag, replacement record or delete marker, and
+   the next record-version counter.
+5. A journal-slot grain conditionally stores that entry in the bounded segment selected by the
+   absolute sequence. The entry is still non-authoritative.
+6. The partition advances `CommittedSequence`, `CommittedOperationId`, and `NextVersion` in one
+   small manifest compare-and-swap. This makes the journal entry and all of its index entries visible.
+7. The activation applies only that record's hash and range bucket delta. Only then does a successful
+   write return its record ETag.
 
-The active partition state is replaced before the asynchronous physical write because `IPersistentState` writes its current value. If that write fails, the grain restores the previous in-memory value and requests deactivation. This prevents the failed candidate from being served by that activation.
+Steady mutations therefore perform one bounded journal-segment write and one constant-size manifest
+write. The first mutation after activation also acquires its writer epoch. A clear is a journaled
+delete and does not allocate a new record ETag. The non-reentrant partition activation serializes
+these transitions, while physical provider ETags protect against duplicate or stale activations.
 
-The physical provider still has the normal distributed-systems ambiguity where a write may have committed even if its acknowledgement was lost. Record ETags detect a subsequent stale retry; this version does not provide idempotency tokens for resolving that ambiguity.
+Journal entries have unique operation ids and an exact predecessor chain. An exact retry is
+idempotent. At most one entry can exist immediately after the manifest commit point; a new activation
+may replace that orphan only with a higher writer epoch. Entries from lower epochs, conflicting reuse
+of an operation id, and stale absolute segments are rejected. The manifest CAS still decides whether
+the logical mutation committed: a durable journal write without the matching manifest advance is not
+visible during recovery.
 
-The contract suite injects both sides of this ambiguity. A failure before the physical commit must rehydrate the previous record and indexes. A failure after the physical commit but before acknowledgement must rehydrate the committed candidate, even though the caller observed an exception.
+Every failed physical write is potentially a lost acknowledgement. The affected manifest, journal,
+snapshot, or layout activation is poisoned and cannot use a restored value with a provider-updated
+ETag. It requests deactivation; a fresh activation rereads authoritative physical state. If the
+manifest commit was durable, an unchanged caller retry has a stale record ETag and conflicts without
+minting another version. If only the journal entry was durable, recovery ignores it and a higher
+writer epoch may replace it.
+
+Automatic compaction runs after the mutation manifest commits. A maintenance failure must not turn
+that already committed mutation into a reported write failure, so the current mutation returns its
+success while the activation is poisoned and retired. Compaction required by the hard replay limit
+runs before allocating the next journal entry; failure there backpressures the new mutation.
+
+## Recovery and bounded compaction
+
+Activation validates the manifest before serving a request. It loads the active snapshot, replays
+the exact journal operation-id chain through `CommittedSequence`, validates the recovered
+`NextVersion`, and rebuilds the in-memory indexes. A pending snapshot reservation is completed before
+the activation becomes usable. Retirement cleanup is also attempted before serving; a cleanup
+failure fails activation instead of exposing an activation which might reuse ambiguous state.
+
+For capacity `C` and maximum replay entries `R`, a partition addresses
+`ceil(R / C) + 2` journal slots. Absolute segment index, not the reusable slot number, is persisted in
+each slot. Reuse requires a durable tombstone and a newer absolute index; delayed stores and retires
+cannot resurrect an older segment. `CommittedSequence - SnapshotSequence` never exceeds `R`. Segment
+capacity bounds operation count, not serialized bytes, so record-size limits remain an operational
+requirement.
+
+Compaction is a four-stage protocol:
+
+1. Reserve the complete pending descriptor in the manifest: generation, random snapshot id, target
+   slot, committed sequence and operation id, and next record version.
+2. Store an immutable whole-partition snapshot in the inactive slot. Exact retries are idempotent;
+   the slot rejects lower generations or same-generation mismatches.
+3. Publish that exact descriptor as active in the manifest and mark the previous active descriptor
+   as retiring.
+4. Tombstone the retired snapshot payload and every fully covered journal segment, then advance the
+   manifest prune boundary.
+
+Generations alternate deterministically between two stable slots. Snapshot and journal payloads are
+retired by writing tombstones rather than physically clearing their grain state, because the retained
+generation or absolute-segment fence rejects delayed stale RPCs. Repeated ambiguous snapshot writes
+therefore reuse one reserved generation instead of leaking sequence-named snapshot objects.
 
 ## Read and query semantics
 
@@ -48,9 +117,17 @@ A point read is routed directly to the record's owning partition. Missing record
 
 Direct exact and bounded-range operations fan out to all configured partitions. A focused `IQueryable` execution instead sends its complete boolean plan once to each partition. The partition grain is non-reentrant and plan evaluation contains no await, so all leaves of that plan observe one serially consistent partition-local activation state. The merged result is not a cross-partition snapshot: different partitions can still observe concurrent writes at different points during one distributed query.
 
-Each in-memory range index stores its distinct values in a `SortedList`. During construction, input buckets are first canonicalized by the index ordering comparer and comparer-equal buckets are merged. Partition activation therefore does not depend on hash equality and ordering equality remaining identical as persisted value kinds evolve. A range with a lower bound performs a binary lower-bound lookup through the indexed key view and then visits only buckets inside the requested window; a range without a lower bound starts at the first bucket. Its local traversal is O(log d + k) with a lower bound and O(k) without one, where d is the number of distinct indexed values and k is the number of visited buckets.
+Each in-memory range index stores its distinct values in a `SortedSet` of mutable buckets. During
+construction, comparer-equal buckets are canonicalized and merged. A mutation adds or removes only
+the affected bucket in O(log d), where d is the number of distinct indexed values, and empty buckets
+and scopes are removed. `GetViewBetween` seeks into the tree and visits only the requested ordered
+window, giving O(log d + k) traversal for k visited buckets. Hash indexes likewise update only the
+affected record buckets.
 
-Once a successful write returns, that partition's activation already contains the committed state and corresponding index entries. No asynchronous index-maintenance pipeline exists in this version.
+Once a successful write returns, that partition's activation already contains the committed state
+and corresponding index entries. No asynchronous index-maintenance pipeline exists in this version;
+recovery deterministically derives the same indexes from snapshot records plus committed journal
+entries.
 
 ## Query translation and execution
 
@@ -84,11 +161,22 @@ Index names, index kinds, and indexed property types are persisted schema. Addin
 
 ## Persisted compatibility rules
 
-The layout format version, provider name, partition count, layout-grain type and key, partition-grain type, partition-key format, record-key format, and index-scope format determine how durable data is located and interpreted. Changes to any of them require a format-version increment and a migration path. In particular, renaming the layout grain interface or changing its key can silently select a fresh namespace unless the old identity is migrated.
+The layout format version, provider name, partition count, journal capacity, replay limit,
+layout-grain type and key, partition-grain type, partition-key format, journal-ring and snapshot-slot
+key formats, record-key format, and index-scope format determine how durable data is located and
+interpreted. Changes to any of them require a format-version increment and a migration path. In
+particular, renaming the layout grain interface or changing its key can silently select a fresh
+namespace unless the old identity is migrated.
 
-Format version 2 introduces the recursive, assembly-version-independent type identity described above. Version 1 index scopes are intentionally not read as version 2 scopes. A provider namespace whose persisted layout still reports version 1 is rejected and must be migrated or completely rewritten before it can be opened by this version.
+Format version 3 introduces the manifest, bounded journal ring, and two snapshot slots described
+above. It retains the recursive, assembly-version-independent type identity introduced in format 2.
+Version 1 and version 2 partitions are intentionally not interpreted as version 3 persistence. This
+release provides no in-place migration tool; an older namespace is rejected and must be migrated or
+completely rewritten before it can be opened.
 
-Orleans serializer `[Id]` values on persisted layout, partition, record, index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or renumbered after release. New fields must use new IDs and remain readable when absent from older data.
+Orleans serializer `[Id]` values on persisted layout, manifest, journal, snapshot, record,
+index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or
+renumbered after release. New fields must use new IDs and remain readable when absent from older data.
 
 The existing `RangeIndexQuery` protocol remains a strictly bounded message: both lower and upper
 bounds are required and retain field IDs 1 and 2. Open bounds exist only on the new recursive
@@ -103,9 +191,19 @@ Physical providers can use serializers other than Orleans' binary serializer. Wi
 
 ## Physical backend contract
 
-Backend tests must exercise the same public storage contract instead of backend-specific expected behavior. The contract covers physical partition rehydration, exact lookup, bounded range lookup, index replacement on update, index removal on clear, optimistic-concurrency rejection, persisted-layout mismatch, and physical-write failure boundaries.
+Backend tests must exercise the same public storage contract instead of backend-specific expected
+behavior. The contract covers partition rehydration, exact and range lookup, incremental index
+replacement and removal, optimistic-concurrency rejection, persisted-layout mismatch, bounded
+journal replay, snapshot compaction, and before/after-commit failure boundaries for mutation and
+maintenance transitions.
 
-The contract runs unchanged against Orleans memory, ADO.NET/PostgreSQL, Redis, and Azure Blob providers. Each external fixture registers the official Orleans 10.2.2 provider under an internal name and places the same failure-injecting decorator under `Orleans.SearchableStorage.Physical`. The decorator is test infrastructure only; production hosts register their selected provider directly under the physical name. All fixtures select `JsonGrainStorageSerializer`, so reactivation crosses a physical serialization boundary instead of retaining object references.
+The contract runs unchanged against Orleans memory, ADO.NET/PostgreSQL, Redis, and Azure Blob
+providers. A compatible physical provider must offer atomic whole-state writes, authoritative point
+reads, and ETag-based conditional replacement; those guarantees fence manifest and reusable child
+slots. Each external fixture registers the official Orleans 10.2.2 provider under an internal name
+and places the same failure-injecting decorator under `Orleans.SearchableStorage.Physical`. The
+decorator is test infrastructure only. All fixtures select `JsonGrainStorageSerializer`, so
+reactivation crosses a physical serialization boundary instead of retaining object references.
 
 External resources are isolated per fixture. PostgreSQL receives a unique schema and an Npgsql connection string with that schema as its search path. Redis receives a unique Orleans service id, which is part of every provider key. Azure Blob receives a unique container. The fixtures stop their two-silo clusters before deleting those resources. CI provides PostgreSQL, Redis, and Azurite through pinned containers, while connection-string overrides allow the same tests to target a separately managed environment.
 
@@ -123,6 +221,20 @@ An S3-compatible provider is not part of the current supported matrix. Adding on
 
 ## Current scaling limit
 
-One physical write serializes the entire owning partition snapshot, and the activation rebuilds its bucket maps from durable record entries after each successful mutation. This deliberately makes the initial consistency boundary small and observable, but produces work and write amplification proportional to partition size. Range reads now seek to their lower bound, but queries still fan out to every partition. Increasing `PartitionCount` distributes ownership and write work but does not route a query to fewer partitions. `ToGrainIdsAsync` has no `Take`, pagination, or result-size limit, so a broad result can allocate a large working set and hold a non-reentrant partition turn while matching record ids are collected.
+Normal mutation I/O is bounded by one configured journal segment plus one small manifest, and index
+maintenance touches only the changed buckets. The remaining partition-size costs are activation and
+compaction: an activation materializes the whole active snapshot, and compaction copies and
+serializes the whole partition while holding its non-reentrant turn. Two stable snapshot slots bound
+object count, not snapshot bytes. Large records also make a bounded-operation journal segment large.
 
-A production-scale layout will need smaller durable units and bounded query-result handling while preserving the record-and-index atomicity described above.
+Queries still fan out to every partition. Increasing `PartitionCount` reduces records and snapshot
+size per partition, but increases query RPC fan-out. `ToGrainIdsAsync` has no `Take`, pagination, or
+result-size limit, so a broad result can allocate a large working set and hold a partition turn while
+matching record ids are collected. The benchmark and capacity plan is tracked in repository
+[issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8); results must report
+both total records and records per physical partition instead of extrapolating from one aggregate
+count.
+
+A production-scale layout still needs bounded query-result handling and online ownership movement.
+Slot-based repartitioning is intentionally the next persistence-layer step rather than being hidden
+inside this journal change.

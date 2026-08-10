@@ -904,6 +904,100 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [SkippableFact]
+    public async Task PhysicalProviderRejectsStaleEtagsAndPreservesTheWinningState()
+    {
+        var physical = GetPhysicalStorage();
+        var grainId = GrainId.Create("physical-cas-contract", Guid.NewGuid().ToString("N"));
+        var stateName = $"physical-cas-{Guid.NewGuid():N}";
+        var initial = new GrainState<List<string>> { State = ["initial"] };
+        await physical.WriteStateAsync(stateName, grainId, initial);
+
+        try
+        {
+            var winner = new GrainState<List<string>>();
+            var stale = new GrainState<List<string>>();
+            await physical.ReadStateAsync(stateName, grainId, winner);
+            await physical.ReadStateAsync(stateName, grainId, stale);
+            winner.ETag.Should().Be(stale.ETag);
+            winner.State = ["winner"];
+            stale.State = ["stale"];
+
+            await physical.WriteStateAsync(stateName, grainId, winner);
+            Func<Task> staleWrite = () => physical.WriteStateAsync(stateName, grainId, stale);
+            await staleWrite.Should().ThrowAsync<InconsistentStateException>();
+
+            var authoritative = new GrainState<List<string>>();
+            await physical.ReadStateAsync(stateName, grainId, authoritative);
+            authoritative.RecordExists.Should().BeTrue();
+            authoritative.State.Should().Equal("winner");
+        }
+        finally
+        {
+            var cleanup = new GrainState<List<string>>();
+            await physical.ReadStateAsync(stateName, grainId, cleanup);
+            if (cleanup.RecordExists)
+            {
+                await physical.ClearStateAsync(stateName, grainId, cleanup);
+            }
+        }
+    }
+
+    [SkippableFact]
+    public async Task PersistedVersionTwoLayoutIsRejectedBeforePartitionAccess()
+    {
+        var providerName = $"legacy-layout-{Guid.NewGuid():N}";
+        var layout = Fixture.Cluster.GrainFactory.GetGrain<IStorageLayoutGrain>(providerName);
+        var physical = GetPhysicalStorage();
+        var legacy = new GrainState<StorageLayoutState>
+        {
+            State = new StorageLayoutState
+            {
+                Initialized = true,
+                FormatVersion = 2,
+                ProviderName = providerName,
+                PartitionCount = Fixture.PartitionCount,
+            },
+        };
+        await physical.WriteStateAsync("layout", layout.GetGrainId(), legacy);
+
+        try
+        {
+            var storage = CreateStorageBridge(
+                providerName,
+                StoragePersistence.DefaultJournalSegmentCapacity,
+                StoragePersistence.DefaultMaximumJournalReplayEntries,
+                StoragePersistence.DefaultCompactionThreshold);
+            var grainId = CreateGrain().GetGrainId();
+            var state = new GrainState<VacancyState>();
+            var client = new SearchableStorageClient(
+                Fixture.Cluster.GrainFactory,
+                providerName,
+                Fixture.PartitionCount);
+
+            Func<Task> read = () => storage.ReadStateAsync(VacancyGrain.StateName, grainId, state);
+            Func<Task> query = () => client.FindAsync<VacancyState, string>(
+                VacancyGrain.StateName,
+                candidate => candidate.City,
+                "missing");
+            await read.Should().ThrowAsync<InvalidOperationException>()
+                .WithMessage("*persisted*version 2*migrate*");
+            await query.Should().ThrowAsync<InvalidOperationException>()
+                .WithMessage("*persisted*version 2*migrate*");
+
+            var partitionIndex = (int)((uint)grainId.GetUniformHashCode() % (uint)Fixture.PartitionCount);
+            var partition = Fixture.Cluster.GrainFactory.GetGrain<IStoragePartitionGrain>(
+                StorageLayout.CreatePartitionKey(providerName, partitionIndex));
+            var manifest = new GrainState<StoragePartitionManifestState>();
+            await physical.ReadStateAsync("manifest", partition.GetGrainId(), manifest);
+            manifest.RecordExists.Should().BeFalse();
+        }
+        finally
+        {
+            await physical.ClearStateAsync("layout", layout.GetGrainId(), legacy);
+        }
+    }
+
+    [SkippableFact]
     public async Task InvalidLayoutDescriptorsAreRejectedBeforePersistence()
     {
         var providerName = $"invalid-layout-{Guid.NewGuid():N}";
@@ -913,18 +1007,24 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             FormatVersion = StorageLayout.CurrentFormatVersion,
             ProviderName = $"wrong-{Guid.NewGuid():N}",
             PartitionCount = Fixture.PartitionCount,
+            JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
+            MaximumJournalReplayEntries = StoragePersistence.DefaultMaximumJournalReplayEntries,
         };
         var unsupportedVersion = new StorageLayoutDescriptor
         {
             FormatVersion = StorageLayout.CurrentFormatVersion + 1,
             ProviderName = providerName,
             PartitionCount = Fixture.PartitionCount,
+            JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
+            MaximumJournalReplayEntries = StoragePersistence.DefaultMaximumJournalReplayEntries,
         };
         var legacyVersion = new StorageLayoutDescriptor
         {
-            FormatVersion = 1,
+            FormatVersion = 2,
             ProviderName = providerName,
             PartitionCount = Fixture.PartitionCount,
+            JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
+            MaximumJournalReplayEntries = StoragePersistence.DefaultMaximumJournalReplayEntries,
         };
 
         Func<Task> validateWrongProvider = () => layout.ValidateAsync(wrongProvider);
@@ -936,9 +1036,116 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await validateUnsupportedVersion.Should().ThrowAsync<ArgumentOutOfRangeException>()
             .WithMessage("*Storage format version*");
         await validateLegacyVersion.Should().ThrowAsync<ArgumentOutOfRangeException>()
-            .WithMessage("*Storage format version 2 is required*");
+            .WithMessage("*Storage format version 3 is required*");
         (await layout.ValidateAsync(StorageLayout.CreateDescriptor(providerName, Fixture.PartitionCount)))
             .Should().BeFalse();
+    }
+
+    [SkippableFact]
+    public async Task ImmutablePersistenceLayoutSettingsCannotChangeAfterInitialization()
+    {
+        var providerName = $"immutable-layout-{Guid.NewGuid():N}";
+        var layout = Fixture.Cluster.GrainFactory.GetGrain<IStorageLayoutGrain>(providerName);
+        var descriptor = StorageLayout.CreateDescriptor(
+            providerName,
+            Fixture.PartitionCount,
+            journalSegmentCapacity: 16,
+            maximumJournalReplayEntries: 128);
+        await layout.InitializeAsync(descriptor);
+
+        var differentCapacity = StorageLayout.CreateDescriptor(
+            providerName,
+            Fixture.PartitionCount,
+            journalSegmentCapacity: 32,
+            maximumJournalReplayEntries: 128);
+        var differentReplayLimit = StorageLayout.CreateDescriptor(
+            providerName,
+            Fixture.PartitionCount,
+            journalSegmentCapacity: 16,
+            maximumJournalReplayEntries: 256);
+
+        Func<Task> initializeWithDifferentCapacity = () => layout.InitializeAsync(differentCapacity);
+        Func<Task> initializeWithDifferentReplayLimit = () => layout.InitializeAsync(differentReplayLimit);
+
+        await initializeWithDifferentCapacity.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*journal capacity*persisted*migrate*");
+        await initializeWithDifferentReplayLimit.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*replay limit*persisted*migrate*");
+        (await layout.ValidateAsync(descriptor)).Should().BeTrue();
+        (await layout.ValidateIdentityAsync(StorageLayout.CreateIdentity(providerName, Fixture.PartitionCount)))
+            .Should().BeTrue();
+    }
+
+    [SkippableFact]
+    public async Task OperationalCompactionThresholdCanChangeWithoutLayoutMigration()
+    {
+        var providerName = $"threshold-change-{Guid.NewGuid():N}";
+        var firstStorage = CreateStorageBridge(
+            providerName,
+            journalSegmentCapacity: 16,
+            maximumJournalReplayEntries: 128,
+            compactionThreshold: 32);
+        var grainId = CreateGrain().GetGrainId();
+        var state = new GrainState<VacancyState>
+        {
+            State = new VacancyState { City = "first", Salary = 10 },
+        };
+        await firstStorage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+
+        var secondStorage = CreateStorageBridge(
+            providerName,
+            journalSegmentCapacity: 16,
+            maximumJournalReplayEntries: 128,
+            compactionThreshold: 64);
+        state.State = new VacancyState { City = "second", Salary = 20 };
+        await secondStorage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+
+        var loaded = new GrainState<VacancyState>();
+        await secondStorage.ReadStateAsync(VacancyGrain.StateName, grainId, loaded);
+        loaded.State.Should().BeEquivalentTo(state.State);
+        await secondStorage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
+    }
+
+    [SkippableFact]
+    public async Task StorageBridgeSnapshotsPersistenceOptionsAtConstruction()
+    {
+        var providerName = $"stable-persistence-options-{Guid.NewGuid():N}";
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var configuredOptions = silo.ServiceProvider
+            .GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+            .Get(VacancyGrain.StorageProviderName);
+        var options = new SearchableStorageOptions
+        {
+            PartitionCount = Fixture.PartitionCount,
+            JournalSegmentCapacity = 16,
+            MaximumJournalReplayEntries = 128,
+            CompactionThreshold = 32,
+            GrainStorageSerializer = configuredOptions.GrainStorageSerializer,
+        };
+        var storage = ActivatorUtilities.CreateInstance<SearchableGrainStorage>(
+            silo.ServiceProvider,
+            providerName,
+            options);
+        var grainId = CreateGrain().GetGrainId();
+        var state = new GrainState<VacancyState>
+        {
+            State = new VacancyState { City = "stable", Salary = 10 },
+        };
+
+        options.PartitionCount *= 2;
+        options.JournalSegmentCapacity = 0;
+        options.MaximumJournalReplayEntries = 0;
+        options.CompactionThreshold = 0;
+        await storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+
+        var partitionIndex = (int)((uint)grainId.GetUniformHashCode() % (uint)Fixture.PartitionCount);
+        var partition = Fixture.Cluster.GrainFactory.GetGrain<IStoragePartitionGrain>(
+            StorageLayout.CreatePartitionKey(providerName, partitionIndex));
+        var persistence = await partition.GetPersistenceInfoAsync();
+        persistence.JournalSegmentCapacity.Should().Be(16);
+        persistence.MaximumJournalReplayEntries.Should().Be(128);
+
+        await storage.ClearStateAsync(VacancyGrain.StateName, grainId, state);
     }
 
     [SkippableFact]
@@ -1013,6 +1220,75 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [SkippableFact]
+    public void PersistenceSettingsRoundTripWithMutationRequests()
+    {
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var serializer = silo.ServiceProvider.GetRequiredService<Serializer>();
+        var settings = new StoragePersistenceSettings
+        {
+            JournalSegmentCapacity = 17,
+            MaximumJournalReplayEntries = 257,
+            CompactionThreshold = 129,
+        };
+        var write = new StorageWriteRequest
+        {
+            RecordKey = "state/grain",
+            GrainId = CreateGrain().GetGrainId(),
+            Payload = [1, 2, 3],
+            ExpectedETag = "4",
+            IndexEntries = [],
+            Persistence = settings,
+        };
+        var clear = new StorageClearRequest
+        {
+            RecordKey = write.RecordKey,
+            ExpectedETag = write.ExpectedETag,
+            Persistence = settings,
+        };
+
+        var writeCopy = serializer.Deserialize<StorageWriteRequest>(serializer.SerializeToArray(write));
+        var clearCopy = serializer.Deserialize<StorageClearRequest>(serializer.SerializeToArray(clear));
+
+        writeCopy.Persistence.JournalSegmentCapacity.Should().Be(17);
+        writeCopy.Persistence.MaximumJournalReplayEntries.Should().Be(257);
+        writeCopy.Persistence.CompactionThreshold.Should().Be(129);
+        clearCopy.Persistence.JournalSegmentCapacity.Should().Be(17);
+        clearCopy.Persistence.MaximumJournalReplayEntries.Should().Be(257);
+        clearCopy.Persistence.CompactionThreshold.Should().Be(129);
+    }
+
+    [SkippableFact]
+    public void SearchableStorageOptionsUseBoundedPersistenceDefaults()
+    {
+        var options = new SearchableStorageOptions();
+
+        options.JournalSegmentCapacity.Should().Be(64);
+        options.MaximumJournalReplayEntries.Should().Be(4_096);
+        options.CompactionThreshold.Should().Be(1_024);
+    }
+
+    [SkippableTheory]
+    [InlineData(0, 4_096, 1_024, "JournalSegmentCapacity")]
+    [InlineData(64, 0, 1_024, "MaximumJournalReplayEntries")]
+    [InlineData(64, 4_096, 0, "CompactionThreshold")]
+    [InlineData(64, 128, 129, "CompactionThreshold")]
+    public void StorageBridgeRejectsInvalidPersistenceOptions(
+        int journalSegmentCapacity,
+        int maximumJournalReplayEntries,
+        int compactionThreshold,
+        string expectedMessage)
+    {
+        Action create = () => CreateStorageBridge(
+            $"invalid-options-{Guid.NewGuid():N}",
+            journalSegmentCapacity,
+            maximumJournalReplayEntries,
+            compactionThreshold);
+
+        create.Should().Throw<ArgumentOutOfRangeException>()
+            .WithMessage($"*{expectedMessage}*");
+    }
+
+    [SkippableFact]
     public async Task QueryValueTypeMustMatchIndexedPropertyType()
     {
         var client = CreateClient();
@@ -1035,6 +1311,36 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
 
         await query.Should().ThrowAsync<ArgumentNullException>()
             .WithParameterName("value");
+    }
+
+    private SearchableGrainStorage CreateStorageBridge(
+        string providerName,
+        int journalSegmentCapacity,
+        int maximumJournalReplayEntries,
+        int compactionThreshold)
+    {
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var configuredOptions = silo.ServiceProvider
+            .GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+            .Get(VacancyGrain.StorageProviderName);
+        return ActivatorUtilities.CreateInstance<SearchableGrainStorage>(
+            silo.ServiceProvider,
+            providerName,
+            new SearchableStorageOptions
+            {
+                PartitionCount = Fixture.PartitionCount,
+                JournalSegmentCapacity = journalSegmentCapacity,
+                MaximumJournalReplayEntries = maximumJournalReplayEntries,
+                CompactionThreshold = compactionThreshold,
+                GrainStorageSerializer = configuredOptions.GrainStorageSerializer,
+            });
+    }
+
+    private IGrainStorage GetPhysicalStorage()
+    {
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        return silo.ServiceProvider.GetRequiredKeyedService<IGrainStorage>(
+            SearchableStorageConstants.PhysicalStorageProviderName);
     }
 
     protected IVacancyGrain CreateGrain()
@@ -1117,6 +1423,14 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 }
 
+public enum PhysicalMutationFaultPoint
+{
+    JournalBeforeCommit = 0,
+    JournalAfterCommit = 1,
+    ManifestBeforeCommit = 2,
+    ManifestAfterCommit = 3,
+}
+
 public abstract class FaultInjectingSearchableStorageContractTests<TFixture>
     : SearchableStorageContractTests<TFixture>
     where TFixture : class, ISearchableStorageFixture
@@ -1126,155 +1440,207 @@ public abstract class FaultInjectingSearchableStorageContractTests<TFixture>
     {
     }
 
-    [SkippableFact]
-    public async Task FailedPhysicalWriteDoesNotExposeCandidateState()
+    [SkippableTheory]
+    [InlineData(PhysicalMutationFaultPoint.JournalBeforeCommit)]
+    [InlineData(PhysicalMutationFaultPoint.JournalAfterCommit)]
+    [InlineData(PhysicalMutationFaultPoint.ManifestBeforeCommit)]
+    public async Task UncommittedWriteIsNotVisibleWithoutManualDeactivation(
+        PhysicalMutationFaultPoint faultPoint)
     {
-        var oldCity = $"before-old-{Guid.NewGuid():N}";
-        var newCity = $"before-new-{Guid.NewGuid():N}";
-        var grain = CreateGrain();
-        var grainId = grain.GetGrainId();
-        var partition = GetPartition(grainId);
+        var oldCity = $"uncommitted-old-{Guid.NewGuid():N}";
+        var newCity = $"uncommitted-new-{Guid.NewGuid():N}";
+        var grainId = CreateGrain().GetGrainId();
+        var storage = GetSearchableStorage();
+        var state = CreateState(oldCity, 10);
+        await storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+        await AddMutationFaultAsync(grainId, faultPoint);
 
-        await grain.SetAsync(oldCity, 10);
-        await AddWriteFaultAsync(partition, PhysicalWriteFaultStage.BeforeCommit);
+        state.State = new VacancyState { City = newCity, Salary = 20 };
+        Func<Task> write = () => storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+        await AssertInjectedFailureAsync(write);
 
-        Func<Task> write = () => grain.SetAsync(newCity, 20);
-        var exception = await write.Should().ThrowAsync<OrleansException>();
-        exception.Which.InnerException.Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Be("Injected physical write failure.");
-
-        await Fixture.Cluster.DeactivateAsync(grain);
-        await Fixture.Cluster.DeactivateAsync(partition);
-
-        var state = await grain.GetAsync();
+        var loaded = await ReadStateAsync(storage, grainId);
         var client = CreateClient();
-        var oldResults = await client.FindAsync<VacancyState, string>(
+        var oldHash = await client.FindAsync<VacancyState, string>(
             VacancyGrain.StateName,
             candidate => candidate.City,
             oldCity);
-        var newResults = await client.FindAsync<VacancyState, string>(
+        var oldRange = await client.FindAsync<VacancyState, int>(
+            VacancyGrain.StateName,
+            candidate => candidate.Salary,
+            10);
+        var newHash = await client.FindAsync<VacancyState, string>(
             VacancyGrain.StateName,
             candidate => candidate.City,
             newCity);
+        var newRange = await client.FindAsync<VacancyState, int>(
+            VacancyGrain.StateName,
+            candidate => candidate.Salary,
+            20);
 
-        state.City.Should().Be(oldCity);
-        state.Salary.Should().Be(10);
-        oldResults.Should().ContainSingle().Which.Should().Be(grainId);
-        newResults.Should().BeEmpty();
+        loaded.RecordExists.Should().BeTrue();
+        loaded.State.City.Should().Be(oldCity);
+        loaded.State.Salary.Should().Be(10);
+        oldHash.Should().ContainSingle().Which.Should().Be(grainId);
+        oldRange.Should().ContainSingle().Which.Should().Be(grainId);
+        newHash.Should().BeEmpty();
+        newRange.Should().BeEmpty();
 
-        await grain.ClearAsync();
+        var retryCity = $"replacement-{Guid.NewGuid():N}";
+        loaded.State = new VacancyState { City = retryCity, Salary = 30 };
+        await storage.WriteStateAsync(VacancyGrain.StateName, grainId, loaded);
+        var retried = await ReadStateAsync(storage, grainId);
+        var retryHash = await client.FindAsync<VacancyState, string>(
+            VacancyGrain.StateName,
+            candidate => candidate.City,
+            retryCity);
+        var retryRange = await client.FindAsync<VacancyState, int>(
+            VacancyGrain.StateName,
+            candidate => candidate.Salary,
+            30);
+        retried.State.City.Should().Be(retryCity);
+        retried.State.Salary.Should().Be(30);
+        retryHash.Should().ContainSingle().Which.Should().Be(grainId);
+        retryRange.Should().ContainSingle().Which.Should().Be(grainId);
+
+        await storage.ClearStateAsync(VacancyGrain.StateName, grainId, retried);
     }
 
     [SkippableFact]
-    public async Task LostAcknowledgementRehydratesCommittedCandidate()
+    public async Task LostManifestWriteAcknowledgementRehydratesCommittedWriteWithoutManualDeactivation()
     {
-        var oldCity = $"after-old-{Guid.NewGuid():N}";
-        var newCity = $"after-new-{Guid.NewGuid():N}";
-        var grain = CreateGrain();
-        var grainId = grain.GetGrainId();
+        var oldCity = $"committed-old-{Guid.NewGuid():N}";
+        var newCity = $"committed-new-{Guid.NewGuid():N}";
+        var grainId = CreateGrain().GetGrainId();
+        var storage = GetSearchableStorage();
+        var state = CreateState(oldCity, 10);
+        await storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+        await AddMutationFaultAsync(grainId, PhysicalMutationFaultPoint.ManifestAfterCommit);
+
+        state.State = new VacancyState { City = newCity, Salary = 20 };
+        Func<Task> write = () => storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+        await AssertInjectedFailureAsync(write);
+
         var partition = GetPartition(grainId);
+        var committedSequence = (await partition.GetPersistenceInfoAsync()).CommittedSequence;
+        Func<Task> staleRetry = () => storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+        await staleRetry.Should().ThrowAsync<InconsistentStateException>();
+        (await partition.GetPersistenceInfoAsync()).CommittedSequence.Should().Be(committedSequence);
 
-        await grain.SetAsync(oldCity, 10);
-        await AddWriteFaultAsync(partition, PhysicalWriteFaultStage.AfterCommit);
-
-        Func<Task> write = () => grain.SetAsync(newCity, 20);
-        var exception = await write.Should().ThrowAsync<OrleansException>();
-        exception.Which.InnerException.Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Be("Injected physical write failure.");
-
-        await Fixture.Cluster.DeactivateAsync(grain);
-        await Fixture.Cluster.DeactivateAsync(partition);
-
-        var state = await grain.GetAsync();
+        var loaded = await ReadStateAsync(storage, grainId);
         var client = CreateClient();
-        var oldResults = await client.FindAsync<VacancyState, string>(
+        var oldHash = await client.FindAsync<VacancyState, string>(
             VacancyGrain.StateName,
             candidate => candidate.City,
             oldCity);
-        var newResults = await client.FindAsync<VacancyState, string>(
+        var oldRange = await client.FindAsync<VacancyState, int>(
+            VacancyGrain.StateName,
+            candidate => candidate.Salary,
+            10);
+        var newHash = await client.FindAsync<VacancyState, string>(
             VacancyGrain.StateName,
             candidate => candidate.City,
             newCity);
+        var newRange = await client.FindAsync<VacancyState, int>(
+            VacancyGrain.StateName,
+            candidate => candidate.Salary,
+            20);
 
-        state.City.Should().Be(newCity);
-        state.Salary.Should().Be(20);
-        oldResults.Should().BeEmpty();
-        newResults.Should().ContainSingle().Which.Should().Be(grainId);
+        loaded.RecordExists.Should().BeTrue();
+        loaded.State.City.Should().Be(newCity);
+        loaded.State.Salary.Should().Be(20);
+        oldHash.Should().BeEmpty();
+        oldRange.Should().BeEmpty();
+        newHash.Should().ContainSingle().Which.Should().Be(grainId);
+        newRange.Should().ContainSingle().Which.Should().Be(grainId);
 
-        await grain.ClearAsync();
+        await storage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
     }
 
-    [SkippableFact]
-    public async Task FailedPhysicalClearPreservesCommittedState()
+    [SkippableTheory]
+    [InlineData(PhysicalMutationFaultPoint.JournalBeforeCommit)]
+    [InlineData(PhysicalMutationFaultPoint.JournalAfterCommit)]
+    [InlineData(PhysicalMutationFaultPoint.ManifestBeforeCommit)]
+    public async Task UncommittedClearIsNotVisibleWithoutManualDeactivation(
+        PhysicalMutationFaultPoint faultPoint)
     {
-        var city = $"clear-before-{Guid.NewGuid():N}";
-        var grain = CreateGrain();
-        var grainId = grain.GetGrainId();
-        var partition = GetPartition(grainId);
+        var city = $"uncommitted-clear-{Guid.NewGuid():N}";
+        var grainId = CreateGrain().GetGrainId();
+        var storage = GetSearchableStorage();
+        var state = CreateState(city, 10);
+        await storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+        await AddMutationFaultAsync(grainId, faultPoint);
 
-        await grain.SetAsync(city, 10);
-        await AddWriteFaultAsync(
-            partition.GetGrainId(),
-            "partition",
-            PhysicalWriteFaultStage.BeforeCommit);
-
-        Func<Task> clear = () => grain.ClearAsync();
+        Func<Task> clear = () => storage.ClearStateAsync(VacancyGrain.StateName, grainId, state);
         await AssertInjectedFailureAsync(clear);
-        await Fixture.Cluster.DeactivateAsync(grain);
-        await Fixture.Cluster.DeactivateAsync(partition);
 
-        var state = await grain.GetAsync();
+        var loaded = await ReadStateAsync(storage, grainId);
         var client = CreateClient();
-        var hashResults = await client.FindAsync<VacancyState, string>(
+        var hash = await client.FindAsync<VacancyState, string>(
             VacancyGrain.StateName,
             candidate => candidate.City,
             city);
-        var rangeResults = await client.FindAsync<VacancyState, int>(
+        var range = await client.FindAsync<VacancyState, int>(
             VacancyGrain.StateName,
             candidate => candidate.Salary,
             10);
 
-        state.City.Should().Be(city);
-        hashResults.Should().ContainSingle().Which.Should().Be(grainId);
-        rangeResults.Should().ContainSingle().Which.Should().Be(grainId);
+        loaded.RecordExists.Should().BeTrue();
+        loaded.State.City.Should().Be(city);
+        loaded.State.Salary.Should().Be(10);
+        hash.Should().ContainSingle().Which.Should().Be(grainId);
+        range.Should().ContainSingle().Which.Should().Be(grainId);
 
-        await grain.ClearAsync();
-    }
-
-    [SkippableFact]
-    public async Task LostClearAcknowledgementRehydratesClearedState()
-    {
-        var city = $"clear-after-{Guid.NewGuid():N}";
-        var grain = CreateGrain();
-        var grainId = grain.GetGrainId();
-        var partition = GetPartition(grainId);
-
-        await grain.SetAsync(city, 10);
-        await AddWriteFaultAsync(
-            partition.GetGrainId(),
-            "partition",
-            PhysicalWriteFaultStage.AfterCommit);
-
-        Func<Task> clear = () => grain.ClearAsync();
-        await AssertInjectedFailureAsync(clear);
-        await Fixture.Cluster.DeactivateAsync(grain);
-        await Fixture.Cluster.DeactivateAsync(partition);
-
-        var state = await grain.GetAsync();
-        var client = CreateClient();
-        var hashResults = await client.FindAsync<VacancyState, string>(
+        await storage.ClearStateAsync(VacancyGrain.StateName, grainId, loaded);
+        var cleared = await ReadStateAsync(storage, grainId);
+        var clearedHash = await client.FindAsync<VacancyState, string>(
             VacancyGrain.StateName,
             candidate => candidate.City,
             city);
-        var rangeResults = await client.FindAsync<VacancyState, int>(
+        var clearedRange = await client.FindAsync<VacancyState, int>(
+            VacancyGrain.StateName,
+            candidate => candidate.Salary,
+            10);
+        cleared.RecordExists.Should().BeFalse();
+        clearedHash.Should().BeEmpty();
+        clearedRange.Should().BeEmpty();
+    }
+
+    [SkippableFact]
+    public async Task LostManifestClearAcknowledgementRehydratesCommittedClearWithoutManualDeactivation()
+    {
+        var city = $"committed-clear-{Guid.NewGuid():N}";
+        var grainId = CreateGrain().GetGrainId();
+        var storage = GetSearchableStorage();
+        var state = CreateState(city, 10);
+        await storage.WriteStateAsync(VacancyGrain.StateName, grainId, state);
+        await AddMutationFaultAsync(grainId, PhysicalMutationFaultPoint.ManifestAfterCommit);
+
+        Func<Task> clear = () => storage.ClearStateAsync(VacancyGrain.StateName, grainId, state);
+        await AssertInjectedFailureAsync(clear);
+
+        var partition = GetPartition(grainId);
+        var committedSequence = (await partition.GetPersistenceInfoAsync()).CommittedSequence;
+        Func<Task> staleRetry = () => storage.ClearStateAsync(VacancyGrain.StateName, grainId, state);
+        await staleRetry.Should().ThrowAsync<InconsistentStateException>();
+        (await partition.GetPersistenceInfoAsync()).CommittedSequence.Should().Be(committedSequence);
+
+        var loaded = await ReadStateAsync(storage, grainId);
+        var client = CreateClient();
+        var hash = await client.FindAsync<VacancyState, string>(
+            VacancyGrain.StateName,
+            candidate => candidate.City,
+            city);
+        var range = await client.FindAsync<VacancyState, int>(
             VacancyGrain.StateName,
             candidate => candidate.Salary,
             10);
 
-        state.City.Should().BeEmpty();
-        state.Salary.Should().Be(0);
-        hashResults.Should().BeEmpty();
-        rangeResults.Should().BeEmpty();
+        loaded.RecordExists.Should().BeFalse();
+        loaded.State.City.Should().BeEmpty();
+        loaded.State.Salary.Should().Be(0);
+        hash.Should().BeEmpty();
+        range.Should().BeEmpty();
     }
 
     [SkippableFact]
@@ -1362,37 +1728,95 @@ public abstract class FaultInjectingSearchableStorageContractTests<TFixture>
 
         Func<Task> initialize = () => layout.InitializeAsync(descriptor);
         await AssertInjectedFailureAsync(initialize);
-        await Fixture.Cluster.DeactivateAsync(layout);
 
         await layout.InitializeAsync(descriptor);
         await Fixture.Cluster.DeactivateAsync(layout);
         (await layout.ValidateAsync(descriptor)).Should().BeTrue();
     }
 
-    private async Task AddWriteFaultAsync(
-        IStoragePartitionGrain partition,
-        PhysicalWriteFaultStage stage)
+    private IGrainStorage GetSearchableStorage()
     {
-        await AddWriteFaultAsync(partition.GetGrainId(), "partition", stage);
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        return silo.ServiceProvider.GetRequiredKeyedService<IGrainStorage>(VacancyGrain.StorageProviderName);
     }
 
-    private async Task AddWriteFaultAsync(
+    private async Task AddMutationFaultAsync(
+        GrainId grainId,
+        PhysicalMutationFaultPoint faultPoint)
+    {
+        var partition = GetPartition(grainId);
+        if (faultPoint is PhysicalMutationFaultPoint.ManifestBeforeCommit
+            or PhysicalMutationFaultPoint.ManifestAfterCommit)
+        {
+            await AddWriteFaultAsync(
+                partition.GetGrainId(),
+                "manifest",
+                faultPoint == PhysicalMutationFaultPoint.ManifestBeforeCommit
+                    ? PhysicalWriteFaultStage.BeforeCommit
+                    : PhysicalWriteFaultStage.AfterCommit);
+            return;
+        }
+
+        var info = await partition.GetPersistenceInfoAsync();
+        var absoluteSegmentIndex = StoragePersistence.GetAbsoluteSegmentIndex(
+            checked(info.CommittedSequence + 1),
+            info.JournalSegmentCapacity);
+        var slotCount = StoragePersistence.GetJournalSlotCount(
+            info.MaximumJournalReplayEntries,
+            info.JournalSegmentCapacity);
+        var slotIndex = StoragePersistence.GetJournalSlotIndex(
+            absoluteSegmentIndex,
+            info.MaximumJournalReplayEntries,
+            info.JournalSegmentCapacity);
+        var partitionKey = StorageLayout.CreatePartitionKey(
+            VacancyGrain.StorageProviderName,
+            GetPartitionIndex(grainId));
+        var journal = Fixture.Cluster.GrainFactory.GetGrain<IStorageJournalSegmentGrain>(
+            StoragePersistence.CreateJournalSlotKey(partitionKey, slotIndex, slotCount));
+        await AddWriteFaultAsync(
+            journal.GetGrainId(),
+            "journal",
+            faultPoint == PhysicalMutationFaultPoint.JournalBeforeCommit
+                ? PhysicalWriteFaultStage.BeforeCommit
+                : PhysicalWriteFaultStage.AfterCommit);
+    }
+
+    private Task AddWriteFaultAsync(
         GrainId grainId,
         string stateName,
-        PhysicalWriteFaultStage stage)
+        PhysicalWriteFaultStage stage,
+        int call = 1)
     {
-        var faultGrain = Fixture.Cluster.GrainFactory.GetGrain<IStorageFaultGrain>(
-            WriteFaultInjectingGrainStorage.CreateFaultGrainKey(stage, stateName));
-        await faultGrain.AddFaultOnWrite(
+        return WriteFaultInjectingGrainStorage.AddWriteFaultAsync(
+            Fixture.Cluster.GrainFactory,
             grainId,
-            new InvalidOperationException("Injected physical write failure."));
+            stateName,
+            stage,
+            call);
     }
 
     private static async Task AssertInjectedFailureAsync(Func<Task> action)
     {
-        var exception = await action.Should().ThrowAsync<OrleansException>();
-        exception.Which.InnerException.Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Be("Injected physical write failure.");
+        var exception = await action.Should().ThrowAsync<Exception>();
+        exception.Which.ToString().Should().Contain(
+            WriteFaultInjectingGrainStorage.InjectedFailureMessage);
+    }
+
+    private static GrainState<VacancyState> CreateState(string city, int salary)
+    {
+        return new GrainState<VacancyState>
+        {
+            State = new VacancyState { City = city, Salary = salary },
+        };
+    }
+
+    private static async Task<GrainState<VacancyState>> ReadStateAsync(
+        IGrainStorage storage,
+        GrainId grainId)
+    {
+        var state = new GrainState<VacancyState>();
+        await storage.ReadStateAsync(VacancyGrain.StateName, grainId, state);
+        return state;
     }
 
     private GrainId CreateGrainIdInUpperHalf(int partitionCount)
@@ -1413,7 +1837,7 @@ public abstract class FaultInjectingSearchableStorageContractTests<TFixture>
 
 [Trait("Backend", "Memory")]
 public sealed class MemorySearchableStorageContractTests
-    : FaultInjectingSearchableStorageContractTests<MemoryStorageFixture>
+    : JournaledPersistenceContractTests<MemoryStorageFixture>
 {
     public MemorySearchableStorageContractTests(MemoryStorageFixture fixture)
         : base(fixture)

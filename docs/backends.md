@@ -1,10 +1,28 @@
 # Physical storage backends
 
-Orleans.SearchableStorage stores each durable layout and partition through the Orleans provider registered as `SearchableStorageConstants.PhysicalStorageProviderName`. Application grains continue to reference the searchable provider name; changing the physical provider does not change their `PersistentState` attributes or query calls.
+Orleans.SearchableStorage stores its durable layout, partition manifests, bounded journal segments, and two snapshot slots through the Orleans provider registered as `SearchableStorageConstants.PhysicalStorageProviderName`. Application grains continue to reference the searchable provider name; changing the physical provider does not change their `PersistentState` attributes or query calls.
 
-The repository contract suite validates the official Orleans 10.2.2 providers for PostgreSQL, Redis, and Azure Blob Storage. Backend independence means that the searchable record, index, layout, ETag, reactivation, and failure-boundary semantics are identical. It does not make the latency, capacity, backup, or availability properties of those systems identical.
+The repository contract suite validates the official Orleans 10.2.2 providers for PostgreSQL, Redis, and Azure Blob Storage. Backend independence means that record, index, journal recovery, compaction, ETag, reactivation, and failure-boundary semantics are identical. It does not make the latency, capacity, backup, or availability properties of those systems identical.
 
-Register exactly one physical provider before the searchable provider.
+Register exactly one physical provider before the searchable provider. After any physical-provider registration below, configure the searchable provider once:
+
+```csharp
+siloBuilder.AddSearchableGrainStorage(
+    "Searchable",
+    options =>
+    {
+        options.PartitionCount = 32;
+        options.JournalSegmentCapacity = 64;
+        options.MaximumJournalReplayEntries = 4_096;
+        options.CompactionThreshold = 1_024;
+    });
+```
+
+These are the defaults. `PartitionCount`, `JournalSegmentCapacity`, and `MaximumJournalReplayEntries` are persisted layout choices and require migration to change after data is written. `CompactionThreshold` is operational, must be positive, and cannot exceed `MaximumJournalReplayEntries`.
+
+The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, and snapshot states is required; the manifest is the searchable-storage commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, or snapshot state.
+
+Journal segments are bounded by operation count, not serialized bytes, and each snapshot contains the whole partition. The two snapshot slots bound object count, not object size. Choose the partition count and journal capacity with the provider's row/value/blob limits, serialization cost, and activation memory in mind. Repeatable capacity benchmarks are tracked in [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8).
 
 ## PostgreSQL
 
@@ -19,10 +37,6 @@ siloBuilder.AddAdoNetGrainStorage(
         options.ConnectionString = configuration.GetConnectionString("SearchableStorage")!;
         options.DeleteStateOnClear = true;
     });
-
-siloBuilder.AddSearchableGrainStorage(
-    "Searchable",
-    options => options.PartitionCount = 32);
 ```
 
 The database schema and the configured search path are deployment concerns. The integration fixture creates an isolated schema per run, loads the scripts from the Orleans 10.2.2 tag, and drops that schema after the contract completes.
@@ -40,10 +54,6 @@ siloBuilder.AddRedisGrainStorage(
             configuration.GetConnectionString("SearchableStorage")!);
         options.DeleteStateOnClear = true;
     });
-
-siloBuilder.AddSearchableGrainStorage(
-    "Searchable",
-    options => options.PartitionCount = 32);
 ```
 
 Redis grain-state keys are scoped by the Orleans service id. Keep `ClusterOptions.ServiceId` stable across restarts which must see the same data. The integration contract creates two keys through the official provider, verifies the provider's state namespace, and derives its cleanup sentinels from those keys so a provider key-format change cannot silently invalidate fixture cleanup. Cleanup deduplicates keys discovered through all endpoints and pipelines bounded batches of single-key `DEL` commands; it does not issue a cross-slot multi-key command, so connection-string overrides may target Redis Cluster as well as standalone Redis.
@@ -62,13 +72,9 @@ siloBuilder.AddAzureBlobGrainStorage(
         options.ContainerName = "searchable-storage";
         options.DeleteStateOnClear = true;
     });
-
-siloBuilder.AddSearchableGrainStorage(
-    "Searchable",
-    options => options.PartitionCount = 32);
 ```
 
-Use a dedicated valid Azure container name for the searchable storage namespace and include it in backup and retention policy.
+Use a dedicated valid Azure container name for the searchable storage namespace and include it in backup and retention policy. Do not apply a lifecycle expiry policy to its durable state blobs.
 
 ## Run the backend contract locally
 

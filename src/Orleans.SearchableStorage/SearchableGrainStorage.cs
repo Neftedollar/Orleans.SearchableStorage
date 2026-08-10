@@ -13,6 +13,7 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     private readonly IStorageLayoutGrain _layoutGrain;
     private readonly object _layoutLock = new();
     private readonly IGrainStorageSerializer _serializer;
+    private readonly StoragePersistenceSettings _persistenceSettings;
     private readonly Lazy<IStoragePartitionGrain>[] _partitions;
     private Task? _layoutInitializationTask;
 
@@ -27,17 +28,35 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentNullException.ThrowIfNull(activatorProvider);
 
-        if (options.PartitionCount <= 0)
+        var partitionCount = options.PartitionCount;
+        var journalSegmentCapacity = options.JournalSegmentCapacity;
+        var maximumJournalReplayEntries = options.MaximumJournalReplayEntries;
+        var compactionThreshold = options.CompactionThreshold;
+        var serializer = options.GrainStorageSerializer;
+
+        if (partitionCount <= 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(options), options.PartitionCount, "PartitionCount must be greater than zero.");
+            throw new ArgumentOutOfRangeException(nameof(options), partitionCount, "PartitionCount must be greater than zero.");
         }
 
-        _serializer = options.GrainStorageSerializer
+        ValidatePersistenceOptions(journalSegmentCapacity, maximumJournalReplayEntries, compactionThreshold);
+
+        _persistenceSettings = new StoragePersistenceSettings
+        {
+            JournalSegmentCapacity = journalSegmentCapacity,
+            MaximumJournalReplayEntries = maximumJournalReplayEntries,
+            CompactionThreshold = compactionThreshold,
+        };
+        _serializer = serializer
             ?? throw new ArgumentException("A grain storage serializer has not been configured.", nameof(options));
         _activatorProvider = activatorProvider;
-        _layout = StorageLayout.CreateDescriptor(name, options.PartitionCount);
+        _layout = StorageLayout.CreateDescriptor(
+            name,
+            partitionCount,
+            _persistenceSettings.JournalSegmentCapacity,
+            _persistenceSettings.MaximumJournalReplayEntries);
         _layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(name);
-        _partitions = new Lazy<IStoragePartitionGrain>[options.PartitionCount];
+        _partitions = new Lazy<IStoragePartitionGrain>[partitionCount];
         for (var index = 0; index < _partitions.Length; index++)
         {
             var partitionIndex = index;
@@ -86,6 +105,7 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             Payload = payload,
             ExpectedETag = grainState.ETag,
             IndexEntries = [.. indexes],
+            Persistence = _persistenceSettings,
         };
 
         grainState.ETag = await GetPartition(grainId).WriteAsync(request);
@@ -98,7 +118,12 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         await EnsureLayoutAsync();
 
         var recordKey = CreateRecordKey(stateName, grainId);
-        await GetPartition(grainId).ClearAsync(recordKey, grainState.ETag);
+        await GetPartition(grainId).ClearAsync(new StorageClearRequest
+        {
+            RecordKey = recordKey,
+            ExpectedETag = grainState.ETag,
+            Persistence = _persistenceSettings,
+        });
         grainState.State = CreateInstance<T>();
         grainState.ETag = null;
         grainState.RecordExists = false;
@@ -152,5 +177,45 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     private T CreateInstance<T>()
     {
         return _activatorProvider.GetActivator<T>().Create();
+    }
+
+    private static void ValidatePersistenceOptions(
+        int journalSegmentCapacity,
+        int maximumJournalReplayEntries,
+        int compactionThreshold)
+    {
+        if (journalSegmentCapacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(journalSegmentCapacity),
+                journalSegmentCapacity,
+                "JournalSegmentCapacity must be greater than zero.");
+        }
+
+        if (maximumJournalReplayEntries <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maximumJournalReplayEntries),
+                maximumJournalReplayEntries,
+                "MaximumJournalReplayEntries must be greater than zero.");
+        }
+
+        StoragePersistence.ValidateOptions(journalSegmentCapacity, maximumJournalReplayEntries);
+
+        if (compactionThreshold <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(compactionThreshold),
+                compactionThreshold,
+                "CompactionThreshold must be greater than zero.");
+        }
+
+        if (compactionThreshold > maximumJournalReplayEntries)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(compactionThreshold),
+                compactionThreshold,
+                "CompactionThreshold must not exceed MaximumJournalReplayEntries.");
+        }
     }
 }

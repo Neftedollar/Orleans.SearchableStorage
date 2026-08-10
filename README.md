@@ -8,15 +8,27 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 
 - Hash indexes support exact-value lookup.
 - Range indexes support exact-value and bounded range lookup.
-- A record and all of its local index entries are committed by one physical `IPersistentState` write.
+- A record and all of its local index entries share one journal operation and one manifest commit point.
+- Steady mutations rewrite one bounded journal segment and one constant-size manifest instead of the whole partition.
+- A fixed journal ring and a hard replay limit bound recovery work; a mutation is backpressured when compaction cannot make room.
+- Compaction publishes immutable whole-partition snapshots through two generation-fenced physical slots.
 - Mutations within a partition are serialized by one Orleans grain activation.
-- Persisted layout metadata rejects a mismatched storage-format version or partition count within one provider namespace before incomplete results can be returned.
+- Persisted layout metadata rejects a mismatched storage-format version, partition count, journal capacity, or replay limit within one provider namespace before incomplete results can be returned.
 - Queries fan out over a fixed number of partitions and return matching `GrainId` values.
 - A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
 - One complete boolean query plan is evaluated in one non-reentrant call per partition.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
-The current implementation persists one snapshot per partition. This keeps the consistency boundary explicit and testable, but it is not yet suitable for large production datasets because each mutation rewrites that partition. Range queries use binary search to seek to a lower bound when one is present and then enumerate only the requested ordered window. Every query still contacts every partition, and `ToGrainIdsAsync` currently has no `Take`, pagination, or result-size limit. Increasing `PartitionCount` spreads ownership and writes but does not reduce read fan-out. Queries do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes, arbitrary LINQ beyond the documented focused subset, and online repartitioning are not implemented yet.
+The journal removes partition-sized writes from the mutation path, but it does not make the current
+layout an unbounded database. A partition activation still loads its whole active snapshot into
+memory, compaction still serializes that whole partition, and a configured segment capacity bounds
+operations rather than bytes: one large record can still produce a large segment. Range indexes now
+use logarithmic bucket seeks and incremental bucket updates. Every query still contacts every
+partition, and `ToGrainIdsAsync` currently has no `Take`, pagination, or result-size limit. Increasing
+`PartitionCount` spreads ownership, snapshots, and writes but does not reduce read fan-out. Queries
+do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes,
+arbitrary LINQ beyond the documented focused subset, and online repartitioning are not implemented
+yet.
 
 ## Example
 
@@ -28,8 +40,19 @@ siloBuilder.AddMemoryGrainStorage(
 
 siloBuilder.AddSearchableGrainStorage(
     "Searchable",
-    options => options.PartitionCount = 32);
+    options =>
+    {
+        options.PartitionCount = 32;
+        options.JournalSegmentCapacity = 64;
+        options.MaximumJournalReplayEntries = 4_096;
+        options.CompactionThreshold = 1_024;
+    });
 ```
+
+`PartitionCount`, `JournalSegmentCapacity`, and `MaximumJournalReplayEntries` are persisted layout
+and require migration to change after the namespace contains data. `CompactionThreshold` is an
+operational setting: it can be tuned between deployments, but must remain positive and no greater
+than the replay limit. The values above are the current defaults.
 
 The memory provider is only an example. PostgreSQL, Redis, Azure Blob Storage, or another Orleans persistence provider can be registered under `SearchableStorageConstants.PhysicalStorageProviderName` without changing application grains. See [physical backend configuration](docs/backends.md) for complete provider examples and operational prerequisites.
 
@@ -115,9 +138,20 @@ its required lower and upper fields, while the new nullable open-bound plan is a
 non-persisted protocol message. Existing direct-query consumers can continue resolving
 `ISearchableStorageClient` without implementing or depending on the new query surface.
 
-The provider name identifies a storage namespace. Using another name selects a separate, initially empty namespace, so renaming a provider requires an explicit migration. `PartitionCount` and storage-format version are validated within that namespace and must not change without migration. Index names, kinds, and property types are also persisted schema: adding an index does not backfill existing records, and changing or renaming one requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime` values must use `DateTimeKind.Utc`.
+The provider name identifies a storage namespace. Using another name selects a separate, initially
+empty namespace, so renaming a provider requires an explicit migration. `PartitionCount`, journal
+segment capacity, maximum replay entries, and storage-format version are validated within that
+namespace and must not change without migration. Index names, kinds, and property types are also
+persisted schema: adding an index does not backfill existing records, and changing or renaming one
+requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime`
+values must use `DateTimeKind.Utc`.
 
-Storage format version 2 identifies state types recursively from generic type definitions and their arguments. Assembly simple names, cultures, and public-key tokens participate in the identity, but assembly versions do not, so routine application or dependency version changes cannot hide otherwise compatible generic-state indexes. Existing version 1 namespaces require migration or a complete record rewrite; the runtime rejects their persisted layout instead of returning incomplete results.
+Storage format version 3 uses a small manifest, a bounded journal ring, and two snapshot slots per
+partition. It preserves the recursive, version-independent state-type identity introduced in format
+2: assembly simple names, cultures, and public-key tokens participate, but assembly versions do not.
+Existing version 1 and version 2 namespaces require an explicit migration or complete rewrite. This
+release does not include an in-place migration tool and rejects those layouts instead of selecting a
+fresh or incomplete view.
 
 Index declarations and value accessors are resolved through a cached [PolyType](https://github.com/eiriktsarpalis/PolyType) runtime type model. Complete index scopes are cached per state name, so steady-state writes do not rebuild persisted type identities through reflection. Collection, scalar, and other non-object state shapes remain valid storage values and simply contribute no index entries. Applications only use `SearchableIndexAttribute`; no PolyType attributes or generated witness types are required. This project uses PolyType's reflection provider and does not support Native AOT or trimming.
 
@@ -135,7 +169,11 @@ The one-process topology and in-memory physical storage keep the sample easy to 
 
 ## Backend validation
 
-The test suite defines one reusable storage contract. It runs through a two-silo `TestCluster`, forces storage-partition reactivation, and injects failures before commit and after commit but before acknowledgement. The API sample is also exercised through an in-process HTTP server.
+The test suite defines one reusable storage contract. It runs through a two-silo `TestCluster`,
+forces storage-partition reactivation, and injects failures before commit and after commit but before
+acknowledgement across journal, manifest, snapshot publication, and cleanup transitions. Recovery is
+checked immediately without manually deactivating the failed grain first. The API sample is also
+exercised through an in-process HTTP server.
 
 - In-memory: Orleans `Microsoft.Orleans.Persistence.Memory`.
 - PostgreSQL: Orleans `Microsoft.Orleans.Persistence.AdoNet` with Npgsql and the official Orleans schema.

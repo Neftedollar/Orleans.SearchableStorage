@@ -33,6 +33,35 @@ internal sealed class StorageWriteRequest
 
     [Id(4)]
     public required List<IndexEntry> IndexEntries { get; init; }
+
+    [Id(5)]
+    public required StoragePersistenceSettings Persistence { get; init; }
+}
+
+[GenerateSerializer]
+internal sealed class StorageClearRequest
+{
+    [Id(0)]
+    public required string RecordKey { get; init; }
+
+    [Id(1)]
+    public string? ExpectedETag { get; init; }
+
+    [Id(2)]
+    public required StoragePersistenceSettings Persistence { get; init; }
+}
+
+[GenerateSerializer]
+internal sealed class StoragePersistenceSettings
+{
+    [Id(0)]
+    public int JournalSegmentCapacity { get; init; }
+
+    [Id(1)]
+    public int MaximumJournalReplayEntries { get; init; }
+
+    [Id(2)]
+    public int CompactionThreshold { get; init; }
 }
 
 [GenerateSerializer]
@@ -46,6 +75,43 @@ internal sealed class StorageReadResult
 
     [Id(2)]
     public string? ETag { get; init; }
+}
+
+[GenerateSerializer]
+internal sealed class StoragePartitionPersistenceInfo
+{
+    [Id(0)]
+    public bool Initialized { get; init; }
+
+    [Id(1)]
+    public int JournalSegmentCapacity { get; init; }
+
+    [Id(2)]
+    public int MaximumJournalReplayEntries { get; init; }
+
+    [Id(3)]
+    public long WriterEpoch { get; init; }
+
+    [Id(4)]
+    public long CommittedSequence { get; init; }
+
+    [Id(5)]
+    public long SnapshotSequence { get; init; }
+
+    [Id(6)]
+    public long PrunedSequence { get; init; }
+
+    [Id(7)]
+    public long ActiveSnapshotGeneration { get; init; }
+
+    [Id(8)]
+    public long PendingSnapshotGeneration { get; init; }
+
+    [Id(9)]
+    public long RetiringSnapshotGeneration { get; init; }
+
+    [Id(10)]
+    public int RecordCount { get; init; }
 }
 
 [GenerateSerializer]
