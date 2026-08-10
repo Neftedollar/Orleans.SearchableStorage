@@ -143,6 +143,7 @@ comparable.
   executing an agent. The benchmark job
   checks out the exact pull-request head it records, proves that tracked inputs are clean, and has no
   timing threshold.
+
 - Nightly runs are permitted only from trusted `main` on a dedicated benchmark runner. The intended
   searchable matrix is one million records on Memory, PostgreSQL, Redis, and a configured Azure
   Blob-compatible endpoint. The workflow does not infer whether that endpoint is Azurite or Azure, so
@@ -175,6 +176,24 @@ actual V virtual slots, dataset shape, backend)`. Current snapshots keep activat
 proportional to records per active owner, while queries contact every distinct owner. Plain-Orleans
 point baselines mark `P`, `V`, and journal settings as not applicable because that path has no
 searchable partition layer. A large `N` alone is therefore not a meaningful scale result.
+
+### Partition-query evaluation matrix
+
+`QueryPlanEvaluationBenchmarks` keeps one production benchmark identity while expanding it to a
+reviewed 24-case matrix:
+
+- 4,096 and 65,536 records in one active partition;
+- uniform and correlated hot-key/low-cardinality-range distributions;
+- exact, bounded range, selective exact-and-broad-range intersection, broad intersection, broad
+  union, and duplicate-heavy union plans.
+
+The timed method calls the ordinary production `StoragePartitionQueryEvaluator.Evaluate` path.
+Setup independently builds the expected record-key set, freezes the intended distribution and
+selectivity shape, and uses the measured work path to prove the actual plan-node and candidate-work
+shape. These cases are a baseline for the current materializing `HashSet<string>` evaluator, not a
+timing result or an endorsement of that representation. The bounded ordered/resumable implementation
+must add its own representation, activation-build, mutation, memory, and evaluation measurements
+before PR14 selects an evaluator or assigns numeric work and page limits.
 
 ## Comparison rules and remaining work
 

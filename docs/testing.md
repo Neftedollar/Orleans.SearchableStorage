@@ -59,6 +59,33 @@ The executable sample verifies the same summary through `GET /storage/layout`. T
 slot-movement command; movement protocol, recovery, and mixed-epoch tests belong to its separately
 reviewed change.
 
+### Bounded query protocol gate
+
+PR13 freezes deterministic query-work instrumentation and the
+[bounded query and paging contract](bounded-query-contract.md); it does not claim that paging exists.
+PR14 must add the complete gate before changing public query behavior. The required matrix covers
+exact work-vector totals, every work/result/byte stop boundary, selective and broad boolean plans,
+duplicate-heavy union, ordered partition frontiers, multi-owner merge, short and empty non-terminal
+pages, and concatenation equivalence when no writes occur. It must also cover activation rebuild and
+mutation equivalence for the ordered state catalog/postings, ordered exact drivers,
+candidate-tested exact-and-range intersection, bounded range k-way merge, complete candidate-group
+frontiers, and ordered-catalog fallback. PR13's current materializing matrix is only the baseline;
+PR14 adds implementation-specific activation-build, mutation, memory, latency, allocation, and work
+measurements before selecting limits.
+
+Scheduled concurrency cases must prove the documented weak behavior when a record begins or stops
+matching on either side of the global frontier; they must not assert snapshot isolation. Token tests
+must cover missing/inconsistent key rings, unknown or duplicate key ids, rotation, nonce uniqueness,
+oversized envelopes, altered headers/nonces/ciphertext/tags, plaintext-frontier leakage,
+malformed authenticated plaintext, cross-provider associated data, cross-query,
+cross-response-family, wrong-policy, and stale-epoch cases. Failure tests must prove that route
+refresh is allowed only for a first page, resumed pages reject an epoch change, caller cancellation
+observes late calls, and no failure returns a partial page or advanced token. Legacy tests must prove
+complete small `ToGrainIdsAsync`, `FindAsync`, and `RangeAsync` results plus all-or-nothing limit
+failure without silent truncation or an old unbounded RPC fallback. Serializer and shared
+provider-contract coverage must run the new messages and behavior through Memory, PostgreSQL, Redis,
+and Azure Blob before the implementation is called complete.
+
 ### Benchmark infrastructure tests
 
 Benchmark tests are correctness tests, not timing gates. They reject unknown schema fields and
