@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Orleans.SearchableStorage;
 using Orleans.SearchableStorage.ApiSample;
 
@@ -12,6 +13,7 @@ builder.Host.UseOrleans(siloBuilder =>
         options =>
         {
             options.PartitionCount = 8;
+            options.VirtualSlotTargetCount = 64;
             options.JournalSegmentCapacity = 16;
             options.MaximumJournalReplayEntries = 256;
             options.CompactionThreshold = 64;
@@ -27,6 +29,7 @@ app.MapGet("/vacancies/{id}", GetVacancyAsync);
 app.MapDelete("/vacancies/{id}", DeleteVacancyAsync);
 app.MapGet("/vacancies/search/by-city", VacancySearchEndpoints.FindByCityAsync);
 app.MapGet("/vacancies/search/by-salary", VacancySearchEndpoints.FindBySalaryAsync);
+app.MapGet("/storage/layout", GetStorageLayoutAsync);
 
 app.Run();
 
@@ -73,6 +76,14 @@ static async Task<IResult> DeleteVacancyAsync(string id, IGrainFactory grainFact
     return Results.NoContent();
 }
 
+static async Task<IResult> GetStorageLayoutAsync(
+    [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageAdminClient storage,
+    CancellationToken cancellationToken)
+{
+    var layout = await storage.GetLayoutAsync(cancellationToken);
+    return layout is null ? Results.NotFound() : Results.Ok(layout);
+}
+
 static IResult ValidationError(string field, string message)
 {
     return Results.ValidationProblem(new Dictionary<string, string[]>
@@ -100,6 +111,7 @@ internal static class SampleMetadata
             "DELETE /vacancies/{id}",
             "GET /vacancies/search/by-city?city={city}",
             "GET /vacancies/search/by-salary?lower={value}&upper={value}",
+            "GET /storage/layout",
         ]);
 }
 

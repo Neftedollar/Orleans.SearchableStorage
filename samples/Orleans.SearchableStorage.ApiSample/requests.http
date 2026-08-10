@@ -3,6 +3,11 @@
 GET {{host}}/
 Accept: application/json
 
+### The read-only admin endpoint returns 404 before the namespace is initialized
+
+GET {{host}}/storage/layout
+Accept: application/json
+
 ### Store three vacancies
 
 PUT {{host}}/vacancies/helsinki-6
@@ -32,6 +37,11 @@ Content-Type: application/json
   "city": "Tampere",
   "salary": 9
 }
+
+### Inspect layout v4: epoch 1, 64 virtual slots, and eight slots per initial owner
+
+GET {{host}}/storage/layout
+Accept: application/json
 
 ### Read one vacancy
 

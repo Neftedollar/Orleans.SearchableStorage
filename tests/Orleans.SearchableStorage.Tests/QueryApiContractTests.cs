@@ -91,6 +91,85 @@ public sealed class QueryApiContractTests
         ((int)PartitionQueryOperation.Or).Should().Be(4);
     }
 
+    [Fact]
+    public void VirtualRoutingWireAndLayoutMessagesKeepStableFieldIds()
+    {
+        typeof(StorageLayoutState).GetProperty(
+                "PartitionCount",
+                BindingFlags.Instance | BindingFlags.Public)
+            .Should().NotBeNull("the JSON property name is part of persisted version-3 state");
+
+        AssertFieldIds<RoutedStorageReadRequest>(
+            (nameof(RoutedStorageReadRequest.RecordKey), 0),
+            (nameof(RoutedStorageReadRequest.Slot), 1),
+            (nameof(RoutedStorageReadRequest.Epoch), 2),
+            (nameof(RoutedStorageReadRequest.GrainId), 3));
+        AssertFieldIds<RoutedStorageWriteRequest>(
+            (nameof(RoutedStorageWriteRequest.Request), 0),
+            (nameof(RoutedStorageWriteRequest.Slot), 1),
+            (nameof(RoutedStorageWriteRequest.Epoch), 2));
+        AssertFieldIds<RoutedStorageClearRequest>(
+            (nameof(RoutedStorageClearRequest.Request), 0),
+            (nameof(RoutedStorageClearRequest.Slot), 1),
+            (nameof(RoutedStorageClearRequest.Epoch), 2),
+            (nameof(RoutedStorageClearRequest.GrainId), 3));
+        AssertFieldIds<RoutedExactIndexQuery>(
+            (nameof(RoutedExactIndexQuery.Query), 0),
+            (nameof(RoutedExactIndexQuery.Epoch), 1));
+        AssertFieldIds<RoutedRangeIndexQuery>(
+            (nameof(RoutedRangeIndexQuery.Query), 0),
+            (nameof(RoutedRangeIndexQuery.Epoch), 1));
+        AssertFieldIds<RoutedPartitionQuery>(
+            (nameof(RoutedPartitionQuery.Query), 0),
+            (nameof(RoutedPartitionQuery.Epoch), 1));
+        AssertFieldIds<StorageRouteMismatchException>(
+            (nameof(StorageRouteMismatchException.ExpectedEpoch), 0),
+            (nameof(StorageRouteMismatchException.CurrentEpoch), 1),
+            (nameof(StorageRouteMismatchException.RequestedPartition), 2),
+            (nameof(StorageRouteMismatchException.Slot), 3),
+            (nameof(StorageRouteMismatchException.CurrentOwner), 4));
+
+        AssertFieldIds<StorageLayoutDescriptor>(
+            (nameof(StorageLayoutDescriptor.FormatVersion), 0),
+            (nameof(StorageLayoutDescriptor.ProviderName), 1),
+            (nameof(StorageLayoutDescriptor.PartitionCount), 2),
+            (nameof(StorageLayoutDescriptor.JournalSegmentCapacity), 3),
+            (nameof(StorageLayoutDescriptor.MaximumJournalReplayEntries), 4),
+            (nameof(StorageLayoutDescriptor.VirtualSlotTargetCount), 5));
+        AssertFieldIds<StorageLayoutIdentity>(
+            (nameof(StorageLayoutIdentity.FormatVersion), 0),
+            (nameof(StorageLayoutIdentity.ProviderName), 1),
+            (nameof(StorageLayoutIdentity.PartitionCount), 2));
+        AssertFieldIds<StorageLayoutSnapshot>(
+            (nameof(StorageLayoutSnapshot.FormatVersion), 0),
+            (nameof(StorageLayoutSnapshot.ProviderName), 1),
+            (nameof(StorageLayoutSnapshot.InitialPartitionCount), 2),
+            (nameof(StorageLayoutSnapshot.VirtualSlotCount), 3),
+            (nameof(StorageLayoutSnapshot.Epoch), 4),
+            ("SlotAssignments", 5));
+        AssertFieldIds<StorageLayoutState>(
+            (nameof(StorageLayoutState.Initialized), 0),
+            (nameof(StorageLayoutState.FormatVersion), 1),
+            (nameof(StorageLayoutState.ProviderName), 2),
+            (nameof(StorageLayoutState.PartitionCount), 3),
+            (nameof(StorageLayoutState.JournalSegmentCapacity), 4),
+            (nameof(StorageLayoutState.MaximumJournalReplayEntries), 5),
+            (nameof(StorageLayoutState.VirtualSlotCount), 6),
+            (nameof(StorageLayoutState.SlotAssignments), 7),
+            (nameof(StorageLayoutState.Epoch), 8));
+
+    }
+
+    private static void AssertFieldIds<T>(params (string MemberName, uint Id)[] expected)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        foreach (var (memberName, id) in expected)
+        {
+            typeof(T).GetProperty(memberName, flags)!
+                .GetCustomAttribute<IdAttribute>()!.Id.Should().Be(id);
+        }
+    }
+
     private sealed class QueryState
     {
         public int Value { get; init; }

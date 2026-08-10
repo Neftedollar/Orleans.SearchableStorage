@@ -16,6 +16,18 @@ public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
     public int PartitionCount { get; set; } = 32;
 
     /// <summary>
+    /// Gets or sets the target used to seed the immutable virtual-slot count for a new or
+    /// version-3 layout.
+    /// </summary>
+    /// <remarks>
+    /// The persisted slot count is rounded up to the smallest multiple of
+    /// <see cref="PartitionCount"/> which reaches this target. The target must remain a valid,
+    /// addressable configured value, but it is not compared with an existing version-4 layout, so
+    /// changing a future library default cannot invalidate that namespace.
+    /// </remarks>
+    public int VirtualSlotTargetCount { get; set; } = Storage.StorageLayout.DefaultVirtualSlotTargetCount;
+
+    /// <summary>
     /// Gets or sets the maximum number of operations stored in one journal segment.
     /// </summary>
     /// <remarks>

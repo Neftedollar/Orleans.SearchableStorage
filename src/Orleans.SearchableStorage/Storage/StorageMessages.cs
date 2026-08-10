@@ -77,6 +77,60 @@ internal sealed class StorageReadResult
     public string? ETag { get; init; }
 }
 
+/// <summary>
+/// Carries a point read together with the routing decision used by its caller.
+/// </summary>
+[GenerateSerializer]
+internal sealed class RoutedStorageReadRequest
+{
+    [Id(0)]
+    public required string RecordKey { get; init; }
+
+    [Id(1)]
+    public int Slot { get; init; }
+
+    [Id(2)]
+    public long Epoch { get; init; }
+
+    [Id(3)]
+    public required GrainId GrainId { get; init; }
+}
+
+/// <summary>
+/// Carries a point write together with the routing decision used by its caller.
+/// </summary>
+[GenerateSerializer]
+internal sealed class RoutedStorageWriteRequest
+{
+    [Id(0)]
+    public required StorageWriteRequest Request { get; init; }
+
+    [Id(1)]
+    public int Slot { get; init; }
+
+    [Id(2)]
+    public long Epoch { get; init; }
+}
+
+/// <summary>
+/// Carries a point clear together with the routing decision used by its caller.
+/// </summary>
+[GenerateSerializer]
+internal sealed class RoutedStorageClearRequest
+{
+    [Id(0)]
+    public required StorageClearRequest Request { get; init; }
+
+    [Id(1)]
+    public int Slot { get; init; }
+
+    [Id(2)]
+    public long Epoch { get; init; }
+
+    [Id(3)]
+    public required GrainId GrainId { get; init; }
+}
+
 [GenerateSerializer]
 internal sealed class StoragePartitionPersistenceInfo
 {
@@ -147,6 +201,32 @@ internal sealed class RangeIndexQuery
 }
 
 /// <summary>
+/// Carries an exact-index query for one routing epoch.
+/// </summary>
+[GenerateSerializer]
+internal sealed class RoutedExactIndexQuery
+{
+    [Id(0)]
+    public required ExactIndexQuery Query { get; init; }
+
+    [Id(1)]
+    public long Epoch { get; init; }
+}
+
+/// <summary>
+/// Carries a range-index query for one routing epoch.
+/// </summary>
+[GenerateSerializer]
+internal sealed class RoutedRangeIndexQuery
+{
+    [Id(0)]
+    public required RangeIndexQuery Query { get; init; }
+
+    [Id(1)]
+    public long Epoch { get; init; }
+}
+
+/// <summary>
 /// Carries one complete query to a partition. This message is serialized between Orleans
 /// participants but is never part of persisted storage state.
 /// </summary>
@@ -182,6 +262,73 @@ internal sealed class PartitionQueryPlan
 
     [Id(9)]
     public PartitionQueryPlan? Right { get; init; }
+}
+
+/// <summary>
+/// Carries a complete partition query plan for one routing epoch.
+/// </summary>
+[GenerateSerializer]
+internal sealed class RoutedPartitionQuery
+{
+    [Id(0)]
+    public required PartitionQueryPlan Query { get; init; }
+
+    [Id(1)]
+    public long Epoch { get; init; }
+}
+
+/// <summary>
+/// Reports that a partition call was routed using a layout which is no longer authoritative.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageRouteMismatchException : Exception
+{
+    public StorageRouteMismatchException(
+        long expectedEpoch,
+        long currentEpoch,
+        int requestedPartition,
+        int? slot = null,
+        int? currentOwner = null)
+        : base(CreateMessage(expectedEpoch, currentEpoch, requestedPartition, slot, currentOwner))
+    {
+        ExpectedEpoch = expectedEpoch;
+        CurrentEpoch = currentEpoch;
+        RequestedPartition = requestedPartition;
+        Slot = slot;
+        CurrentOwner = currentOwner;
+    }
+
+    [Id(0)]
+    public long ExpectedEpoch { get; private set; }
+
+    [Id(1)]
+    public long CurrentEpoch { get; private set; }
+
+    [Id(2)]
+    public int RequestedPartition { get; private set; }
+
+    [Id(3)]
+    public int? Slot { get; private set; }
+
+    [Id(4)]
+    public int? CurrentOwner { get; private set; }
+
+    private static string CreateMessage(
+        long expectedEpoch,
+        long currentEpoch,
+        int requestedPartition,
+        int? slot,
+        int? currentOwner)
+    {
+        if (slot is not null && currentOwner is not null)
+        {
+            return $"Routing epoch {expectedEpoch} sent virtual slot {slot} to physical partition "
+                + $"{requestedPartition}, but layout epoch {currentEpoch} assigns that slot to partition {currentOwner}.";
+        }
+
+        return $"Routing epoch {expectedEpoch} sent a query to physical partition {requestedPartition}, "
+            + $"but the current routing layout is at epoch {currentEpoch}.";
+    }
 }
 
 internal enum PartitionQueryOperation

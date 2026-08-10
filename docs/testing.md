@@ -11,6 +11,8 @@ The reviewer must map changed behavior to tests instead of approving a raw test 
 - storage concurrency and ETag conflicts;
 - failures before persistence and ambiguous failures after commit;
 - activation loss, rehydration, and serializer compatibility;
+- layout-format migration independently from partition-persistence compatibility;
+- virtual-slot derivation, ownership, epoch mismatches, and whole-attempt retry behavior;
 - deterministic execution across more than one storage partition;
 - cancellation and retry behavior where applicable;
 - user-facing samples at their executable boundary;
@@ -25,16 +27,53 @@ Missing coverage must be called out explicitly in the pull request with a reason
 Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, open and bounded range traversal, query expression translation, deferred captured values, reversed operands, compiler-generated integral, decimal, enum, and BCL-operator promotions, rejected semantic-changing conversions and custom comparison methods, fractional and adjacent floating-point bounds, NaN and infinity, out-of-domain numeric bounds, all equal-bound inclusivity combinations, bound combination, unsupported syntax, and query-plan simplification. Boundary tests use the production plan constants to cover accepted and rejected depth and node counts, conversion-chain limits, balanced and chained predicates, order-preserving AND/OR rebalancing, semantic and wire cycles or shared subtrees, hidden child graphs, and payload on the wrong wire node kind.
 
 Client execution tests use a narrow internal constructor with controlled `IStoragePartitionGrain`
-implementations. This seam deterministically proves one complete request per partition, sorted and
+implementations. This seam deterministically proves one complete request per distinct layout owner, sorted and
 deduplicated merge behavior, empty-plan short-circuiting after layout validation, rejection before
 fan-out when expression limits are exceeded, no fail-fast partial result, observation of immediate
 and late partition failures, and cancellation while calls are blocked. It is intentionally limited to the
 fan-out boundary; real `TestCluster` tests cover Orleans dispatch, generated serialization, and
 partition-grain execution.
 
+### Virtual routing tests
+
+Focused layout tests freeze the separation between layout format 4 and partition persistence format
+3. They cover checked derivation of the per-layout virtual-slot count, the 262,144-slot cap, exact
+identity-placement equivalence for power-of-two and non-power-of-two initial partition counts, and
+defensive copying of persisted assignments. Fresh initialization and an exact version-3 adoption
+must each use one layout compare-and-swap. Migration rejects provider, initial partition count,
+journal-setting, or partially populated routing-field mismatches, and an ambiguous layout write
+poisons that activation. Existing version-4 layouts are validated from their persisted exact slot
+count rather than recomputed from a later target seed.
+
+Layout-cache and routed-client tests cover shared concurrent loads, caller-local cancellation,
+faulted and absent-layout reloads, conditional invalidation, and one shared refresh for concurrent
+stale callers. Query execution fans out once per distinct owner. A route mismatch discards the
+entire attempt and retries once with one refreshed snapshot; a non-routing failure remains
+authoritative, and a second mismatch is surfaced. Partition tests validate grain id, derived slot,
+epoch, and current owner before point-state or ETag behavior and prove that routed queries exclude
+legacy records which no longer belong to the addressed owner.
+
+Admin-client tests cover an uninitialized namespace, immutable public summaries, sorted per-owner
+slot counts, keyed provider identity, and cancellation which does not cancel a shared layout read.
+The executable sample verifies the same summary through `GET /storage/layout`. This phase exposes no
+slot-movement command; movement protocol, recovery, and mixed-epoch tests belong to its separately
+reviewed change.
+
 ### Storage contract tests
 
-The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and non-object state without indexes, exact and range primitives, nested `IQueryable` intersection and union, empty plans, nullable indexed values, compiler-promoted byte and enum queries through real Orleans serialization, inclusive and exclusive one-sided and equal bounds, deterministic sorted deduplication, cancellation, updates, clears, layout validation, ETags, deterministic multi-partition fan-out, activation rehydration, malformed wire-plan rejection followed by a healthy call, protection against boolean mutation of live index buckets, and physical-write failure boundaries. Its nested-plan case resolves the keyed `ISearchableStorageQueryClient` and dispatches the recursive `PartitionQueryPlan` through real Orleans grains. Every supported physical provider must run the same contract.
+The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and
+non-object state without indexes, exact and range primitives, nested `IQueryable` intersection and
+union, empty plans, nullable indexed values, compiler-promoted byte and enum queries through real
+Orleans serialization, inclusive and exclusive one-sided and equal bounds, deterministic sorted
+deduplication, cancellation, updates, clears, layout validation, ETags, deterministic
+multi-partition fan-out, activation rehydration, malformed wire-plan rejection followed by a
+healthy call, protection against boolean mutation of live index buckets, and physical-write failure
+boundaries. Its version-3 adoption case seeds a real record plus hash and range entries, performs the
+single layout CAS, and verifies unchanged physical write counters for every partition manifest,
+journal slot, and snapshot slot before exercising point, direct-index, and `IQueryable` operations.
+Its nested-plan case resolves the keyed `ISearchableStorageQueryClient` and dispatches the recursive
+`PartitionQueryPlan` through real Orleans grains. Every supported physical provider must run the
+same contract.
 
 The generic write-ahead log (WAL) contract is inherited by the memory, PostgreSQL, Redis, and Azure Blob fixtures. It verifies committed replay after reactivation, bounded segment rollover, the steady-state journal-plus-manifest write shape, snapshot publication and two-slot reuse, retirement fencing, hard replay-limit backpressure, and recovery at each injected before-commit or lost-acknowledgement boundary. The same cases also prove that records and exact/range indexes are immediately usable after recovery without a test-only deactivation step.
 
@@ -42,8 +81,10 @@ Lower-level tests isolate the durable protocol from provider setup. They cover j
 
 Serializer and API contract tests freeze the required non-null fields and IDs of the existing
 bounded range message, the IDs and nullable bounds of the new non-persisted query plan, and a nested
-plan round trip through the configured Orleans serializer. Compile-time test implementations keep
-the old direct-client interface independent from the opt-in query interface and exercise an
+plan round trip through the configured Orleans serializer. They also freeze every virtual-routing
+envelope, mismatch exception, layout descriptor, identity, snapshot, and durable layout-state field
+ID, including the original `PartitionCount` property identity. Compile-time test implementations
+keep the old direct-client interface independent from the opt-in query interface and exercise an
 external public async terminal provider.
 
 The memory, PostgreSQL, Redis, and Azure Blob fixtures inherit this same contract class; backend tests do not copy or weaken its assertions.
@@ -62,11 +103,22 @@ External fixture lifecycle tests use a recording cluster abstraction to verify o
 
 The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
 
-CI writes four independently filtered TRX files using the `Backend` trait. The workflow stores the 92-case shared contract count once, then derives the exact profile totals: memory has 93 cases (shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 94 (shared plus provider and cleanup assertions). The small `eng/validate-trx.sh` gate requires one `Counters` element, the exact total, executed and passed counts, zero failed and not-executed summary counts, no `NotExecuted` result, and no non-passed result element. Missing files, empty filters, partial discovery, per-provider omissions, failures, and skips therefore fail independently. The external job starts the pinned images from `tests/backends.compose.yml`, uploads its TRX and coverage artifacts, and removes the volumes even after failure. When the shared contract changes, update its single workflow count; when a profile gains a provider-specific case, update the corresponding derivation. For local execution and connection-string overrides, see [physical storage backends](backends.md).
+CI writes four independently filtered TRX files using the `Backend` trait. The workflow stores the
+93-case shared contract count once, then derives the exact profile totals: memory has 94 cases
+(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 95 (shared
+plus provider and cleanup assertions). The small `eng/validate-trx.sh` gate requires one `Counters`
+element, the exact total, executed and passed counts, zero failed and not-executed summary counts,
+no `NotExecuted` result, and no non-passed result element. Missing files, empty filters, partial
+discovery, per-provider omissions, failures, and skips therefore fail independently. The external
+job starts the pinned images from `tests/backends.compose.yml`, uploads its TRX and coverage
+artifacts, and removes the volumes even after failure. When the shared contract changes, update its
+single workflow count; when a profile gains a provider-specific case, update the corresponding
+derivation. For local execution and connection-string overrides, see
+[physical storage backends](backends.md).
 
 ### Executable sample tests
 
-The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`. These tests ensure the documented host starts, keyed Orleans services resolve, writes reach the searchable provider, the focused `IQueryable` API returns indexed ids, and deletes remove both state and index entries. A keyed blocking query client verifies that HTTP request cancellation reaches both search endpoints and their async terminal operation while it is in flight.
+The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`. These tests ensure the documented host starts, keyed Orleans services resolve, writes reach the searchable provider, the focused `IQueryable` API returns indexed ids, the layout endpoint reports the persisted epoch-1 identity map, and deletes remove both state and index entries. A keyed blocking query client verifies that HTTP request cancellation reaches both search endpoints and their async terminal operation while it is in flight.
 
 ## Coverage artifacts
 

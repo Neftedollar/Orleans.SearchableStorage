@@ -6,14 +6,15 @@ This document describes the maintainer-facing design of the first Orleans.Search
 
 `SearchableGrainStorage` implements Orleans `IGrainStorage`. Application grains use it through normal `IPersistentState<T>` injection and do not coordinate index updates themselves.
 
-Each searchable provider owns one `StorageLayoutGrain` and a fixed set of
-`StoragePartitionGrain` instances. A partition keeps its records and derived hash and range buckets
+Each searchable provider owns one `StorageLayoutGrain` and a set of
+`StoragePartitionGrain` instances addressed by physical owner index. Layout format 4 holds an
+immutable virtual-slot assignment map and routing epoch. A partition keeps its records and derived hash and range buckets
 in the activation. Its durable representation is split into one constant-size manifest, a fixed ring
 of bounded journal-segment grains, and two reusable snapshot-slot grains. All four grain kinds write
 through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
 Application grains never address those implementation grains directly.
 
-`SearchableStorageClient` supports direct exact/range primitives and a focused `IQueryable` boundary. The query provider records expression trees without offering synchronous execution. `QueryTranslator` resolves indexed member identity through the same cached PolyType-backed metadata as writes and produces a small explicit query-plan algebra: exact leaf, one- or two-sided range leaf, intersection, union, and empty result. The client converts that semantic plan to one serializable, non-persisted wire plan and sends it once to every partition. Each partition evaluates the complete boolean plan synchronously during one non-reentrant grain turn. The client only unions the final partition-local results and returns a sorted, distinct set of `GrainId` values.
+`SearchableStorageClient` supports direct exact/range primitives and a focused `IQueryable` boundary. The query provider records expression trees without offering synchronous execution. `QueryTranslator` resolves indexed member identity through the same cached PolyType-backed metadata as writes and produces a small explicit query-plan algebra: exact leaf, one- or two-sided range leaf, intersection, union, and empty result. The client converts that semantic plan to one serializable, non-persisted wire plan and sends it once to every distinct owner in one layout snapshot. Each partition validates the epoch, filters record keys by ownership, and evaluates the complete boolean plan synchronously during one non-reentrant grain turn. The client only unions the final partition-local results and returns a sorted, distinct set of `GrainId` values.
 
 ## Sample topology
 
@@ -27,15 +28,39 @@ A record key contains the state name and the raw Orleans grain type and key byte
 
 The searchable provider name is the key of its layout grain and part of every partition grain key. This isolates logical providers even though their grains use the same physical storage-provider registration. A different or renamed provider name selects a separate, initially uninitialized namespace; it cannot be detected as a mismatch against the old namespace and therefore requires an explicit migration when existing data must move with it.
 
-The layout grain durably records the provider name, storage-format version, partition count, journal
-segment capacity, and maximum replay entries. Storage operations initialize that record on first
-use. The first three values and both journal-layout values are immutable without migration. The
-compaction threshold is deliberately absent from the layout and can be tuned between deployments.
-Query clients validate the storage-format version and partition count within that provider namespace
-before fan-out; they do not need persistence-tuning values to execute a read-only plan. A query made
-before any storage operation returns an empty result and does not initialize the layout.
+The layout grain durably records provider identity, layout format, initial partition count, journal
+segment capacity, maximum replay entries, exact virtual-slot count, assignments, and routing epoch.
+The persisted C# property remains named `PartitionCount` because JSON property names are durable
+provider data; its format-4 meaning is the initial owner count. The compaction threshold and
+virtual-slot target are absent from persisted identity: the former is operational, while the latter
+is only a seed used to derive the exact slot count once.
 
-`PartitionCount` is part of the persisted layout. Changing it after data has been written makes existing records unreachable without an explicit migration. Online repartitioning is outside the current scope.
+For initial count `P0`, the provider derives `V` as the smallest checked multiple of `P0` at or above
+the configured target, capped at 262,144. It seeds `assignment[s] = s % P0`. Since `P0` divides `V`,
+`assignment[hash % V]` is exactly `hash % P0`; migration does not move records even for non-power-of-two
+counts. A valid version-3 layout becomes version 4 through one layout CAS. Partition manifests,
+journal segments, snapshots, records, and index buckets remain untouched, and partition persistence
+stays at format 3.
+
+`StorageLayoutCache` shares one immutable, defensively copied snapshot between concurrent callers.
+All partition activations on one silo obtain their provider's cache from a singleton registry, so a
+full `V`-entry assignment map is retained once per provider and silo rather than once per partition.
+The keyed storage provider and query/admin clients retain a bounded constant number of additional
+process-local snapshots. Caller cancellation does not cancel a shared grain call. Point requests
+carry `GrainId`, slot, and epoch; partitions validate the derived slot and current owner before
+record lookup or ETag logic.
+Query requests carry the epoch and fan out once per distinct owner. If any call reports a routing
+mismatch, the client observes the complete fan-out, discards all results from that attempt,
+conditionally invalidates only the snapshot which was rejected, and retries once. Conditional
+invalidation prevents concurrent stale callers from replacing each other's refresh.
+
+A query before any storage operation returns empty and does not initialize the layout. A read-only
+admin client likewise returns no layout. Migration is owned by `SearchableGrainStorage`, which has
+the full provider and journal descriptor; query and admin clients never invent a virtual map.
+
+Assignments remain the epoch-1 identity map in this release. Live slot movement and a changed
+physical owner count are intentionally not exposed. The future move protocol needs a coordinated
+all-v4 rollout because an already-running v3 provider can have cached successful validation.
 
 ## Journal commit protocol
 
@@ -115,7 +140,7 @@ therefore reuse one reserved generation instead of leaking sequence-named snapsh
 
 A point read is routed directly to the record's owning partition. Missing records receive a new state instance from Orleans' configured activator and have no ETag.
 
-Direct exact and bounded-range operations fan out to all configured partitions. A focused `IQueryable` execution instead sends its complete boolean plan once to each partition. The partition grain is non-reentrant and plan evaluation contains no await, so all leaves of that plan observe one serially consistent partition-local activation state. The merged result is not a cross-partition snapshot: different partitions can still observe concurrent writes at different points during one distributed query.
+Direct exact and bounded-range operations fan out once to each distinct owner in the current routing layout. A focused `IQueryable` execution likewise sends its complete boolean plan once to each distinct owner. The partition grain is non-reentrant and plan evaluation contains no await, so all leaves of that plan observe one serially consistent partition-local activation state. The merged result is not a cross-partition snapshot: different owners can still observe concurrent writes at different points during one distributed query.
 
 Each in-memory range index stores its distinct values in a `SortedSet` of mutable buckets. During
 construction, comparer-equal buckets are canonicalized and merged. A mutation adds or removes only
@@ -139,7 +164,7 @@ The closed value side is intentionally narrow: constants, captured fields or pro
 
 Supported translation traversal and both semantic and wire plans share fixed limits of 64 levels and 256 visited nodes. Indexed-property and state-parameter conversion chains are independently capped at 64. Recursive conversion and evaluation occur only after those bounds have been checked. Both plan validators require trees rather than cyclic or shared graphs; wire validation also rejects hidden child graphs, payload on the wrong node kind, missing boolean children, malformed leaves, and unknown operations. Associative boolean plans are rebuilt as balanced trees without changing leaf order before serialization.
 
-After translation, `PartitionQueryPlanFactory` creates a recursive Orleans wire message for Empty, Exact, Range, And, and Or nodes. Unlike the existing bounded `RangeIndexQuery`, its lower and upper range bounds are nullable so one-sided predicates do not need sentinel values. `StoragePartitionGrain.QueryAsync` validates and evaluates this complete plan synchronously in one non-reentrant turn. AND intersects and OR unions record keys inside the partition; only that final local result crosses the grain boundary. Exact leaves copy the live index bucket before boolean operations mutate their working set. A compound predicate therefore makes one request per partition rather than one request per leaf.
+After translation, `PartitionQueryPlanFactory` creates a recursive Orleans wire message for Empty, Exact, Range, And, and Or nodes. Unlike the existing bounded `RangeIndexQuery`, its lower and upper range bounds are nullable so one-sided predicates do not need sentinel values. `StoragePartitionGrain.QueryRoutedAsync` validates the routing epoch and ownership, then evaluates this complete plan synchronously in one non-reentrant turn. AND intersects and OR unions record keys inside the partition; only that final local result crosses the grain boundary. Exact leaves copy the live index bucket before boolean operations mutate their working set. A compound predicate therefore makes one request per distinct owner rather than one request per leaf.
 
 The client starts all partition calls before awaiting `Task.WhenAll`, so a partition failure fails the entire query and no partial result is returned. Cancellation interrupts the local wait, not the Orleans RPCs already in flight. A detached observer awaits the aggregate after cancellation so later transport or partition failures are still observed.
 
@@ -161,18 +186,24 @@ Index names, index kinds, and indexed property types are persisted schema. Addin
 
 ## Persisted compatibility rules
 
-The layout format version, provider name, partition count, journal capacity, replay limit,
+The layout format version, provider name, initial partition count, journal capacity, replay limit,
 layout-grain type and key, partition-grain type, partition-key format, journal-ring and snapshot-slot
 key formats, record-key format, and index-scope format determine how durable data is located and
 interpreted. Changes to any of them require a format-version increment and a migration path. In
 particular, renaming the layout grain interface or changing its key can silently select a fresh
 namespace unless the old identity is migrated.
 
-Format version 3 introduces the manifest, bounded journal ring, and two snapshot slots described
-above. It retains the recursive, assembly-version-independent type identity introduced in format 2.
-Version 1 and version 2 partitions are intentionally not interpreted as version 3 persistence. This
-release provides no in-place migration tool; an older namespace is rejected and must be migrated or
-completely rewritten before it can be opened.
+Layout format and partition persistence format are independent compatibility axes. Layout format 4
+adds the exact virtual-slot count, assignment array, and routing epoch to the existing layout state;
+partition persistence remains format 3 and continues to use the manifest, bounded journal ring, and
+two snapshot slots described above. The layout state's existing C# property names and Orleans field
+IDs remain durable, including the `PartitionCount` JSON property at field ID 3. New routing fields
+use new IDs and absent fields are interpreted only through the explicit version-3 adoption path.
+
+Persistence format 3 retains the recursive, assembly-version-independent type identity introduced
+in format 2. Version 1 and version 2 partitions are intentionally not interpreted as version 3
+persistence. This release provides no in-place persistence migration tool; an older namespace is
+rejected and must be migrated or completely rewritten before it can be opened.
 
 Orleans serializer `[Id]` values on persisted layout, manifest, journal, snapshot, record,
 index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or
@@ -183,9 +214,22 @@ bounds are required and retain field IDs 1 and 2. Open bounds exist only on the 
 `PartitionQueryPlan`, which is transmitted between participants but is never persisted. Its field
 IDs and operation values are still wire compatibility and are frozen by contract tests.
 
-The query-plan RPC changes the internal grain contract. A rollout must update all silos and Orleans
-clients before the `IQueryable` surface is used; mixed-version query execution is not supported.
-Direct `FindAsync` and bounded `RangeAsync` retain their previous messages during that rollout.
+The query-plan and routed RPCs change the internal grain contract; mixed-version execution is not
+supported. The bounded `ExactIndexQuery` and `RangeIndexQuery` messages and legacy partition methods
+remain frozen for compatibility on updated processes, while the current client carries them inside
+additive routed envelopes.
+
+Virtual routing adds server methods without removing the legacy partition and layout methods, but
+method addition alone does not make a mixed-version cluster safe. A new `SearchableGrainStorage`
+uses routed layout and partition methods on its first operation; Orleans may place the receiving
+grain activation on an old silo which does not implement them, and an old activation cannot read a
+format-4 layout. Operators must quiesce searchable storage and query traffic, update every silo and
+Orleans client, verify that no version-3 process remains, and only then resume traffic. The first
+storage operation can then adopt an exact version-3 layout as the epoch-1 identity map. Adoption
+performs one layout CAS and no partition-persistence write. Legacy calls remain available on updated
+processes and the identity map preserves their modulo placement, but this is not an online rolling
+upgrade guarantee. This release exposes no `MoveSlot` operation; future assignment changes require
+a separate coordinated all-v4 protocol gate.
 
 Physical providers can use serializers other than Orleans' binary serializer. With JSON persistence, CLR type and property names plus configured JSON converters are part of the compatibility surface; Orleans `[Id]` values do not rename JSON members. The memory contract suite explicitly uses `JsonGrainStorageSerializer` so partition and layout reactivation exercise that representation.
 
@@ -227,10 +271,11 @@ compaction: an activation materializes the whole active snapshot, and compaction
 serializes the whole partition while holding its non-reentrant turn. Two stable snapshot slots bound
 object count, not snapshot bytes. Large records also make a bounded-operation journal segment large.
 
-Queries still fan out to every partition. Increasing `PartitionCount` reduces records and snapshot
-size per partition, but increases query RPC fan-out. `ToGrainIdsAsync` has no `Take`, pagination, or
-result-size limit, so a broad result can allocate a large working set and hold a partition turn while
-matching record ids are collected. The benchmark and capacity plan is tracked in repository
+Queries fan out to every distinct current owner in the layout snapshot. The epoch-1 identity map has
+one owner for each initial partition, so increasing the initial `PartitionCount` reduces records and
+snapshot size per partition but increases query RPC fan-out. `ToGrainIdsAsync` has no `Take`,
+pagination, or result-size limit, so a broad result can allocate a large working set and hold a
+partition turn while matching record ids are collected. The benchmark and capacity plan is tracked in repository
 [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8); results must report
 both total records and records per physical partition instead of extrapolating from one aggregate
 count.

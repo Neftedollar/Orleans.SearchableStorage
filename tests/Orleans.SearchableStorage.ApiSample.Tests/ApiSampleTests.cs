@@ -30,7 +30,7 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         description.Should().NotBeNull();
         description!.Name.Should().Be("Orleans.SearchableStorage API sample");
         description.Storage.Should().Be("Journaled Orleans storage over in-memory physical persistence");
-        description.Endpoints.Should().HaveCount(5);
+        description.Endpoints.Should().HaveCount(6);
     }
 
     [Fact]
@@ -41,9 +41,38 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
             .Get(VacancyGrain.StorageProviderName);
 
         options.PartitionCount.Should().Be(8);
+        options.VirtualSlotTargetCount.Should().Be(64);
         options.JournalSegmentCapacity.Should().Be(16);
         options.MaximumJournalReplayEntries.Should().Be(256);
         options.CompactionThreshold.Should().Be(64);
+    }
+
+    [Fact]
+    public async Task LayoutEndpointExplainsThePersistedVirtualRoutingMap()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var id = $"layout-{suffix}";
+        await PutAsync(id, $"Helsinki-{suffix}", int.MaxValue);
+
+        try
+        {
+            var response = await _client.GetAsync("/storage/layout");
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+            var layout = await response.Content.ReadFromJsonAsync<SearchableStorageLayout>();
+            layout.Should().NotBeNull();
+            layout!.Epoch.Should().Be(1);
+            layout.InitialPartitionCount.Should().Be(8);
+            layout.VirtualSlotCount.Should().Be(64);
+            layout.Partitions.Should().HaveCount(8)
+                .And.OnlyContain(static partition => partition.SlotCount == 8);
+            layout.Partitions.Select(static partition => partition.PartitionIndex)
+                .Should().Equal(Enumerable.Range(0, 8));
+        }
+        finally
+        {
+            await _client.DeleteAsync($"/vacancies/{id}");
+        }
     }
 
     [Fact]

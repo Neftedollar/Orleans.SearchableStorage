@@ -13,8 +13,8 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - A fixed journal ring and a hard replay limit bound recovery work; a mutation is backpressured when compaction cannot make room.
 - Compaction publishes immutable whole-partition snapshots through two generation-fenced physical slots.
 - Mutations within a partition are serialized by one Orleans grain activation.
-- Persisted layout metadata rejects a mismatched storage-format version, partition count, journal capacity, or replay limit within one provider namespace before incomplete results can be returned.
-- Queries fan out over a fixed number of partitions and return matching `GrainId` values.
+- Layout format 4 maps an immutable per-namespace virtual-slot space to physical partitions. Version-3 layouts adopt the identity map in one layout write without moving records or rewriting partition persistence.
+- Routed point operations carry their virtual slot and layout epoch. Queries fan out to each distinct current owner once and return matching `GrainId` values.
 - A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
 - One complete boolean query plan is evaluated in one non-reentrant call per partition.
 - The physical persistence provider remains replaceable through Orleans configuration.
@@ -24,11 +24,13 @@ layout an unbounded database. A partition activation still loads its whole activ
 memory, compaction still serializes that whole partition, and a configured segment capacity bounds
 operations rather than bytes: one large record can still produce a large segment. Range indexes now
 use logarithmic bucket seeks and incremental bucket updates. Every query still contacts every
-partition, and `ToGrainIdsAsync` currently has no `Take`, pagination, or result-size limit. Increasing
-`PartitionCount` spreads ownership, snapshots, and writes but does not reduce read fan-out. Queries
+distinct current owner—all initial partitions in this identity-map release—and `ToGrainIdsAsync`
+currently has no `Take`, pagination, or result-size limit. Increasing the initial `PartitionCount`
+spreads ownership, snapshots, and writes but does not reduce read fan-out. Queries
 do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes,
-arbitrary LINQ beyond the documented focused subset, and online repartitioning are not implemented
-yet.
+arbitrary LINQ beyond the documented focused subset, and live virtual-slot movement are not
+implemented yet. This release establishes zero-movement virtual routing; its assignment map remains
+the identity map until the separately reviewed move protocol lands.
 
 ## Example
 
@@ -43,16 +45,20 @@ siloBuilder.AddSearchableGrainStorage(
     options =>
     {
         options.PartitionCount = 32;
+        options.VirtualSlotTargetCount = 16_384;
         options.JournalSegmentCapacity = 64;
         options.MaximumJournalReplayEntries = 4_096;
         options.CompactionThreshold = 1_024;
     });
 ```
 
-`PartitionCount`, `JournalSegmentCapacity`, and `MaximumJournalReplayEntries` are persisted layout
-and require migration to change after the namespace contains data. `CompactionThreshold` is an
-operational setting: it can be tuned between deployments, but must remain positive and no greater
-than the replay limit. The values above are the current defaults.
+`PartitionCount` seeds the initial physical owners. On first format-4 initialization, the provider
+rounds `VirtualSlotTargetCount` up to the smallest multiple of that count and persists the exact
+virtual-slot count plus its identity assignment. The target is an initialization seed: changing it
+later cannot change an existing map, although it must remain a valid configured value. The exact map
+is capped at 262,144 slots. `PartitionCount`, `JournalSegmentCapacity`, and
+`MaximumJournalReplayEntries` still require migration to change. `CompactionThreshold` is operational
+and can be tuned between deployments, but must remain positive and no greater than the replay limit.
 
 The memory provider is only an example. PostgreSQL, Redis, Azure Blob Storage, or another Orleans persistence provider can be registered under `SearchableStorageConstants.PhysicalStorageProviderName` without changing application grains. See [physical backend configuration](docs/backends.md) for complete provider examples and operational prerequisites.
 
@@ -100,6 +106,17 @@ var matches = await search
     .ToGrainIdsAsync(cancellationToken);
 ```
 
+The keyed admin client exposes the persisted routing summary without returning its mutable
+assignment array:
+
+```csharp
+var admin = services.GetRequiredKeyedService<ISearchableStorageAdminClient>("Searchable");
+var layout = await admin.GetLayoutAsync(cancellationToken);
+```
+
+The result reports the routing epoch, exact virtual-slot count, initial physical count, and slot
+count per current owner. It is `null` until a storage operation initializes the provider namespace.
+
 The focused query layer accepts direct indexed-property comparisons using `==`, `<`, `<=`, `>`,
 and `>=`. Comparisons can be combined with `&&` and `||`, and additional `Where` calls are treated
 as `&&`. The other side of a comparison must be a constant or captured value; method calls and
@@ -112,7 +129,7 @@ Supported query traversal and semantic and serialized plans are limited to 64 le
 visited nodes, while property and state-parameter conversion chains are independently capped at 64.
 `ToGrainIdsAsync` is the only execution operation: synchronous enumeration, projections, ordering,
 grouping, joins, and other general LINQ operators throw `NotSupportedException` with a diagnostic.
-Execution sends the complete translated predicate to each partition once. AND and OR are evaluated
+Execution sends the complete translated predicate to each distinct owner once. AND and OR are evaluated
 against one serially consistent view inside that partition, then the client merges the partition-local
 results into a sorted, distinct list. The merge is not a snapshot across partitions.
 Because the result is currently unbounded, callers must use this API only where the expected match
@@ -130,28 +147,34 @@ The cancellation token cancels the caller's wait. Orleans partition calls alread
 be canceled by that local token, so the client observes their eventual completion while returning
 cancellation promptly to the caller.
 
-`SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and partition count. Its partition count and storage-format version are validated against the persisted layout; a mismatch throws instead of returning partial results.
+`SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and initial
+partition count. It reads the persisted virtual map before fan-out. An epoch or ownership mismatch
+discards the complete attempt, refreshes the shared layout cache, and retries once; results from
+different epochs are never merged.
 
-Before using the `IQueryable` surface during an upgrade, deploy this package version to every silo
-and Orleans client which can execute searches. The existing bounded `RangeAsync` wire message keeps
-its required lower and upper fields, while the new nullable open-bound plan is a separate,
-non-persisted protocol message. Existing direct-query consumers can continue resolving
-`ISearchableStorageClient` without implementing or depending on the new query surface.
+This format transition is not an online mixed-version rollout. Quiesce searchable storage and query
+traffic, deploy this package to every silo and Orleans client, verify that no version-3 process
+remains, and only then resume traffic. The first storage operation can then adopt the layout. New
+routed methods are additive and legacy calls remain placement-compatible with the epoch-1 identity
+map on updated processes, but a new storage activation can otherwise reach an old silo which does
+not implement those methods. Live ownership movement is not exposed by this release and requires a
+separate coordinated all-v4 protocol gate.
 
 The provider name identifies a storage namespace. Using another name selects a separate, initially
-empty namespace, so renaming a provider requires an explicit migration. `PartitionCount`, journal
-segment capacity, maximum replay entries, and storage-format version are validated within that
-namespace and must not change without migration. Index names, kinds, and property types are also
+empty namespace, so renaming a provider requires an explicit migration. The initial
+`PartitionCount`, journal segment capacity, maximum replay entries, and layout/persistence formats
+are validated within that namespace and must not change without migration. Index names, kinds, and property types are also
 persisted schema: adding an index does not backfill existing records, and changing or renaming one
 requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime`
 values must use `DateTimeKind.Utc`.
 
-Storage format version 3 uses a small manifest, a bounded journal ring, and two snapshot slots per
-partition. It preserves the recursive, version-independent state-type identity introduced in format
-2: assembly simple names, cultures, and public-key tokens participate, but assembly versions do not.
-Existing version 1 and version 2 namespaces require an explicit migration or complete rewrite. This
-release does not include an in-place migration tool and rejects those layouts instead of selecting a
-fresh or incomplete view.
+Layout format version 4 stores virtual routing independently from partition persistence format 3.
+A valid format-3 layout is upgraded in place with one layout compare-and-swap; the seeded identity
+map is mathematically equivalent to the old modulo placement for every supported initial partition
+count, including non-powers-of-two. No partition manifest, journal segment, snapshot, record, or index
+is rewritten. Partition persistence format 3 continues to use a small manifest, bounded journal ring,
+and two snapshot slots. Existing format-1 and format-2 namespaces still require an explicit migration
+or complete rewrite and are rejected rather than read as a fresh or partial namespace.
 
 Index declarations and value accessors are resolved through a cached [PolyType](https://github.com/eiriktsarpalis/PolyType) runtime type model. Complete index scopes are cached per state name, so steady-state writes do not rebuild persisted type identities through reflection. Collection, scalar, and other non-object state shapes remain valid storage values and simply contribute no index entries. Applications only use `SearchableIndexAttribute`; no PolyType attributes or generated witness types are required. This project uses PolyType's reflection provider and does not support Native AOT or trimming.
 
@@ -163,7 +186,11 @@ The runnable sample co-hosts an ASP.NET Core minimal API and an Orleans silo:
 dotnet run --project samples/Orleans.SearchableStorage.ApiSample
 ```
 
-Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies, read one by id, execute the `IQueryable` layer over the city and salary indexes, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md) follows each request from HTTP through the application grain, query plan, searchable provider, storage-partition grain, and physical provider.
+Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies,
+read one by id, execute the `IQueryable` layer, inspect the persisted virtual routing summary, and
+remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md)
+follows each request from HTTP through the application grain, query plan, searchable provider,
+storage-partition grain, and physical provider.
 
 The one-process topology and in-memory physical storage keep the sample easy to run; neither is a library requirement.
 
