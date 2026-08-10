@@ -1,0 +1,15 @@
+{
+  "$schema": "../../schema/dataset.v1.schema.json",
+  "schemaVersion": "oss-benchmark-dataset/v1",
+  "id": "billion",
+  "revision": 1,
+  "seed": 104729,
+  "recordCount": 1000000000,
+  "exactValueCardinality": 1000000,
+  "rangeValueCardinality": 100000000,
+  "payloadBytes": 256,
+  "indexProfile": {
+    "hashIndexCount": 1,
+    "rangeIndexCount": 1
+  }
+}

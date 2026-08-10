@@ -1,0 +1,572 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orleans-searchable-storage.dev/benchmarks/result.v1.schema.json",
+  "title": "Orleans.SearchableStorage benchmark result v1",
+  "oneOf": [
+    {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "required": ["measurement"],
+          "properties": {
+            "status": { "enum": ["succeeded", "completed-with-errors"] },
+            "measurement": { "$ref": "#/$defs/phase" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "required": ["measurement", "failedPhase", "failure"],
+          "properties": {
+            "status": { "const": "failed" },
+            "measurement": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/phase" }] },
+            "failedPhase": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/phase" }] },
+            "failure": { "$ref": "#/$defs/failure" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  ],
+  "$defs": {
+    "common": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "status",
+        "runId",
+        "instanceId",
+        "startedAtUtc",
+        "endedAtUtc",
+        "provenance",
+        "sourceSpecs",
+        "effectiveConfiguration",
+        "effectiveConfigurationSha256",
+        "effectiveConfigurationContentBase64",
+        "cleanup",
+        "population",
+        "initialAudit",
+        "restoration",
+        "warmup",
+        "finalAudit",
+        "histogramArtifacts"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "oss-benchmark-result/v1" },
+        "status": { "type": "string" },
+        "runId": { "type": "string", "minLength": 1 },
+        "instanceId": { "type": "string", "minLength": 1 },
+        "startedAtUtc": { "type": "string", "format": "date-time" },
+        "endedAtUtc": { "type": "string", "format": "date-time" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "sourceSpecs": {
+          "type": "array",
+          "minItems": 3,
+          "items": { "$ref": "#/$defs/sourceSpec" }
+        },
+        "effectiveConfiguration": { "$ref": "#/$defs/effectiveConfiguration" },
+        "effectiveConfigurationSha256": { "$ref": "#/$defs/sha256" },
+        "effectiveConfigurationContentBase64": { "type": "string", "minLength": 1 },
+        "cleanup": { "$ref": "#/$defs/cleanup" },
+        "population": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/population" }] },
+        "initialAudit": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/audit" }] },
+        "restoration": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/population" }] },
+        "warmup": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/phase" }] },
+        "finalAudit": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/audit" }] },
+        "histogramArtifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/histogramArtifact" }
+        }
+      }
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "sha256", "contentBase64"],
+      "properties": {
+        "kind": { "enum": ["scenario", "dataset", "workload"] },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "contentBase64": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gitCommit",
+        "gitDirty",
+        "driverVersion",
+        "frameworkDescription",
+        "osDescription",
+        "osArchitecture",
+        "processArchitecture",
+        "processorCount",
+        "cpuModel",
+        "physicalMemoryBytes",
+        "cgroupMemoryLimitBytes",
+        "cgroupCpuMax",
+        "machineName",
+        "serverGc",
+        "stopwatchFrequency",
+        "serializer",
+        "components"
+      ],
+      "properties": {
+        "gitCommit": { "type": "string", "minLength": 1 },
+        "gitDirty": { "type": ["boolean", "null"] },
+        "driverVersion": { "type": "string", "minLength": 1 },
+        "frameworkDescription": { "type": "string" },
+        "osDescription": { "type": "string" },
+        "osArchitecture": { "type": "string" },
+        "processArchitecture": { "type": "string" },
+        "processorCount": { "type": "integer", "minimum": 1 },
+        "cpuModel": { "type": "string" },
+        "physicalMemoryBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "cgroupMemoryLimitBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "cgroupCpuMax": { "type": ["string", "null"] },
+        "machineName": { "type": "string" },
+        "serverGc": { "type": "boolean" },
+        "stopwatchFrequency": { "type": "integer", "minimum": 1 },
+        "serializer": { "type": "string", "minLength": 1 },
+        "components": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "Azure.Storage.Blobs",
+            "HdrHistogram",
+            "Microsoft.Crank.EventSources",
+            "Microsoft.Orleans.Runtime",
+            "Npgsql",
+            "Orleans.SearchableStorage",
+            "StackExchange.Redis"
+          ],
+          "properties": {
+            "Azure.Storage.Blobs": { "type": "string", "minLength": 1 },
+            "HdrHistogram": { "type": "string", "minLength": 1 },
+            "Microsoft.Crank.EventSources": { "type": "string", "minLength": 1 },
+            "Microsoft.Orleans.Runtime": { "type": "string", "minLength": 1 },
+            "Npgsql": { "type": "string", "minLength": 1 },
+            "Orleans.SearchableStorage": { "type": "string", "minLength": 1 },
+            "StackExchange.Redis": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "effectiveConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "runId",
+        "instanceId",
+        "scenarioName",
+        "executionClass",
+        "clientOrdinal",
+        "clientCount",
+        "appliedOverrides",
+        "dataset",
+        "population",
+        "audit",
+        "storage",
+        "topology",
+        "workload"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "oss-benchmark-effective/v1" },
+        "runId": { "type": "string", "minLength": 1 },
+        "instanceId": { "type": "string", "minLength": 1 },
+        "scenarioName": { "type": "string", "minLength": 1 },
+        "executionClass": { "type": "string", "minLength": 1 },
+        "clientOrdinal": { "type": ["integer", "null"], "minimum": 0 },
+        "clientCount": { "type": ["integer", "null"], "minimum": 1, "maximum": 4096 },
+        "appliedOverrides": { "$ref": "#/$defs/effectiveDriverOverrides" },
+        "dataset": { "$ref": "#/$defs/effectiveDataset" },
+        "population": { "$ref": "#/$defs/populationSpec" },
+        "audit": { "$ref": "#/$defs/auditSpec" },
+        "storage": { "$ref": "#/$defs/effectiveStorage" },
+        "topology": { "$ref": "#/$defs/effectiveTopology" },
+        "workload": { "$ref": "#/$defs/workload" }
+      }
+    },
+    "effectiveDriverOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend", "implementationPath", "connectionStringEnvironment", "azureBlobContainer",
+        "topology", "advertisedAddress", "primarySiloEndpoint", "gatewayEndpoints", "siloPort", "gatewayPort"
+      ],
+      "properties": {
+        "backend": { "enum": ["Memory", "PostgreSql", "Redis", "AzureBlob", null] },
+        "implementationPath": { "enum": ["Searchable", "Plain", null] },
+        "connectionStringEnvironment": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
+        },
+        "azureBlobContainer": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
+        },
+        "topology": { "enum": ["Embedded", "External", null] },
+        "advertisedAddress": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
+        },
+        "primarySiloEndpoint": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
+        },
+        "gatewayEndpoints": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+          ]
+        },
+        "siloPort": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
+        "gatewayPort": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "effectiveDataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "id", "revision", "seed", "recordCount", "exactValueCardinality",
+        "rangeValueCardinality", "payloadBytes", "hashIndexCount", "rangeIndexCount"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "oss-benchmark-dataset/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "seed": { "type": "integer", "minimum": 0 },
+        "recordCount": { "type": "integer", "minimum": 1, "maximum": 999999999999 },
+        "exactValueCardinality": { "type": "integer", "minimum": 1 },
+        "rangeValueCardinality": { "type": "integer", "minimum": 1 },
+        "payloadBytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "hashIndexCount": { "const": 1 },
+        "rangeIndexCount": { "const": 1 }
+      }
+    },
+    "populationSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "concurrency", "operationTimeoutSeconds", "lateCallDrainTimeoutSeconds", "restoreAfterWarmup"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "operationTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "lateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "restoreAfterWarmup": { "type": "boolean" }
+      }
+    },
+    "auditSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled", "pointSampleCount", "querySampleCount", "maximumOfflineQueryScanRecords",
+        "operationTimeoutSeconds", "lateCallDrainTimeoutSeconds"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "pointSampleCount": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "querySampleCount": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "maximumOfflineQueryScanRecords": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "operationTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "lateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      }
+    },
+    "effectiveStorage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend", "implementationPath", "connectionStringEnvironment", "azureBlobContainer", "serializer",
+        "partitionCount", "virtualSlotTargetCount", "virtualSlotCount", "journalSegmentCapacity", "maximumJournalReplayEntries",
+        "compactionThreshold", "isolationNamespace"
+      ],
+      "properties": {
+        "backend": { "enum": ["Memory", "PostgreSql", "Redis", "AzureBlob"] },
+        "implementationPath": { "enum": ["Searchable", "Plain"] },
+        "connectionStringEnvironment": { "type": "string" },
+        "azureBlobContainer": { "type": "string" },
+        "serializer": { "const": "OrleansJsonSerializer" },
+        "partitionCount": { "type": ["integer", "null"], "minimum": 1, "maximum": 262144 },
+        "virtualSlotTargetCount": { "type": ["integer", "null"], "minimum": 1, "maximum": 262144 },
+        "virtualSlotCount": { "type": ["integer", "null"], "minimum": 1, "maximum": 262144 },
+        "journalSegmentCapacity": { "type": ["integer", "null"], "minimum": 1 },
+        "maximumJournalReplayEntries": { "type": ["integer", "null"], "minimum": 1 },
+        "compactionThreshold": { "type": ["integer", "null"], "minimum": 1 },
+        "isolationNamespace": { "type": "string", "minLength": 1 }
+      }
+    },
+    "effectiveTopology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode", "siloCount", "embeddedSiloCount", "clusterId", "serviceId", "advertisedAddress", "primarySiloEndpoint",
+        "gatewayEndpoints", "siloPort", "gatewayPort", "barrierTimeoutSeconds", "barrierLateCallDrainTimeoutSeconds"
+      ],
+      "properties": {
+        "mode": { "enum": ["Embedded", "External"] },
+        "siloCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "embeddedSiloCount": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "clusterId": { "type": "string", "minLength": 1 },
+        "serviceId": { "type": "string", "minLength": 1 },
+        "advertisedAddress": { "type": "string", "minLength": 1 },
+        "primarySiloEndpoint": { "type": "string" },
+        "gatewayEndpoints": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "siloPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "gatewayPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "barrierTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "barrierLateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$schema", "schemaVersion", "id", "revision", "mode", "warmupSeconds", "durationSeconds", "concurrency",
+        "targetRatePerSecond", "maximumQueueDepth", "operationTimeoutSeconds", "lateCallDrainTimeoutSeconds",
+        "keyDistribution", "querySelectivity", "operations"
+      ],
+      "properties": {
+        "$schema": { "type": ["string", "null"] },
+        "schemaVersion": { "const": "oss-benchmark-workload/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "mode": { "enum": ["ClosedLoop", "OpenLoop"] },
+        "warmupSeconds": { "type": "integer", "minimum": 0, "maximum": 86400 },
+        "durationSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "targetRatePerSecond": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000000 },
+        "maximumQueueDepth": { "type": "integer", "minimum": 1, "maximum": 262144 },
+        "operationTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "lateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "keyDistribution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "hotsetFraction", "hotsetProbability"],
+          "properties": {
+            "kind": { "enum": ["Uniform", "Hotspot"] },
+            "hotsetFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "hotsetProbability": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+          }
+        },
+        "querySelectivity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exactFraction", "rangeFraction", "maximumExpectedResultCount"],
+          "properties": {
+            "exactFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "rangeFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "maximumExpectedResultCount": { "type": "integer", "minimum": 1, "maximum": 10000 }
+          }
+        },
+        "operations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["upsert", "read", "exactQuery", "rangeQuery", "clear"],
+          "properties": {
+            "upsert": { "type": "integer", "minimum": 0 },
+            "read": { "type": "integer", "minimum": 0 },
+            "exactQuery": { "type": "integer", "minimum": 0 },
+            "rangeQuery": { "type": "integer", "minimum": 0 },
+            "clear": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "attempted", "succeeded", "error"],
+      "properties": {
+        "policy": { "type": "string", "minLength": 1 },
+        "attempted": { "type": "boolean" },
+        "succeeded": { "type": "boolean" },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "population": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "status", "startedAtUtc", "durationSeconds", "completed"],
+      "properties": {
+        "phase": { "type": "string" },
+        "status": { "enum": ["completed", "partial"] },
+        "startedAtUtc": { "type": "string", "format": "date-time" },
+        "durationSeconds": { "type": "number", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "startedAtUtc", "durationSeconds", "pointChecks", "exactQueryChecks", "rangeQueryChecks", "pointCoverage"],
+      "properties": {
+        "status": { "const": "passed" },
+        "startedAtUtc": { "type": "string", "format": "date-time" },
+        "durationSeconds": { "type": "number", "minimum": 0 },
+        "pointChecks": { "type": "integer", "minimum": 0 },
+        "exactQueryChecks": { "type": "integer", "minimum": 0 },
+        "rangeQueryChecks": { "type": "integer", "minimum": 0 },
+        "pointCoverage": { "type": "string", "minLength": 1 }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startedAtUtc",
+        "scheduledDurationSeconds",
+        "wallDurationSeconds",
+        "offered",
+        "started",
+        "completed",
+        "succeeded",
+        "failed",
+        "timedOut",
+        "lateCallDrainAttempts",
+        "lateCallDrainIncomplete",
+        "lateCallDrainDurationSeconds",
+        "dropped",
+        "offeredPerSecond",
+        "completedPerSecond",
+        "operations"
+      ],
+      "properties": {
+        "startedAtUtc": { "type": "string", "format": "date-time" },
+        "scheduledDurationSeconds": { "type": "number", "minimum": 0 },
+        "wallDurationSeconds": { "type": "number", "minimum": 0 },
+        "offered": { "type": "integer", "minimum": 0 },
+        "started": { "type": "integer", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 },
+        "succeeded": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "timedOut": { "type": "integer", "minimum": 0 },
+        "lateCallDrainAttempts": { "type": "integer", "minimum": 0 },
+        "lateCallDrainIncomplete": { "type": "integer", "minimum": 0 },
+        "lateCallDrainDurationSeconds": { "type": "number", "minimum": 0 },
+        "dropped": { "type": "integer", "minimum": 0 },
+        "offeredPerSecond": { "type": "number", "minimum": 0 },
+        "completedPerSecond": { "type": "number", "minimum": 0 },
+        "operations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["upsert", "read", "exactquery", "rangequery", "clear"],
+          "properties": {
+            "upsert": { "$ref": "#/$defs/operation" },
+            "read": { "$ref": "#/$defs/operation" },
+            "exactquery": { "$ref": "#/$defs/operation" },
+            "rangequery": { "$ref": "#/$defs/operation" },
+            "clear": { "$ref": "#/$defs/operation" }
+          }
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offered", "started", "completed", "succeeded", "failed", "timedOut",
+        "lateCallDrainAttempts", "lateCallDrainIncomplete", "lateCallDrainDurationSeconds",
+        "dropped", "resultCount", "histogramClamped", "errors",
+        "succeededLatencyMicroseconds", "failedLatencyMicroseconds", "queueDelayMicroseconds"
+      ],
+      "properties": {
+        "offered": { "type": "integer", "minimum": 0 },
+        "started": { "type": "integer", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 },
+        "succeeded": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "timedOut": { "type": "integer", "minimum": 0 },
+        "lateCallDrainAttempts": { "type": "integer", "minimum": 0 },
+        "lateCallDrainIncomplete": { "type": "integer", "minimum": 0 },
+        "lateCallDrainDurationSeconds": { "type": "number", "minimum": 0 },
+        "dropped": { "type": "integer", "minimum": 0 },
+        "resultCount": { "type": "integer", "minimum": 0 },
+        "histogramClamped": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "succeededLatencyMicroseconds": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/latency" }] },
+        "failedLatencyMicroseconds": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/latency" }] },
+        "queueDelayMicroseconds": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/latency" }] }
+      }
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "mean", "p50", "p90", "p95", "p99", "p999", "maximum"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "mean": { "type": "number", "minimum": 0 },
+        "p50": { "type": "integer", "minimum": 0 },
+        "p90": { "type": "integer", "minimum": 0 },
+        "p95": { "type": "integer", "minimum": 0 },
+        "p99": { "type": "integer", "minimum": 0 },
+        "p999": { "type": "integer", "minimum": 0 },
+        "maximum": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "histogramArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation", "outcome", "metric", "format", "unit", "clientInstance",
+        "lowestDiscernibleValue", "highestTrackableValue", "significantDigits",
+        "samplingSemantics", "path", "sha256", "count"
+      ],
+      "properties": {
+        "operation": { "enum": ["upsert", "read", "exactquery", "rangequery", "clear"] },
+        "outcome": { "enum": ["succeeded", "failed", "all"] },
+        "metric": { "enum": ["latency", "queue-delay"] },
+        "format": { "const": "HdrHistogram log v1.3 (compressed V2 histogram)" },
+        "unit": { "const": "microseconds" },
+        "clientInstance": { "type": "string" },
+        "lowestDiscernibleValue": { "const": 1 },
+        "highestTrackableValue": { "const": 600000000 },
+        "significantDigits": { "const": 3 },
+        "samplingSemantics": {
+          "enum": [
+            "scheduled-arrival to worker-start; open-loop only",
+            "scheduled-arrival to completion; includes queue delay",
+            "operation-start to completion; closed-loop"
+          ]
+        },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message", "stackTrace", "lateCallDrainEvidence"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "stackTrace": { "type": ["string", "null"] },
+        "lateCallDrainEvidence": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "trigger", "operationTimeoutSeconds", "lateCallDrainTimeoutSeconds",
+                "lateCallDrainDurationSeconds", "lateCallDrainIncomplete"
+              ],
+              "properties": {
+                "trigger": { "enum": ["timeout", "cancellation"] },
+                "operationTimeoutSeconds": { "type": ["number", "null"], "minimum": 0 },
+                "lateCallDrainTimeoutSeconds": { "type": "number", "minimum": 0 },
+                "lateCallDrainDurationSeconds": { "type": "number", "minimum": 0 },
+                "lateCallDrainIncomplete": { "type": "boolean" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

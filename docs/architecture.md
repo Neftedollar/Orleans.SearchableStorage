@@ -266,6 +266,37 @@ Every change is also evaluated using the mandatory test-sufficiency review descr
 
 An S3-compatible provider is not part of the current supported matrix. Adding one requires an Orleans `IGrainStorage` implementation and the complete contract; Azure Blob compatibility does not imply S3 compatibility.
 
+## Measurement boundary
+
+The benchmark projects are outside the shipping package. Process-local cases call extracted internal
+helpers which are also called by `StoragePartitionGrain` and `StoragePartitionPersistence`; benchmark
+copies of query evaluation, replay, or snapshot construction are forbidden because they can drift
+from the durability and query contracts. The journal-append microcase substitutes only the physical
+`IPersistentState` boundary and is labelled as a state-machine measurement.
+
+Distributed measurements keep scenario, dataset, and workload inputs independently versioned and
+content-addressed. Each client owns raw compatible HDR histograms; aggregation unions recordings
+before computing percentiles. Searchable and plain Orleans baselines run identical deterministic
+point histories in isolated namespaces. Secondary-index queries have no plain-storage analogue.
+
+Open-loop latency begins at the scheduled offer time, not worker dequeue time, so queueing and
+coordinated omission remain visible. Offered work that cannot enter the bounded queue, or that was
+accepted but cannot start after a fatal/canceled phase shutdown, is recorded as dropped. A timeout
+ends the caller's wait but not an Orleans RPC, so the driver tracks and drains the
+underlying operation before another phase; an incomplete drain invalidates the run. Source artifacts,
+the post-override canonical effective configuration, commit/dirty state, runtime/GC, topology, and
+machine identity travel with every result. Provider credentials never do.
+
+Distributed phase barriers report each client ordinal's success or failure and release every client
+with the same aggregate outcome. The barrier RPC explicitly outlives the maximum configured barrier
+plus late-drain windows; the driver's shorter scenario-specific deadlines remain authoritative rather
+than Orleans' default response timeout.
+
+The execution tiers and capacity tuple are defined in [benchmarks.md](benchmarks.md). CI proves that
+the harness and oracles work; it does not certify performance. Provider-scale conclusions require a
+trusted dedicated runner, provider-native telemetry, raw artifacts, cleanup evidence, and repeated
+same-hardware baselines.
+
 ## Current scaling limit
 
 Normal mutation I/O is bounded by one configured journal segment plus one small manifest, and index

@@ -275,6 +275,26 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
         }
     }
 
+    [Fact]
+    public async Task MalformedRoutedPlanIsRejectedBeforeRouteValidation()
+    {
+        var context = await CreateContextAsync(partitionCount: 2);
+        var partition = GetPartition(context.ProviderName, partitionIndex: 0);
+        var request = new RoutedPartitionQuery
+        {
+            Query = new PartitionQueryPlan
+            {
+                Operation = (PartitionQueryOperation)int.MaxValue,
+            },
+            Epoch = checked(context.Layout.Epoch + 1),
+        };
+
+        Func<Task> query = async () => await partition.QueryRoutedAsync(request);
+
+        await query.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithMessage("*Unknown partition query operation*");
+    }
+
     [Theory]
     [InlineData("provider", "provider:00000003", 3)]
     [InlineData("provider:with:colons", "provider:with:colons:00000042", 42)]

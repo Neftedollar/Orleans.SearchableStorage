@@ -197,6 +197,18 @@ storage-partition grain, and physical provider.
 
 The one-process topology and in-memory physical storage keep the sample easy to run; neither is a library requirement.
 
+## Performance harness
+
+The repository includes process-local BenchmarkDotNet cases and a native Orleans load driver with
+deterministic, versioned scenario files. The driver supports a plain-Orleans point-operation baseline,
+the searchable provider, closed- and open-loop scheduling, raw mergeable HDR histograms, embedded
+Memory smoke runs, and separate Crank silo/client jobs. Pull requests use only functional smoke gates;
+no shared-runner latency value is treated as a regression threshold or scalability result.
+
+See the [benchmarking guide](docs/benchmarks.md) for commands, provenance and comparison rules,
+execution tiers, current limitations, and why million/billion-record claims require dedicated
+capacity runs rather than extrapolation from a small test.
+
 ## Backend validation
 
 The test suite defines one reusable storage contract. It runs through a two-silo `TestCluster`,

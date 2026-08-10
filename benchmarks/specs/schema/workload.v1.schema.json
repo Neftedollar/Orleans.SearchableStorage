@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orleans-searchable-storage.dev/benchmarks/workload.v1.schema.json",
+  "title": "Orleans.SearchableStorage benchmark workload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "revision",
+    "mode",
+    "warmupSeconds",
+    "durationSeconds",
+    "concurrency",
+    "targetRatePerSecond",
+    "maximumQueueDepth",
+    "operationTimeoutSeconds",
+    "lateCallDrainTimeoutSeconds",
+    "keyDistribution",
+    "querySelectivity",
+    "operations"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "oss-benchmark-workload/v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "mode": { "enum": ["ClosedLoop", "OpenLoop"] },
+    "warmupSeconds": { "type": "integer", "minimum": 0, "maximum": 86400 },
+    "durationSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "concurrency": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "targetRatePerSecond": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000000 },
+    "maximumQueueDepth": { "type": "integer", "minimum": 1, "maximum": 262144 },
+    "operationTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+    "lateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+    "keyDistribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "hotsetFraction", "hotsetProbability"],
+      "properties": {
+        "kind": { "enum": ["Uniform", "Hotspot"] },
+        "hotsetFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "hotsetProbability": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
+    "querySelectivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exactFraction", "rangeFraction", "maximumExpectedResultCount"],
+      "properties": {
+        "exactFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "rangeFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "maximumExpectedResultCount": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["upsert", "read", "exactQuery", "rangeQuery", "clear"],
+      "properties": {
+        "upsert": { "type": "integer", "minimum": 0 },
+        "read": { "type": "integer", "minimum": 0 },
+        "exactQuery": { "type": "integer", "minimum": 0 },
+        "rangeQuery": { "type": "integer", "minimum": 0 },
+        "clear": { "type": "integer", "minimum": 0 }
+      },
+      "anyOf": [
+        { "properties": { "upsert": { "minimum": 1 } } },
+        { "properties": { "read": { "minimum": 1 } } },
+        { "properties": { "exactQuery": { "minimum": 1 } } },
+        { "properties": { "rangeQuery": { "minimum": 1 } } },
+        { "properties": { "clear": { "minimum": 1 } } }
+      ]
+    }
+  }
+}

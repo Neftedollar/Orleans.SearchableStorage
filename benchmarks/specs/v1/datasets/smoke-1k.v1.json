@@ -1,0 +1,15 @@
+{
+  "$schema": "../../schema/dataset.v1.schema.json",
+  "schemaVersion": "oss-benchmark-dataset/v1",
+  "id": "smoke-1k",
+  "revision": 1,
+  "seed": 104729,
+  "recordCount": 1000,
+  "exactValueCardinality": 128,
+  "rangeValueCardinality": 100000,
+  "payloadBytes": 256,
+  "indexProfile": {
+    "hashIndexCount": 1,
+    "rangeIndexCount": 1
+  }
+}

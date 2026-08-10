@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="../Directory.Packages.props" />
+  <ItemGroup>
+    <!-- BenchmarkDotNet 0.15.8 still declares Roslyn 4.x while Orleans 10.2.2 requires 5.x. -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.Common" Version="5.0.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,31 @@
+{
+  "$schema": "../../schema/workload.v1.schema.json",
+  "schemaVersion": "oss-benchmark-workload/v1",
+  "id": "point-closed-billion",
+  "revision": 1,
+  "mode": "ClosedLoop",
+  "warmupSeconds": 60,
+  "durationSeconds": 300,
+  "concurrency": 512,
+  "targetRatePerSecond": 100000,
+  "maximumQueueDepth": 262144,
+  "operationTimeoutSeconds": 60,
+  "lateCallDrainTimeoutSeconds": 60,
+  "keyDistribution": {
+    "kind": "Uniform",
+    "hotsetFraction": 0.01,
+    "hotsetProbability": 0.8
+  },
+  "querySelectivity": {
+    "exactFraction": 0.000001,
+    "rangeFraction": 0.00000001,
+    "maximumExpectedResultCount": 1
+  },
+  "operations": {
+    "upsert": 30,
+    "read": 70,
+    "exactQuery": 0,
+    "rangeQuery": 0,
+    "clear": 0
+  }
+}

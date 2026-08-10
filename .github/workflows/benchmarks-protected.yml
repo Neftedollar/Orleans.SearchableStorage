@@ -1,0 +1,579 @@
+name: Benchmarks - protected weekly and capacity
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: Execution tier
+        required: true
+        type: choice
+        options:
+          - weekly
+          - capacity
+      scenario_path:
+        description: Tracked scenario path under benchmarks/specs/v1/scenarios
+        required: true
+        type: string
+      backend:
+        description: Storage backend
+        required: true
+        type: choice
+        options:
+          - memory
+          - postgresql
+          - redis
+          - azure-blob
+      implementation:
+        description: Implementation path encoded by the scenario
+        required: true
+        type: choice
+        options:
+          - searchable
+          - plain
+      estimated_cost_usd:
+        description: Positive estimated infrastructure cost in USD (for example 125.00)
+        required: true
+        type: string
+      estimated_duration_minutes:
+        description: Estimated and authorized maximum benchmark runtime in minutes (1-240)
+        required: true
+        type: string
+      run_id:
+        description: Operator-selected namespace prefix; the workflow canonicalizes the full run id
+        required: true
+        type: string
+      confirmation:
+        description: Enter exactly RUN WEEKLY BENCHMARK or RUN CAPACITY BENCHMARK
+        required: true
+        type: string
+      confirm_isolation_and_cleanup:
+        description: Confirm unique namespace isolation and mandatory cleanup
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-protected-${{ inputs.backend }}
+  cancel-in-progress: false
+
+jobs:
+  skipped:
+    if: >-
+      github.repository != 'Neftedollar/Orleans.SearchableStorage' ||
+      github.ref != 'refs/heads/main' ||
+      vars.BENCHMARK_PROTECTED_ENABLED != 'true' ||
+      vars.BENCHMARK_EXTERNAL_TOPOLOGY_READY != 'true' ||
+      vars.BENCHMARK_PROTECTED_READINESS_MANIFEST == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Record missing protected-runner configuration
+        env:
+          PROTECTED_ENABLED: ${{ vars.BENCHMARK_PROTECTED_ENABLED }}
+          TOPOLOGY_READY: ${{ vars.BENCHMARK_EXTERNAL_TOPOLOGY_READY }}
+          READINESS_MANIFEST: ${{ vars.BENCHMARK_PROTECTED_READINESS_MANIFEST }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          mkdir -p artifacts/benchmark-protected-skipped
+          jq --null-input \
+            --arg protectedEnabled "$PROTECTED_ENABLED" \
+            --arg topologyReady "$TOPOLOGY_READY" \
+            --arg readinessManifest "$READINESS_MANIFEST" \
+            --arg repository "$REPOSITORY" \
+            --arg ref "$REF" \
+            --arg runId "$GITHUB_RUN_ID" \
+            '{status:"skipped", reason:"protected benchmarks require trusted main, explicit runner/topology enablement, and a tracked reviewed readiness manifest", protectedEnabled:$protectedEnabled, topologyReady:$topologyReady, readinessManifest:$readinessManifest, repository:$repository, ref:$ref, workflowRunId:$runId}' \
+            > artifacts/benchmark-protected-skipped/skipped.json
+
+      - name: Upload skipped marker
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-protected-skipped-${{ github.run_id }}
+          path: artifacts/benchmark-protected-skipped/skipped.json
+          if-no-files-found: error
+
+  preflight:
+    if: >-
+      github.repository == 'Neftedollar/Orleans.SearchableStorage' &&
+      github.ref == 'refs/heads/main' &&
+      vars.BENCHMARK_PROTECTED_ENABLED == 'true' &&
+      vars.BENCHMARK_EXTERNAL_TOPOLOGY_READY == 'true' &&
+      vars.BENCHMARK_PROTECTED_READINESS_MANIFEST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      scenario: ${{ steps.validate.outputs.scenario }}
+      record-count: ${{ steps.validate.outputs.record-count }}
+      scenario-sha256: ${{ steps.validate.outputs.scenario-sha256 }}
+      readiness-manifest: ${{ steps.validate.outputs.readiness-manifest }}
+      readiness-sha256: ${{ steps.validate.outputs.readiness-sha256 }}
+      run-id: ${{ steps.validate.outputs.run-id }}
+      silo-count: ${{ steps.validate.outputs.silo-count }}
+
+    steps:
+      - name: Check out requested commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate authorization, cost, and tracked scenario
+        id: validate
+        env:
+          TIER: ${{ inputs.tier }}
+          SCENARIO_INPUT: ${{ inputs.scenario_path }}
+          IMPLEMENTATION: ${{ inputs.implementation }}
+          BACKEND: ${{ inputs.backend }}
+          ESTIMATED_COST_USD: ${{ inputs.estimated_cost_usd }}
+          ESTIMATED_DURATION_MINUTES: ${{ inputs.estimated_duration_minutes }}
+          RUN_ID_INPUT: ${{ inputs.run_id }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          CLEANUP_CONFIRMED: ${{ inputs.confirm_isolation_and_cleanup }}
+          READINESS_MANIFEST_INPUT: ${{ vars.BENCHMARK_PROTECTED_READINESS_MANIFEST }}
+        shell: bash
+        run: |
+          expected_confirmation="RUN WEEKLY BENCHMARK"
+          if [[ "$TIER" == "capacity" ]]; then
+            expected_confirmation="RUN CAPACITY BENCHMARK"
+          fi
+          if [[ "$CONFIRMATION" != "$expected_confirmation" ]]; then
+            echo "Confirmation must be exactly: $expected_confirmation" >&2
+            exit 1
+          fi
+          if [[ "$CLEANUP_CONFIRMED" != "true" ]]; then
+            echo "Isolation and cleanup must be explicitly confirmed." >&2
+            exit 1
+          fi
+          if ! jq --null-input --exit-status --arg cost "$ESTIMATED_COST_USD" \
+            '$cost | test("^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$") and (tonumber > 0)' >/dev/null; then
+            echo "estimated_cost_usd must be a positive decimal with at most two fractional digits." >&2
+            exit 1
+          fi
+          if [[ ! "$ESTIMATED_DURATION_MINUTES" =~ ^[1-9][0-9]{0,2}$ ]] ||
+             (( ESTIMATED_DURATION_MINUTES > 240 )); then
+            echo "estimated_duration_minutes must be an integer from 1 through 240." >&2
+            exit 1
+          fi
+          if [[ ! "$RUN_ID_INPUT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$ ]]; then
+            echo "run_id must be a 3-80 character safe namespace prefix." >&2
+            exit 1
+          fi
+          raw_run_id="${RUN_ID_INPUT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          canonical_run_id=$(printf '%s' "$raw_run_id" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed --regexp-extended 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+          if (( ${#canonical_run_id} > 32 )); then
+            run_id_hash=$(printf '%s' "$canonical_run_id" | sha256sum | cut -c 1-12)
+            run_id_prefix=${canonical_run_id:0:19}
+            run_id_prefix=${run_id_prefix%-}
+            canonical_run_id="${run_id_prefix}-${run_id_hash}"
+          fi
+          if [[ ! "$canonical_run_id" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ||
+                ${#canonical_run_id} -gt 32 ]]; then
+            echo "Canonical run id is not a lowercase 1-32 character namespace." >&2
+            exit 1
+          fi
+
+          scenario_root=$(realpath benchmarks/specs/v1/scenarios)
+          scenario=$(realpath --canonicalize-existing "$SCENARIO_INPUT")
+          if [[ "$scenario" != "$scenario_root/"*.json ]]; then
+            echo "Scenario must be a JSON file under $scenario_root." >&2
+            exit 1
+          fi
+          relative_scenario=${scenario#"$GITHUB_WORKSPACE/"}
+          git ls-files --error-unmatch -- "$relative_scenario" >/dev/null
+          scenario_sha256=$(sha256sum "$scenario" | cut -d ' ' -f 1)
+
+          encoded_path=$(jq --raw-output '.storage.path | ascii_downcase' "$scenario")
+          if [[ "$encoded_path" != "$IMPLEMENTATION" ]]; then
+            echo "Scenario path '$encoded_path' does not match requested implementation '$IMPLEMENTATION'." >&2
+            exit 1
+          fi
+          topology=$(jq --raw-output '.topology.mode' "$scenario")
+          if [[ "$topology" != "External" ]]; then
+            echo "Protected weekly/capacity execution accepts only externally provisioned representative topologies." >&2
+            exit 1
+          fi
+          silo_count=$(jq --exit-status --raw-output \
+            '.topology.siloCount | select(type == "number" and floor == . and . >= 1 and . <= 4096)' \
+            "$scenario")
+          dataset_reference=$(jq --raw-output '.dataset.path' "$scenario")
+          reference_root=$(dirname "$(dirname "$scenario")")
+          dataset=$(realpath --canonicalize-existing "$reference_root/$dataset_reference")
+          record_count=$(jq --raw-output '.recordCount' "$dataset")
+          if [[ "$TIER" == "weekly" && ( "$record_count" -lt 10000000 || "$record_count" -gt 100000000 ) ]]; then
+            echo "Weekly scenarios must contain 10,000,000 to 100,000,000 records." >&2
+            exit 1
+          fi
+          if [[ "$TIER" == "capacity" && ( "$record_count" -le 100000000 || "$record_count" -gt 1000000000 ) ]]; then
+            echo "Capacity scenarios must contain more than 100,000,000 and at most 1,000,000,000 records." >&2
+            exit 1
+          fi
+
+          readiness_root_path=benchmarks/readiness/protected
+          if [[ ! -d "$readiness_root_path" ]]; then
+            echo "No reviewed protected-benchmark readiness directory is tracked yet; protected execution remains not ready." >&2
+            exit 1
+          fi
+          readiness_root=$(realpath "$readiness_root_path")
+          readiness=$(realpath --canonicalize-existing "$READINESS_MANIFEST_INPUT")
+          if [[ "$readiness" != "$readiness_root/"*.json ]]; then
+            echo "Readiness manifest must be a JSON file under $readiness_root." >&2
+            exit 1
+          fi
+          relative_readiness=${readiness#"$GITHUB_WORKSPACE/"}
+          git ls-files --error-unmatch -- "$relative_readiness" >/dev/null
+          readiness_sha256=$(sha256sum "$readiness" | cut -d ' ' -f 1)
+          jq --exit-status \
+            --arg scenario "$relative_scenario" \
+            --arg scenarioSha256 "$scenario_sha256" \
+            --arg tier "$TIER" \
+            --arg backend "$BACKEND" \
+            --arg implementation "$IMPLEMENTATION" '
+            .schemaVersion == "oss-benchmark-protected-readiness/v1"
+            and .ready == true
+            and .minimumCleanupBudgetMinutes == 30
+            and .provisionEvidenceSchemaVersion == "oss-benchmark-external-provision/v1"
+            and .cleanupEvidenceSchemaVersion == "oss-benchmark-external-cleanup/v1"
+            and (.approvedRuns | type == "array")
+            and any(.approvedRuns[];
+              .scenarioPath == $scenario
+              and .scenarioSha256 == $scenarioSha256
+              and .tier == $tier
+              and .backend == $backend
+              and .implementation == $implementation)
+          ' "$readiness" >/dev/null
+
+          echo "scenario=$relative_scenario" >> "$GITHUB_OUTPUT"
+          echo "record-count=$record_count" >> "$GITHUB_OUTPUT"
+          echo "scenario-sha256=$scenario_sha256" >> "$GITHUB_OUTPUT"
+          echo "readiness-manifest=$relative_readiness" >> "$GITHUB_OUTPUT"
+          echo "readiness-sha256=$readiness_sha256" >> "$GITHUB_OUTPUT"
+          echo "run-id=$canonical_run_id" >> "$GITHUB_OUTPUT"
+          echo "silo-count=$silo_count" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: preflight
+    # Every performance process, including a one-billion-record capacity run, stays off shared runners.
+    runs-on: [self-hosted, linux, x64, benchmark, benchmark-protected]
+    environment:
+      name: benchmark-${{ inputs.tier }}
+    # Pre-cleanup step timeouts total at most 297 minutes, leaving more than
+    # the required 30-minute cleanup window inside the 360-minute job budget.
+    timeout-minutes: 360
+    env:
+      OSS_BENCHMARK_GIT_COMMIT: ${{ github.sha }}
+      OSS_BENCHMARK_GIT_DIRTY: "false"
+      BENCHMARK_SCENARIO: ${{ needs.preflight.outputs.scenario }}
+      BENCHMARK_SCENARIO_SHA256: ${{ needs.preflight.outputs.scenario-sha256 }}
+      BENCHMARK_RECORD_COUNT: ${{ needs.preflight.outputs.record-count }}
+      BENCHMARK_READINESS_MANIFEST: ${{ needs.preflight.outputs.readiness-manifest }}
+      BENCHMARK_READINESS_SHA256: ${{ needs.preflight.outputs.readiness-sha256 }}
+      BENCHMARK_RUN_ID: ${{ needs.preflight.outputs.run-id }}
+      BENCHMARK_SILO_COUNT: ${{ needs.preflight.outputs.silo-count }}
+      BENCHMARK_PROVISION_HOOK: ${{ vars.BENCHMARK_PROVISION_HOOK }}
+      BENCHMARK_CLEANUP_HOOK: ${{ vars.BENCHMARK_CLEANUP_HOOK }}
+
+    steps:
+      - name: Check out approved commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+        timeout-minutes: 3
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+        timeout-minutes: 3
+
+      - name: Restore and build load driver
+        timeout-minutes: 15
+        run: |
+          dotnet restore benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+          dotnet build benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj --configuration Release --no-restore
+
+      - name: Validate approved scenario
+        timeout-minutes: 3
+        run: >-
+          dotnet run
+          --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          -- validate
+          --spec "$BENCHMARK_SCENARIO"
+
+      - name: Validate dedicated runner integration hooks
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          for hook in "$BENCHMARK_PROVISION_HOOK" "$BENCHMARK_CLEANUP_HOOK"; do
+            if [[ "$hook" != /* || ! -x "$hook" ]]; then
+              echo "Protected runner hooks must be configured as absolute executable paths." >&2
+              exit 1
+            fi
+          done
+
+      - name: Record authorization before provisioning
+        timeout-minutes: 1
+        env:
+          BACKEND: ${{ inputs.backend }}
+          IMPLEMENTATION: ${{ inputs.implementation }}
+          TIER: ${{ inputs.tier }}
+          ESTIMATED_COST_USD: ${{ inputs.estimated_cost_usd }}
+          ESTIMATED_DURATION_MINUTES: ${{ inputs.estimated_duration_minutes }}
+        shell: bash
+        run: |
+          run_id="$BENCHMARK_RUN_ID"
+          output="artifacts/benchmark-protected/$run_id"
+          mkdir -p "$output"
+          jq --null-input \
+            --arg runId "$run_id" \
+            --arg tier "$TIER" \
+            --arg scenario "$BENCHMARK_SCENARIO" \
+            --arg scenarioSha256 "$BENCHMARK_SCENARIO_SHA256" \
+            --arg readinessManifest "$BENCHMARK_READINESS_MANIFEST" \
+            --arg readinessSha256 "$BENCHMARK_READINESS_SHA256" \
+            --arg backend "$BACKEND" \
+            --arg implementation "$IMPLEMENTATION" \
+            --arg recordCount "$BENCHMARK_RECORD_COUNT" \
+            --arg siloCount "$BENCHMARK_SILO_COUNT" \
+            --arg estimatedCostUsd "$ESTIMATED_COST_USD" \
+            --arg estimatedDurationMinutes "$ESTIMATED_DURATION_MINUTES" \
+            --arg authorizedAtUtc "$(date --utc +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schemaVersion:"oss-benchmark-authorization/v1", runId:$runId, tier:$tier,
+              scenario:$scenario, scenarioSha256:$scenarioSha256,
+              readinessManifest:$readinessManifest, readinessSha256:$readinessSha256,
+              backend:$backend, implementation:$implementation,
+              recordCount:($recordCount|tonumber), siloCount:($siloCount|tonumber),
+              estimatedCostUsd:($estimatedCostUsd|tonumber),
+              estimatedDurationMinutes:($estimatedDurationMinutes|tonumber),
+              minimumCleanupBudgetMinutes:30, authorizedAtUtc:$authorizedAtUtc}' \
+            > "$output/authorization.json"
+
+      - name: Provision isolated representative topology
+        timeout-minutes: 20
+        env:
+          BACKEND: ${{ inputs.backend }}
+          IMPLEMENTATION: ${{ inputs.implementation }}
+          TIER: ${{ inputs.tier }}
+          OSS_BENCHMARK_STORAGE_CONNECTION_STRING: ${{ inputs.backend == 'postgresql' && secrets.BENCHMARK_POSTGRESQL_CONNECTION_STRING || inputs.backend == 'redis' && secrets.BENCHMARK_REDIS_CONNECTION_STRING || inputs.backend == 'azure-blob' && secrets.BENCHMARK_AZURE_BLOB_CONNECTION_STRING || '' }}
+        shell: bash
+        run: |
+          effective_run_id="$BENCHMARK_RUN_ID"
+          output="artifacts/benchmark-protected/$effective_run_id"
+          mkdir -p "$output"
+          "$BENCHMARK_PROVISION_HOOK" \
+            --scenario "$BENCHMARK_SCENARIO" \
+            --scenario-sha256 "$BENCHMARK_SCENARIO_SHA256" \
+            --readiness-manifest "$BENCHMARK_READINESS_MANIFEST" \
+            --readiness-sha256 "$BENCHMARK_READINESS_SHA256" \
+            --run-id "$effective_run_id" \
+            --silo-count "$BENCHMARK_SILO_COUNT" \
+            --backend "$BACKEND" \
+            --implementation "$IMPLEMENTATION" \
+            --output "$output" \
+            > "$output/provision-evidence.json"
+          jq --exit-status \
+            --arg runId "$effective_run_id" \
+            --arg scenarioSha256 "$BENCHMARK_SCENARIO_SHA256" \
+            --arg readinessSha256 "$BENCHMARK_READINESS_SHA256" \
+            --arg backend "$BACKEND" \
+            --arg implementation "$IMPLEMENTATION" \
+            --arg siloCount "$BENCHMARK_SILO_COUNT" '
+            .schemaVersion == "oss-benchmark-external-provision/v1"
+            and .runId == $runId
+            and .scenarioSha256 == $scenarioSha256
+            and .readinessSha256 == $readinessSha256
+            and .backend == $backend
+            and .implementation == $implementation
+            and .siloCount == ($siloCount | tonumber)
+            and .succeeded == true
+            and (.isolationNamespace | type == "string" and length > 0)
+            and (.startedAtUtc | type == "string" and length > 0)
+            and (.completedAtUtc | type == "string" and length > 0)
+            and (.resources | type == "array" and length > 0)
+            and ([.resources[] | [.kind, .id]] | length)
+              == ([.resources[] | [.kind, .id]] | unique | length)
+            and ([.resources[] | select(.kind == "silo") | .id] | length)
+              == ($siloCount | tonumber)
+            and ([.resources[] | select(.kind == "silo") | .id] | unique | length)
+              == ($siloCount | tonumber)
+            and all(.resources[];
+              (.kind | type == "string" and length > 0)
+              and (.id | type == "string" and length > 0))
+          ' "$output/provision-evidence.json" >/dev/null
+
+      - name: Prove approved revision and clean tracked state after provisioning
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          actual_commit=$(git rev-parse HEAD)
+          if [[ "$actual_commit" != "$OSS_BENCHMARK_GIT_COMMIT" ]]; then
+            echo "Checked-out commit $actual_commit does not match benchmark provenance $OSS_BENCHMARK_GIT_COMMIT." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=no)" ]]; then
+            echo "The provisioning hook changed tracked inputs; refusing false clean provenance." >&2
+            git status --short --untracked-files=no >&2
+            exit 1
+          fi
+
+      - name: Run protected benchmark
+        timeout-minutes: 250
+        env:
+          BACKEND: ${{ inputs.backend }}
+          IMPLEMENTATION: ${{ inputs.implementation }}
+          ESTIMATED_DURATION_MINUTES: ${{ inputs.estimated_duration_minutes }}
+          OSS_BENCHMARK_STORAGE_CONNECTION_STRING: ${{ inputs.backend == 'postgresql' && secrets.BENCHMARK_POSTGRESQL_CONNECTION_STRING || inputs.backend == 'redis' && secrets.BENCHMARK_REDIS_CONNECTION_STRING || inputs.backend == 'azure-blob' && secrets.BENCHMARK_AZURE_BLOB_CONNECTION_STRING || '' }}
+        shell: bash
+        run: |
+          case "$BACKEND" in
+            memory)
+              connection_arguments=()
+              ;;
+            postgresql)
+              [[ -n "$OSS_BENCHMARK_STORAGE_CONNECTION_STRING" ]]
+              connection_arguments=(--connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING)
+              ;;
+            redis)
+              [[ -n "$OSS_BENCHMARK_STORAGE_CONNECTION_STRING" ]]
+              connection_arguments=(--connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING)
+              ;;
+            azure-blob)
+              [[ -n "$OSS_BENCHMARK_STORAGE_CONNECTION_STRING" ]]
+              connection_arguments=(--connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING --azure-blob-container oss-benchmark-protected)
+              ;;
+            *)
+              echo "Unsupported backend: $BACKEND" >&2
+              exit 64
+              ;;
+          esac
+
+          run_id="$BENCHMARK_RUN_ID"
+          output="artifacts/benchmark-protected/$run_id"
+          mkdir -p "$output"
+          timeout --foreground --signal=INT --kill-after=5m "${ESTIMATED_DURATION_MINUTES}m" \
+            dotnet run \
+              --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj \
+              --configuration Release --no-build --no-restore \
+              -- run \
+              --spec "$BENCHMARK_SCENARIO" \
+              --output "$output" \
+              --run-id "$run_id" \
+              --instance-id "$RUNNER_NAME" \
+              --backend "$BACKEND" \
+              --implementation-path "$IMPLEMENTATION" \
+              --client-ordinal 0 \
+              --client-count 1 \
+              "${connection_arguments[@]}"
+
+      - name: Clean up isolated external topology
+        if: always()
+        timeout-minutes: 30
+        env:
+          BACKEND: ${{ inputs.backend }}
+          IMPLEMENTATION: ${{ inputs.implementation }}
+          TIER: ${{ inputs.tier }}
+          OSS_BENCHMARK_STORAGE_CONNECTION_STRING: ${{ inputs.backend == 'postgresql' && secrets.BENCHMARK_POSTGRESQL_CONNECTION_STRING || inputs.backend == 'redis' && secrets.BENCHMARK_REDIS_CONNECTION_STRING || inputs.backend == 'azure-blob' && secrets.BENCHMARK_AZURE_BLOB_CONNECTION_STRING || '' }}
+        shell: bash
+        run: |
+          run_id="$BENCHMARK_RUN_ID"
+          output="artifacts/benchmark-protected/$run_id"
+          mkdir -p "$output"
+          "$BENCHMARK_CLEANUP_HOOK" \
+            --scenario "$BENCHMARK_SCENARIO" \
+            --scenario-sha256 "$BENCHMARK_SCENARIO_SHA256" \
+            --readiness-manifest "$BENCHMARK_READINESS_MANIFEST" \
+            --readiness-sha256 "$BENCHMARK_READINESS_SHA256" \
+            --run-id "$run_id" \
+            --silo-count "$BENCHMARK_SILO_COUNT" \
+            --backend "$BACKEND" \
+            --implementation "$IMPLEMENTATION" \
+            --output "$output" \
+            --provision-evidence "$output/provision-evidence.json" \
+            > "$output/cleanup-evidence.json"
+          jq --exit-status --slurp \
+            --arg runId "$run_id" \
+            --arg scenarioSha256 "$BENCHMARK_SCENARIO_SHA256" \
+            --arg readinessSha256 "$BENCHMARK_READINESS_SHA256" \
+            --arg backend "$BACKEND" \
+            --arg implementation "$IMPLEMENTATION" \
+            --arg siloCount "$BENCHMARK_SILO_COUNT" '
+            .[0] as $provision
+            | .[1] as $cleanup
+            | $cleanup.schemaVersion == "oss-benchmark-external-cleanup/v1"
+              and $cleanup.runId == $runId
+              and $cleanup.scenarioSha256 == $scenarioSha256
+              and $cleanup.readinessSha256 == $readinessSha256
+              and $cleanup.readinessSha256 == $provision.readinessSha256
+              and $cleanup.backend == $backend
+              and $cleanup.implementation == $implementation
+              and $cleanup.siloCount == ($siloCount | tonumber)
+              and $cleanup.siloCount == $provision.siloCount
+              and $cleanup.isolationNamespace == $provision.isolationNamespace
+              and $cleanup.succeeded == true
+              and $cleanup.verifiedAbsent == true
+              and ($cleanup.startedAtUtc | type == "string" and length > 0)
+              and ($cleanup.completedAtUtc | type == "string" and length > 0)
+              and ($cleanup.resources | type == "array" and length > 0)
+              and ([$cleanup.resources[] | [.kind, .id]] | length)
+                == ([$cleanup.resources[] | [.kind, .id]] | unique | length)
+              and all($cleanup.resources[];
+                (.kind | type == "string" and length > 0)
+                and (.id | type == "string" and length > 0)
+                and .released == true
+                and .verifiedAbsent == true)
+              and (([$cleanup.resources[] | [.kind, .id]] | sort)
+                == ([$provision.resources[] | [.kind, .id]] | sort))
+          ' "$output/provision-evidence.json" "$output/cleanup-evidence.json" >/dev/null
+          if [[ "$(git rev-parse HEAD)" != "$OSS_BENCHMARK_GIT_COMMIT" ||
+                -n "$(git status --porcelain=v1 --untracked-files=no)" ]]; then
+            echo "The cleanup hook changed the approved commit or tracked inputs." >&2
+            git status --short --untracked-files=no >&2
+            exit 1
+          fi
+
+      - name: Validate raw result
+        if: always()
+        timeout-minutes: 5
+        env:
+          BACKEND: ${{ inputs.backend }}
+          IMPLEMENTATION: ${{ inputs.implementation }}
+        shell: bash
+        run: |
+          run_id="$BENCHMARK_RUN_ID"
+          output="artifacts/benchmark-protected/$run_id"
+          bash eng/validate-benchmark-artifacts.sh load \
+            "$output" \
+            "$IMPLEMENTATION" \
+            "$OSS_BENCHMARK_GIT_COMMIT" \
+            external \
+            "$BACKEND" \
+            "$BENCHMARK_RUN_ID" \
+            "$BENCHMARK_SCENARIO_SHA256" \
+            "$BENCHMARK_SILO_COUNT"
+
+      - name: Reject selected backend secret in artifacts
+        id: secret_scan
+        if: always()
+        timeout-minutes: 5
+        env:
+          OSS_BENCHMARK_STORAGE_CONNECTION_STRING: ${{ inputs.backend == 'postgresql' && secrets.BENCHMARK_POSTGRESQL_CONNECTION_STRING || inputs.backend == 'redis' && secrets.BENCHMARK_REDIS_CONNECTION_STRING || inputs.backend == 'azure-blob' && secrets.BENCHMARK_AZURE_BLOB_CONNECTION_STRING || '' }}
+        run: bash eng/validate-benchmark-artifacts.sh secrets artifacts/benchmark-protected
+
+      - name: Upload authorization, raw results, HDR logs, and cleanup evidence
+        if: always() && steps.secret_scan.outcome == 'success'
+        timeout-minutes: 10
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-${{ inputs.tier }}-${{ inputs.backend }}-${{ inputs.implementation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/benchmark-protected
+          if-no-files-found: warn
+          retention-days: 90

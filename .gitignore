@@ -5,6 +5,7 @@ obj/
 .vscode/
 TestResults/
 coverage/
+BenchmarkDotNet.Artifacts/
 *.user
 *.suo
 *.nupkg

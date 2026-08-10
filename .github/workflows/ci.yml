@@ -144,3 +144,342 @@ jobs:
           name: backend-test-results
           path: artifacts/backend-test-results
           if-no-files-found: ignore
+
+  benchmark-smoke:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OSS_BENCHMARK_GIT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      OSS_BENCHMARK_GIT_DIRTY: "false"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore benchmark projects
+        run: |
+          dotnet restore benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj
+          dotnet restore tests/Orleans.SearchableStorage.Benchmarking.Tests/Orleans.SearchableStorage.Benchmarking.Tests.csproj
+          dotnet tool restore --tool-manifest benchmarks/crank/.config/dotnet-tools.json
+
+      - name: Build benchmark projects
+        run: |
+          dotnet build benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj --configuration Release --no-restore
+          dotnet build tests/Orleans.SearchableStorage.Benchmarking.Tests/Orleans.SearchableStorage.Benchmarking.Tests.csproj --configuration Release --no-restore
+
+      - name: Test benchmark infrastructure
+        # Adversarial test display names intentionally contain fake credential canaries.
+        # Keep TRX metadata out of the raw benchmark artifact tree that is secret-scanned.
+        run: >-
+          dotnet test tests/Orleans.SearchableStorage.Benchmarking.Tests/Orleans.SearchableStorage.Benchmarking.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+
+      - name: Validate every committed scenario
+        id: scenarios
+        shell: bash
+        run: |
+          mapfile -t scenarios < <(git ls-files -- 'benchmarks/specs/v1/scenarios/*.json')
+          if [[ ${#scenarios[@]} -eq 0 ]]; then
+            echo "No committed benchmark scenarios were found." >&2
+            exit 1
+          fi
+
+          for scenario in "${scenarios[@]}"; do
+            dotnet run \
+              --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj \
+              --configuration Release \
+              --no-build \
+              --no-restore \
+              -- validate --spec "$scenario"
+
+          done
+
+          searchable=benchmarks/specs/v1/scenarios/smoke-searchable.v1.json
+          plain=benchmarks/specs/v1/scenarios/smoke-plain.v1.json
+          open_searchable=benchmarks/specs/v1/scenarios/smoke-open-searchable.v1.json
+          git ls-files --error-unmatch -- "$searchable" "$plain" "$open_searchable" >/dev/null
+          for expected in searchable plain; do
+            scenario=${!expected}
+            reference_root=$(dirname "$(dirname "$scenario")")
+            dataset_reference=$(jq --raw-output '.dataset.path' "$scenario")
+            dataset=$(realpath --canonicalize-existing "$reference_root/$dataset_reference")
+            workload_reference=$(jq --raw-output '.workload.path' "$scenario")
+            workload=$(realpath --canonicalize-existing "$reference_root/$workload_reference")
+            record_count=$(jq --raw-output '.recordCount' "$dataset")
+            duration_seconds=$(jq --raw-output '.durationSeconds' "$workload")
+            load_mode=$(jq --raw-output '.mode' "$workload")
+            execution_class=$(jq --raw-output '.executionClass' "$scenario")
+            backend=$(jq --raw-output '.storage.backend' "$scenario")
+            implementation=$(jq --raw-output '.storage.path | ascii_downcase' "$scenario")
+            topology=$(jq --raw-output '.topology.mode' "$scenario")
+            if [[ "$execution_class" != "smoke" ||
+                  "$record_count" -gt 10000 ||
+                  "$duration_seconds" -gt 10 ||
+                  "$load_mode" != "ClosedLoop" ||
+                  "$backend" != "Memory" ||
+                  "$implementation" != "$expected" ||
+                  "$topology" != "Embedded" ]]; then
+              echo "$scenario must remain a <=10,000-record embedded Memory $expected closed-loop smoke." >&2
+              exit 1
+            fi
+          done
+
+          reference_root=$(dirname "$(dirname "$open_searchable")")
+          dataset_reference=$(jq --raw-output '.dataset.path' "$open_searchable")
+          dataset=$(realpath --canonicalize-existing "$reference_root/$dataset_reference")
+          workload_reference=$(jq --raw-output '.workload.path' "$open_searchable")
+          workload=$(realpath --canonicalize-existing "$reference_root/$workload_reference")
+          record_count=$(jq --raw-output '.recordCount' "$dataset")
+          duration_seconds=$(jq --raw-output '.durationSeconds' "$workload")
+          load_mode=$(jq --raw-output '.mode' "$workload")
+          execution_class=$(jq --raw-output '.executionClass' "$open_searchable")
+          backend=$(jq --raw-output '.storage.backend' "$open_searchable")
+          implementation=$(jq --raw-output '.storage.path' "$open_searchable")
+          topology=$(jq --raw-output '.topology.mode' "$open_searchable")
+          if [[ "$execution_class" != "smoke" ||
+                "$record_count" -gt 10000 ||
+                "$duration_seconds" -gt 10 ||
+                "$load_mode" != "OpenLoop" ||
+                "$backend" != "Memory" ||
+                "$implementation" != "Searchable" ||
+                "$topology" != "Embedded" ]]; then
+            echo "$open_searchable must remain a <=10,000-record embedded Memory searchable open-loop smoke." >&2
+            exit 1
+          fi
+          echo "searchable=$searchable" >> "$GITHUB_OUTPUT"
+          echo "plain=$plain" >> "$GITHUB_OUTPUT"
+          echo "open-searchable=$open_searchable" >> "$GITHUB_OUTPUT"
+
+      - name: Prove benchmark source revision and clean tracked state
+        shell: bash
+        run: |
+          actual_commit=$(git rev-parse HEAD)
+          if [[ "$actual_commit" != "$OSS_BENCHMARK_GIT_COMMIT" ]]; then
+            echo "Checked-out commit $actual_commit does not match benchmark provenance $OSS_BENCHMARK_GIT_COMMIT." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=no)" ]]; then
+            echo "Tracked files changed before benchmark execution; refusing false clean provenance." >&2
+            git status --short --untracked-files=no >&2
+            exit 1
+          fi
+
+      - name: Validate pinned Crank expansion without executing agents
+        shell: bash
+        run: |
+          jq --exit-status '
+            .version == 1
+            and .isRoot == true
+            and (.tools | keys) == ["microsoft.crank.controller"]
+            and .tools["microsoft.crank.controller"].version == "0.2.0-alpha.25473.1"
+            and .tools["microsoft.crank.controller"].commands == ["crank"]
+            and .tools["microsoft.crank.controller"].rollForward == false
+          ' benchmarks/crank/.config/dotnet-tools.json >/dev/null
+
+          contract_run_id="ci-contract-${OSS_BENCHMARK_GIT_COMMIT:0:16}"
+          mkdir -p artifacts/benchmark-smoke/crank-contract
+          contract_output="$GITHUB_WORKSPACE/artifacts/benchmark-smoke/crank-contract/distributed-two-client.json"
+          (
+            cd benchmarks/crank
+            DOTNET_ROLL_FORWARD=Major dotnet tool run crank -- \
+              --config searchable-storage.yml \
+              --scenario distributed-smoke-two-clients \
+              --profile local-memory \
+              --variable revision="$OSS_BENCHMARK_GIT_COMMIT" \
+              --variable runId="$contract_run_id" \
+              --debug "$contract_output"
+          )
+
+          silo_arguments="serve --spec specs/v1/scenarios/smoke-searchable.v1.json --output artifacts/benchmarks --instance-id silo-0 --run-id $contract_run_id --backend memory --connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING --azure-blob-container oss-benchmarks --topology external --advertised-address 127.0.0.1 --primary-silo 127.0.0.1:11111 --gateways 127.0.0.1:30000 --silo-port 11111 --gateway-port 30000"
+          load_0_arguments="run --spec specs/v1/scenarios/smoke-searchable.v1.json --output artifacts/benchmarks --instance-id load-0 --run-id $contract_run_id --client-ordinal 0 --client-count 2 --backend memory --connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING --azure-blob-container oss-benchmarks --topology external --gateways 127.0.0.1:30000"
+          load_1_arguments="run --spec specs/v1/scenarios/smoke-searchable.v1.json --output artifacts/benchmarks --instance-id load-1 --run-id $contract_run_id --client-ordinal 1 --client-count 2 --backend memory --connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING --azure-blob-container oss-benchmarks --topology external --gateways 127.0.0.1:30000"
+          jq --exit-status \
+            --arg commit "$OSS_BENCHMARK_GIT_COMMIT" \
+            --arg runId "$contract_run_id" \
+            --arg siloArguments "$silo_arguments" \
+            --arg load0Arguments "$load_0_arguments" \
+            --arg load1Arguments "$load_1_arguments" '
+              (.Jobs | keys) == ["load", "load-0", "load-1", "server", "silo"]
+              and .Jobs.server.Sources.oss.Repository == "https://github.com/Neftedollar/Orleans.SearchableStorage.git"
+              and .Jobs.server.Sources.oss.BranchOrCommit == $commit
+              and .Jobs["load-0"].Sources.oss.Repository == "https://github.com/Neftedollar/Orleans.SearchableStorage.git"
+              and .Jobs["load-0"].Sources.oss.BranchOrCommit == $commit
+              and .Jobs["load-1"].Sources.oss.Repository == "https://github.com/Neftedollar/Orleans.SearchableStorage.git"
+              and .Jobs["load-1"].Sources.oss.BranchOrCommit == $commit
+              and .Jobs.server.Project == "oss/benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj"
+              and .Jobs["load-0"].Project == "oss/benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj"
+              and .Jobs["load-1"].Project == "oss/benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj"
+              and .Jobs.server.Arguments == $siloArguments
+              and .Jobs["load-0"].Arguments == $load0Arguments
+              and .Jobs["load-1"].Arguments == $load1Arguments
+              and .Jobs.server.EnvironmentVariables == {
+                "OSS_BENCHMARK_CLEANUP_OWNER": "true",
+                "OSS_BENCHMARK_GIT_COMMIT": $commit,
+                "OSS_BENCHMARK_GIT_DIRTY": "false"
+              }
+              and .Jobs["load-0"].EnvironmentVariables == {
+                "OSS_BENCHMARK_GIT_COMMIT": $commit,
+                "OSS_BENCHMARK_GIT_DIRTY": "false"
+              }
+              and .Jobs["load-1"].EnvironmentVariables == {
+                "OSS_BENCHMARK_GIT_COMMIT": $commit,
+                "OSS_BENCHMARK_GIT_DIRTY": "false"
+              }
+              and .Jobs["load-0"].Variables.clientOrdinal == 0
+              and .Jobs["load-0"].Variables.clientCount == 2
+              and .Jobs["load-1"].Variables.clientOrdinal == 1
+              and .Jobs["load-1"].Variables.clientCount == 2
+              and .Jobs.server.Options.DownloadFiles == ["artifacts/benchmarks/**/*.json"]
+              and .Jobs.server.Options.DownloadFilesOutput == "artifacts/crank/\($runId)/silo-0"
+              and .Jobs["load-0"].Options.DownloadFiles == [
+                "artifacts/benchmarks/**/*.json",
+                "artifacts/benchmarks/**/*.hlog"
+              ]
+              and .Jobs["load-1"].Options.DownloadFiles == [
+                "artifacts/benchmarks/**/*.json",
+                "artifacts/benchmarks/**/*.hlog"
+              ]
+              and .Jobs["load-0"].Options.DownloadFilesOutput == "artifacts/crank/\($runId)/load-0"
+              and .Jobs["load-1"].Options.DownloadFilesOutput == "artifacts/crank/\($runId)/load-1"
+              and .Scenarios["distributed-smoke-two-clients"] == {
+                "server": {"Job": "silo", "Agent": null},
+                "load-0": {"Job": "load", "Agent": null},
+                "load-1": {"Job": "load", "Agent": null}
+              }
+              and .Profiles["local-memory"].jobs == {
+                "server": {"endpoints": ["http://localhost:5010"]},
+                "load-0": {"endpoints": ["http://localhost:5010"]},
+                "load-1": {"endpoints": ["http://localhost:5010"]}
+              }
+          ' "$contract_output" >/dev/null
+      - name: Run BenchmarkDotNet invariant self-test
+        run: >-
+          dotnet run
+          --project benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          -- --self-test
+
+      - name: List BenchmarkDotNet cases and capture provenance
+        shell: bash
+        run: |
+          mkdir -p artifacts/benchmark-smoke/bdn
+          dotnet run \
+            --project benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj \
+            --configuration Release \
+            --no-build \
+            --no-restore \
+            -- --list flat --artifacts artifacts/benchmark-smoke/bdn \
+            | tee artifacts/benchmark-smoke/bdn-list.txt
+          bash eng/validate-benchmark-artifacts.sh \
+            bdn \
+            artifacts/benchmark-smoke/bdn \
+            artifacts/benchmark-smoke/bdn-list.txt \
+            "$OSS_BENCHMARK_GIT_COMMIT"
+
+      - name: Run searchable embedded Memory smoke
+        id: run_searchable_smoke
+        run: >-
+          dotnet run
+          --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          -- run
+          --spec "${{ steps.scenarios.outputs.searchable }}"
+          --output artifacts/benchmark-smoke/searchable
+          --run-id "pr-${{ github.run_id }}-${{ github.run_attempt }}-searchable"
+          --instance-id github-hosted
+
+      - name: Validate searchable raw results
+        if: always() && steps.run_searchable_smoke.outcome != 'skipped'
+        shell: bash
+        run: |
+          bash eng/validate-benchmark-artifacts.sh \
+            load \
+            artifacts/benchmark-smoke/searchable \
+            searchable \
+            "$OSS_BENCHMARK_GIT_COMMIT"
+          mapfile -t results < <(find artifacts/benchmark-smoke/searchable -type f \( -name result.json -o -name failure.json \) -print)
+          [[ ${#results[@]} -eq 1 ]]
+          jq --exit-status '.effectiveConfiguration.workload.mode == "ClosedLoop"' "${results[0]}" >/dev/null
+
+      - name: Run plain embedded Memory smoke
+        id: run_plain_smoke
+        run: >-
+          dotnet run
+          --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          -- run
+          --spec "${{ steps.scenarios.outputs.plain }}"
+          --output artifacts/benchmark-smoke/plain
+          --run-id "pr-${{ github.run_id }}-${{ github.run_attempt }}-plain"
+          --instance-id github-hosted
+
+      - name: Validate plain raw results
+        if: always() && steps.run_plain_smoke.outcome != 'skipped'
+        shell: bash
+        run: |
+          bash eng/validate-benchmark-artifacts.sh \
+            load \
+            artifacts/benchmark-smoke/plain \
+            plain \
+            "$OSS_BENCHMARK_GIT_COMMIT"
+          mapfile -t results < <(find artifacts/benchmark-smoke/plain -type f \( -name result.json -o -name failure.json \) -print)
+          [[ ${#results[@]} -eq 1 ]]
+          jq --exit-status '.effectiveConfiguration.workload.mode == "ClosedLoop"' "${results[0]}" >/dev/null
+
+      - name: Run searchable open-loop embedded Memory smoke
+        id: run_open_searchable_smoke
+        run: >-
+          dotnet run
+          --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          -- run
+          --spec "${{ steps.scenarios.outputs.open-searchable }}"
+          --output artifacts/benchmark-smoke/open-searchable
+          --run-id "pr-${{ github.run_id }}-${{ github.run_attempt }}-open-searchable"
+          --instance-id github-hosted
+
+      - name: Validate searchable open-loop raw results
+        if: always() && steps.run_open_searchable_smoke.outcome != 'skipped'
+        shell: bash
+        run: |
+          bash eng/validate-benchmark-artifacts.sh \
+            load \
+            artifacts/benchmark-smoke/open-searchable \
+            searchable \
+            "$OSS_BENCHMARK_GIT_COMMIT"
+          mapfile -t results < <(find artifacts/benchmark-smoke/open-searchable -type f \( -name result.json -o -name failure.json \) -print)
+          [[ ${#results[@]} -eq 1 ]]
+          jq --exit-status '.effectiveConfiguration.workload.mode == "OpenLoop"' "${results[0]}" >/dev/null
+
+      - name: Reject secrets in benchmark artifacts
+        id: secret_scan
+        if: always()
+        run: bash eng/validate-benchmark-artifacts.sh secrets artifacts/benchmark-smoke
+
+      # This is a correctness and artifact-contract gate only. It deliberately has no timing threshold.
+      - name: Upload raw benchmark smoke artifacts
+        if: always() && steps.secret_scan.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-smoke-raw
+          path: artifacts/benchmark-smoke
+          if-no-files-found: warn
