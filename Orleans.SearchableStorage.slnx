@@ -1,6 +1,9 @@
 <Solution>
+  <Project Path="benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj" />
+  <Project Path="benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj" />
   <Project Path="samples/Orleans.SearchableStorage.ApiSample/Orleans.SearchableStorage.ApiSample.csproj" />
   <Project Path="src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj" />
   <Project Path="tests/Orleans.SearchableStorage.ApiSample.Tests/Orleans.SearchableStorage.ApiSample.Tests.csproj" />
+  <Project Path="tests/Orleans.SearchableStorage.Benchmarking.Tests/Orleans.SearchableStorage.Benchmarking.Tests.csproj" />
   <Project Path="tests/Orleans.SearchableStorage.Tests/Orleans.SearchableStorage.Tests.csproj" />
 </Solution>

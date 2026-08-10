@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Orleans.SearchableStorage.LoadDriver</AssemblyName>
+    <RootNamespace>Orleans.SearchableStorage.Benchmarks</RootNamespace>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj" />
+    <PackageReference Include="Azure.Storage.Blobs" />
+    <PackageReference Include="HdrHistogram" />
+    <PackageReference Include="JsonSchema.Net" />
+    <PackageReference Include="Microsoft.Crank.EventSources" />
+    <PackageReference Include="Microsoft.Orleans.Persistence.AdoNet" />
+    <PackageReference Include="Microsoft.Orleans.Persistence.AzureStorage" />
+    <PackageReference Include="Microsoft.Orleans.Persistence.Memory" />
+    <PackageReference Include="Microsoft.Orleans.Persistence.Redis" />
+    <PackageReference Include="Microsoft.Orleans.Server" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="StackExchange.Redis" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../specs/**/*.json" Link="specs/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../tests/Orleans.SearchableStorage.Tests/Infrastructure/PostgreSql/PostgreSQL-Main.sql" Link="BackendAssets/PostgreSQL-Main.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../tests/Orleans.SearchableStorage.Tests/Infrastructure/PostgreSql/PostgreSQL-Persistence.sql" Link="BackendAssets/PostgreSQL-Persistence.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

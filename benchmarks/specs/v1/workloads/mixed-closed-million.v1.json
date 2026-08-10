@@ -1,0 +1,31 @@
+{
+  "$schema": "../../schema/workload.v1.schema.json",
+  "schemaVersion": "oss-benchmark-workload/v1",
+  "id": "mixed-closed-million",
+  "revision": 1,
+  "mode": "ClosedLoop",
+  "warmupSeconds": 30,
+  "durationSeconds": 120,
+  "concurrency": 128,
+  "targetRatePerSecond": 10000,
+  "maximumQueueDepth": 32768,
+  "operationTimeoutSeconds": 30,
+  "lateCallDrainTimeoutSeconds": 30,
+  "keyDistribution": {
+    "kind": "Uniform",
+    "hotsetFraction": 0.01,
+    "hotsetProbability": 0.8
+  },
+  "querySelectivity": {
+    "exactFraction": 0.00001,
+    "rangeFraction": 0.00001,
+    "maximumExpectedResultCount": 100
+  },
+  "operations": {
+    "upsert": 20,
+    "read": 50,
+    "exactQuery": 20,
+    "rangeQuery": 10,
+    "clear": 0
+  }
+}

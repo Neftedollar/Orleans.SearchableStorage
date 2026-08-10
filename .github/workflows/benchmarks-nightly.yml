@@ -1,0 +1,198 @@
+name: Benchmarks - nightly
+
+on:
+  schedule:
+    - cron: "17 1 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-nightly
+  cancel-in-progress: false
+
+jobs:
+  skipped:
+    if: >-
+      github.repository != 'Neftedollar/Orleans.SearchableStorage' ||
+      github.ref != 'refs/heads/main' ||
+      vars.BENCHMARK_NIGHTLY_ENABLED != 'true' ||
+      vars.BENCHMARK_NIGHTLY_CLEANUP_GUARD_READY != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Record why the nightly benchmark did not run
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          ENABLED: ${{ vars.BENCHMARK_NIGHTLY_ENABLED }}
+          CLEANUP_GUARD_READY: ${{ vars.BENCHMARK_NIGHTLY_CLEANUP_GUARD_READY }}
+        run: |
+          mkdir -p artifacts/benchmark-nightly-skipped
+          jq --null-input \
+            --arg repository "$REPOSITORY" \
+            --arg ref "$REF" \
+            --arg enabled "$ENABLED" \
+            --arg cleanupGuardReady "$CLEANUP_GUARD_READY" \
+            --arg runId "$GITHUB_RUN_ID" \
+            '{status:"skipped", reason:"nightly benchmarks require trusted main, explicit enablement, and an operator-managed cleanup fallback/TTL", repository:$repository, ref:$ref, enabled:$enabled, cleanupGuardReady:$cleanupGuardReady, runId:$runId}' \
+            > artifacts/benchmark-nightly-skipped/skipped.json
+
+      - name: Upload skipped marker
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-nightly-skipped
+          path: artifacts/benchmark-nightly-skipped/skipped.json
+          if-no-files-found: error
+
+  run:
+    if: >-
+      github.repository == 'Neftedollar/Orleans.SearchableStorage' &&
+      github.ref == 'refs/heads/main' &&
+      vars.BENCHMARK_NIGHTLY_ENABLED == 'true' &&
+      vars.BENCHMARK_NIGHTLY_CLEANUP_GUARD_READY == 'true'
+    runs-on: [self-hosted, linux, x64, benchmark, benchmark-nightly]
+    environment: benchmark-nightly
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      # Avoid cross-scenario CPU, network, and backend interference on benchmark hosts.
+      max-parallel: 1
+      matrix:
+        backend: [memory, postgresql, redis, azure-blob]
+    env:
+      OSS_BENCHMARK_GIT_COMMIT: ${{ github.sha }}
+      OSS_BENCHMARK_GIT_DIRTY: "false"
+
+    steps:
+      - name: Check out trusted main
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore and build load driver
+        run: |
+          dotnet restore benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+          dotnet build benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj --configuration Release --no-restore
+
+      - name: Validate reviewed one-million-record scenario
+        shell: bash
+        run: |
+          scenario=benchmarks/specs/v1/scenarios/million-searchable.v1.json
+          dotnet run \
+            --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj \
+            --configuration Release --no-build --no-restore \
+            -- validate --spec "$scenario"
+          reference_root=$(dirname "$(dirname "$scenario")")
+          dataset_reference=$(jq --raw-output '.dataset.path' "$scenario")
+          dataset=$(realpath --canonicalize-existing "$reference_root/$dataset_reference")
+          record_count=$(jq --raw-output '.recordCount' "$dataset")
+          implementation=$(jq --raw-output '.storage.path' "$scenario")
+          topology=$(jq --raw-output '.topology.mode' "$scenario")
+          execution_class=$(jq --raw-output '.executionClass' "$scenario")
+          if [[ "$record_count" -ne 1000000 ||
+                "$implementation" != "Searchable" ||
+                "$topology" != "Embedded" ||
+                "$execution_class" != "nightly" ]]; then
+            echo "$scenario is no longer the reviewed one-million-record searchable nightly scenario." >&2
+            exit 1
+          fi
+
+      - name: Prove trusted revision and clean tracked state
+        shell: bash
+        run: |
+          actual_commit=$(git rev-parse HEAD)
+          if [[ "$actual_commit" != "$OSS_BENCHMARK_GIT_COMMIT" ]]; then
+            echo "Checked-out commit $actual_commit does not match benchmark provenance $OSS_BENCHMARK_GIT_COMMIT." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=no)" ]]; then
+            echo "Tracked files changed before benchmark execution; refusing false clean provenance." >&2
+            git status --short --untracked-files=no >&2
+            exit 1
+          fi
+
+      - name: Run isolated nightly scenario
+        env:
+          BACKEND: ${{ matrix.backend }}
+          IMPLEMENTATION: searchable
+          SCENARIO: benchmarks/specs/v1/scenarios/million-searchable.v1.json
+          OSS_BENCHMARK_STORAGE_CONNECTION_STRING: ${{ matrix.backend == 'postgresql' && secrets.BENCHMARK_POSTGRESQL_CONNECTION_STRING || matrix.backend == 'redis' && secrets.BENCHMARK_REDIS_CONNECTION_STRING || matrix.backend == 'azure-blob' && secrets.BENCHMARK_AZURE_BLOB_CONNECTION_STRING || '' }}
+        shell: bash
+        run: |
+          case "$BACKEND" in
+            memory)
+              connection_arguments=()
+              ;;
+            postgresql)
+              [[ -n "$OSS_BENCHMARK_STORAGE_CONNECTION_STRING" ]]
+              connection_arguments=(--connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING)
+              ;;
+            redis)
+              [[ -n "$OSS_BENCHMARK_STORAGE_CONNECTION_STRING" ]]
+              connection_arguments=(--connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING)
+              ;;
+            azure-blob)
+              [[ -n "$OSS_BENCHMARK_STORAGE_CONNECTION_STRING" ]]
+              connection_arguments=(--connection-string-environment OSS_BENCHMARK_STORAGE_CONNECTION_STRING --azure-blob-container oss-benchmark-nightly)
+              ;;
+            *)
+              echo "Unsupported backend: $BACKEND" >&2
+              exit 64
+              ;;
+          esac
+
+          run_id="nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${BACKEND}-${IMPLEMENTATION}"
+          mkdir -p "artifacts/benchmark-nightly/$BACKEND/$IMPLEMENTATION"
+          timeout --foreground --signal=INT --kill-after=5m 5h \
+            dotnet run \
+              --project benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj \
+              --configuration Release --no-build --no-restore \
+              -- run \
+              --spec "$SCENARIO" \
+              --output "artifacts/benchmark-nightly/$BACKEND/$IMPLEMENTATION" \
+              --run-id "$run_id" \
+              --instance-id "$RUNNER_NAME" \
+              --backend "$BACKEND" \
+              --implementation-path "$IMPLEMENTATION" \
+              "${connection_arguments[@]}"
+
+      - name: Validate raw result and cleanup evidence
+        if: always()
+        env:
+          BACKEND: ${{ matrix.backend }}
+          IMPLEMENTATION: searchable
+        shell: bash
+        run: |
+          output="artifacts/benchmark-nightly/$BACKEND/$IMPLEMENTATION"
+          bash eng/validate-benchmark-artifacts.sh load "$output" "$IMPLEMENTATION" "$OSS_BENCHMARK_GIT_COMMIT" embedded "$BACKEND"
+          result=$(find "$output" -type f \( -name result.json -o -name failure.json \) -print -quit)
+          if [[ "$BACKEND" == "memory" ]]; then
+            jq --exit-status '(.cleanup.policy | length > 0)' "$result" >/dev/null
+          else
+            jq --exit-status '.cleanup.attempted and .cleanup.succeeded and .cleanup.error == null' "$result" >/dev/null
+          fi
+
+      - name: Reject selected backend secret in artifacts
+        id: secret_scan
+        if: always()
+        env:
+          OSS_BENCHMARK_STORAGE_CONNECTION_STRING: ${{ matrix.backend == 'postgresql' && secrets.BENCHMARK_POSTGRESQL_CONNECTION_STRING || matrix.backend == 'redis' && secrets.BENCHMARK_REDIS_CONNECTION_STRING || matrix.backend == 'azure-blob' && secrets.BENCHMARK_AZURE_BLOB_CONNECTION_STRING || '' }}
+        run: bash eng/validate-benchmark-artifacts.sh secrets artifacts/benchmark-nightly/${{ matrix.backend }}/searchable
+
+      # Raw JSON, effective configuration, source specs, and mergeable HDR logs are retained together.
+      - name: Upload raw nightly artifacts
+        if: always() && steps.secret_scan.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-nightly-${{ matrix.backend }}-searchable
+          path: artifacts/benchmark-nightly/${{ matrix.backend }}/searchable
+          if-no-files-found: warn
+          retention-days: 30

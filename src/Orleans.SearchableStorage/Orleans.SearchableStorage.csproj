@@ -22,6 +22,7 @@
     <None Include="../../LICENSE" Pack="true" PackagePath="/" />
     <None Include="../../docs/architecture.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/backends.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/benchmarks.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/testing.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/README.md" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/requests.http" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />

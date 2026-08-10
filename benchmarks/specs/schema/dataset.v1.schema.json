@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orleans-searchable-storage.dev/benchmarks/dataset.v1.schema.json",
+  "title": "Orleans.SearchableStorage benchmark dataset v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "revision",
+    "seed",
+    "recordCount",
+    "exactValueCardinality",
+    "rangeValueCardinality",
+    "payloadBytes",
+    "indexProfile"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "oss-benchmark-dataset/v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "seed": { "type": "integer", "minimum": 0 },
+    "recordCount": { "type": "integer", "minimum": 1, "maximum": 999999999999 },
+    "exactValueCardinality": { "type": "integer", "minimum": 1 },
+    "rangeValueCardinality": { "type": "integer", "minimum": 1 },
+    "payloadBytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+    "indexProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hashIndexCount", "rangeIndexCount"],
+      "properties": {
+        "hashIndexCount": { "const": 1 },
+        "rangeIndexCount": { "const": 1 }
+      }
+    }
+  }
+}

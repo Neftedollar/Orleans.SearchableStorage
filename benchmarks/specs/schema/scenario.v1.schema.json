@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orleans-searchable-storage.dev/benchmarks/scenario.v1.schema.json",
+  "title": "Orleans.SearchableStorage benchmark scenario v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "name",
+    "executionClass",
+    "dataset",
+    "workload",
+    "population",
+    "audit",
+    "storage",
+    "topology"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "oss-benchmark-scenario/v1" },
+    "name": { "type": "string", "minLength": 1 },
+    "executionClass": { "type": "string", "minLength": 1 },
+    "dataset": { "$ref": "#/$defs/specReference" },
+    "workload": { "$ref": "#/$defs/specReference" },
+    "population": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "concurrency", "operationTimeoutSeconds", "lateCallDrainTimeoutSeconds", "restoreAfterWarmup"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "operationTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "lateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "restoreAfterWarmup": { "type": "boolean" }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "pointSampleCount",
+        "querySampleCount",
+        "maximumOfflineQueryScanRecords",
+        "operationTimeoutSeconds",
+        "lateCallDrainTimeoutSeconds"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "pointSampleCount": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "querySampleCount": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "maximumOfflineQueryScanRecords": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "operationTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "lateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "path",
+        "connectionStringEnvironment",
+        "azureBlobContainer",
+        "partitionCount",
+        "virtualSlotTargetCount",
+        "journalSegmentCapacity",
+        "maximumJournalReplayEntries",
+        "compactionThreshold"
+      ],
+      "properties": {
+        "backend": { "enum": ["Memory", "PostgreSql", "Redis", "AzureBlob"] },
+        "path": { "enum": ["Searchable", "Plain"] },
+        "connectionStringEnvironment": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^(?:|[A-Za-z_][A-Za-z0-9_]*)$"
+        },
+        "azureBlobContainer": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*[a-z0-9]$"
+        },
+        "partitionCount": { "type": "integer", "minimum": 1, "maximum": 262144 },
+        "virtualSlotTargetCount": { "type": "integer", "minimum": 1, "maximum": 262144 },
+        "journalSegmentCapacity": { "type": "integer", "minimum": 1 },
+        "maximumJournalReplayEntries": { "type": "integer", "minimum": 1 },
+        "compactionThreshold": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "siloCount",
+        "embeddedSiloCount",
+        "clusterId",
+        "serviceId",
+        "advertisedAddress",
+        "primarySiloEndpoint",
+        "gatewayEndpoints",
+        "siloPort",
+        "gatewayPort",
+        "barrierTimeoutSeconds",
+        "barrierLateCallDrainTimeoutSeconds"
+      ],
+      "properties": {
+        "mode": { "enum": ["Embedded", "External"] },
+        "siloCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "embeddedSiloCount": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "clusterId": { "type": "string", "minLength": 1 },
+        "serviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150,
+          "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+        },
+        "advertisedAddress": { "type": "string", "minLength": 1 },
+        "primarySiloEndpoint": { "type": "string" },
+        "gatewayEndpoints": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "siloPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "gatewayPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "barrierTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "barrierLateCallDrainTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "audit": {
+            "properties": {
+              "enabled": { "const": true }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "population": {
+            "properties": {
+              "enabled": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "specReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

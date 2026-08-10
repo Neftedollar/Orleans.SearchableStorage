@@ -1,0 +1,54 @@
+{
+  "$schema": "../../schema/scenario.v1.schema.json",
+  "schemaVersion": "oss-benchmark-scenario/v1",
+  "name": "smoke-searchable",
+  "executionClass": "smoke",
+  "dataset": {
+    "path": "datasets/smoke-1k.v1.json",
+    "sha256": "ee4adcf73526a72e91a72c5d12c4c930b883fd8b50362df932913240524cbaeb"
+  },
+  "workload": {
+    "path": "workloads/mixed-closed-smoke.v1.json",
+    "sha256": "617dd358323c1db0ed588b9de50854a949400342a059d35f129ea787a208f230"
+  },
+  "population": {
+    "enabled": true,
+    "concurrency": 8,
+    "operationTimeoutSeconds": 15,
+    "lateCallDrainTimeoutSeconds": 15,
+    "restoreAfterWarmup": false
+  },
+  "audit": {
+    "enabled": true,
+    "pointSampleCount": 1000,
+    "querySampleCount": 4,
+    "maximumOfflineQueryScanRecords": 100000,
+    "operationTimeoutSeconds": 15,
+    "lateCallDrainTimeoutSeconds": 15
+  },
+  "storage": {
+    "backend": "Memory",
+    "path": "Searchable",
+    "connectionStringEnvironment": "",
+    "azureBlobContainer": "oss-benchmarks",
+    "partitionCount": 16,
+    "virtualSlotTargetCount": 1024,
+    "journalSegmentCapacity": 256,
+    "maximumJournalReplayEntries": 4096,
+    "compactionThreshold": 2048
+  },
+  "topology": {
+    "siloCount": 1,
+    "mode": "Embedded",
+    "embeddedSiloCount": 1,
+    "clusterId": "oss-benchmark",
+    "serviceId": "oss-benchmark",
+    "advertisedAddress": "127.0.0.1",
+    "primarySiloEndpoint": "",
+    "gatewayEndpoints": [],
+    "siloPort": 11111,
+    "gatewayPort": 30000,
+    "barrierTimeoutSeconds": 120,
+    "barrierLateCallDrainTimeoutSeconds": 15
+  }
+}

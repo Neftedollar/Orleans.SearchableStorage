@@ -1,0 +1,31 @@
+{
+  "$schema": "../../schema/workload.v1.schema.json",
+  "schemaVersion": "oss-benchmark-workload/v1",
+  "id": "mixed-closed-smoke",
+  "revision": 1,
+  "mode": "ClosedLoop",
+  "warmupSeconds": 1,
+  "durationSeconds": 3,
+  "concurrency": 8,
+  "targetRatePerSecond": 200,
+  "maximumQueueDepth": 256,
+  "operationTimeoutSeconds": 15,
+  "lateCallDrainTimeoutSeconds": 15,
+  "keyDistribution": {
+    "kind": "Uniform",
+    "hotsetFraction": 0.01,
+    "hotsetProbability": 0.8
+  },
+  "querySelectivity": {
+    "exactFraction": 0.0078125,
+    "rangeFraction": 0.0001,
+    "maximumExpectedResultCount": 100
+  },
+  "operations": {
+    "upsert": 20,
+    "read": 50,
+    "exactQuery": 20,
+    "rangeQuery": 10,
+    "clear": 0
+  }
+}

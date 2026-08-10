@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="JsonSchema.Net" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../benchmarks/specs/**/*.json"
+          Link="specs/%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../eng/validate-benchmark-artifacts.sh"
+          Link="eng/validate-benchmark-artifacts.sh"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

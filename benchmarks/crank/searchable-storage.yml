@@ -1,0 +1,196 @@
+# Restore the checked-in Controller 0.2.0-alpha.25473.1 tool manifest and run
+# agents at the same exact version; mixed Controller/Agent versions are unsupported.
+# Every invocation must override revision with a full 40-character commit SHA and
+# runId with a collision-resistant id. The placeholders deliberately cannot resolve.
+variables:
+  repository: https://github.com/Neftedollar/Orleans.SearchableStorage.git
+  revision: REQUIRED_FULL_40_CHARACTER_COMMIT_SHA
+  runId: REQUIRED_COLLISION_RESISTANT_RUN_ID
+  scenarioSpec: specs/v1/scenarios/smoke-searchable.v1.json
+  backend: memory
+  connectionStringEnvironment: OSS_BENCHMARK_STORAGE_CONNECTION_STRING
+  azureBlobContainer: oss-benchmarks
+  serverAddress: 127.0.0.1
+  gatewayAddress: 127.0.0.1
+  siloPort: 11111
+  gatewayPort: 30000
+
+jobs:
+  silo:
+    sources:
+      oss:
+        repository: '{{repository}}'
+        branchOrCommit: '{{revision}}'
+    project: oss/benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+    beforeScript: >-
+      /bin/bash -c 'set -euo pipefail;
+      test "${OSS_BENCHMARK_GIT_COMMIT}" = "$(git rev-parse HEAD)";
+      test -z "$(git status --porcelain --untracked-files=normal)"'
+    readyStateText: Orleans searchable-storage benchmark silo started.
+    waitForExit: false
+    arguments: >-
+      serve
+      --spec {{scenarioSpec}}
+      --output artifacts/benchmarks
+      --instance-id silo-0
+      --run-id {{runId}}
+      --backend {{backend}}
+      --connection-string-environment {{connectionStringEnvironment}}
+      --azure-blob-container {{azureBlobContainer}}
+      --topology external
+      --advertised-address {{serverAddress}}
+      --primary-silo {{serverAddress}}:{{siloPort}}
+      --gateways {{gatewayAddress}}:{{gatewayPort}}
+      --silo-port {{siloPort}}
+      --gateway-port {{gatewayPort}}
+    environmentVariables:
+      OSS_BENCHMARK_CLEANUP_OWNER: 'true'
+      OSS_BENCHMARK_GIT_COMMIT: '{{revision}}'
+      OSS_BENCHMARK_GIT_DIRTY: 'false'
+    options:
+      downloadFiles:
+        - artifacts/benchmarks/**/*.json
+      downloadFilesOutput: artifacts/crank/{{runId}}/silo-0
+
+  load:
+    sources:
+      oss:
+        repository: '{{repository}}'
+        branchOrCommit: '{{revision}}'
+    project: oss/benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj
+    beforeScript: >-
+      /bin/bash -c 'set -euo pipefail;
+      test "${OSS_BENCHMARK_GIT_COMMIT}" = "$(git rev-parse HEAD)";
+      test -z "$(git status --porcelain --untracked-files=normal)"'
+    waitForExit: true
+    arguments: >-
+      run
+      --spec {{scenarioSpec}}
+      --output artifacts/benchmarks
+      --instance-id load-{{clientOrdinal}}
+      --run-id {{runId}}
+      --client-ordinal {{clientOrdinal}}
+      --client-count {{clientCount}}
+      --backend {{backend}}
+      --connection-string-environment {{connectionStringEnvironment}}
+      --azure-blob-container {{azureBlobContainer}}
+      --topology external
+      --gateways {{gatewayAddress}}:{{gatewayPort}}
+    options:
+      downloadFiles:
+        - artifacts/benchmarks/**/*.json
+        - artifacts/benchmarks/**/*.hlog
+      downloadFilesOutput: artifacts/crank/{{runId}}/load-{{clientOrdinal}}
+    environmentVariables:
+      OSS_BENCHMARK_GIT_COMMIT: '{{revision}}'
+      OSS_BENCHMARK_GIT_DIRTY: 'false'
+
+scenarios:
+  distributed-smoke:
+    server:
+      job: silo
+    load-0:
+      job: load
+      variables:
+        clientOrdinal: 0
+        clientCount: 1
+
+  distributed-smoke-two-clients:
+    server:
+      job: silo
+    load-0:
+      job: load
+      variables:
+        clientOrdinal: 0
+        clientCount: 2
+    load-1:
+      job: load
+      variables:
+        clientOrdinal: 1
+        clientCount: 2
+
+profiles:
+  local-memory:
+    variables:
+      backend: memory
+    jobs:
+      server:
+        endpoints:
+          - http://localhost:5010
+      load-0:
+        endpoints:
+          - http://localhost:5010
+      load-1:
+        endpoints:
+          - http://localhost:5010
+
+  local-postgresql:
+    variables:
+      backend: postgresql
+      connectionStringEnvironment: OSS_BENCHMARK_POSTGRESQL
+    jobs:
+      server:
+        endpoints:
+          - http://localhost:5010
+      load-0:
+        endpoints:
+          - http://localhost:5010
+      load-1:
+        endpoints:
+          - http://localhost:5010
+
+  local-redis:
+    variables:
+      backend: redis
+      connectionStringEnvironment: OSS_BENCHMARK_REDIS
+    jobs:
+      server:
+        endpoints:
+          - http://localhost:5010
+      load-0:
+        endpoints:
+          - http://localhost:5010
+      load-1:
+        endpoints:
+          - http://localhost:5010
+
+  local-azure-blob:
+    variables:
+      backend: azure-blob
+      connectionStringEnvironment: OSS_BENCHMARK_AZURE_BLOB
+    jobs:
+      server:
+        endpoints:
+          - http://localhost:5010
+      load-0:
+        endpoints:
+          - http://localhost:5010
+      load-1:
+        endpoints:
+          - http://localhost:5010
+
+results:
+  - name: operations
+    measurement: oss/operations
+    description: Completed benchmark operations (per client; raw HDR logs are authoritative for latency)
+    format: n0
+    aggregate: sum
+    reduce: sum
+  - name: failures
+    measurement: oss/failures
+    description: Failed benchmark operations
+    format: n0
+    aggregate: sum
+    reduce: sum
+  - name: dropped
+    measurement: oss/dropped
+    description: Explicitly dropped open-loop arrivals
+    format: n0
+    aggregate: sum
+    reduce: sum
+  - name: operations-per-second
+    measurement: oss/operations-per-second
+    description: Sum of per-client completed operation rates
+    format: n2
+    aggregate: sum
+    reduce: sum

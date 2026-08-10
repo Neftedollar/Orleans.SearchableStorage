@@ -59,6 +59,34 @@ The executable sample verifies the same summary through `GET /storage/layout`. T
 slot-movement command; movement protocol, recovery, and mixed-epoch tests belong to its separately
 reviewed change.
 
+### Benchmark infrastructure tests
+
+Benchmark tests are correctness tests, not timing gates. They reject unknown schema fields and
+versions, altered spec digests, unsupported path/workload combinations, and unsafe broad-result
+profiles. Golden vectors freeze deterministic record and operation generation. Scheduler tests cover
+closed-loop in-flight bounds, open-loop overload accounting, cancellation, timeouts, and late-call
+drain. Histogram tests cover compatible union, incompatible metadata, clamping, and the rule that
+percentiles are computed only after union. Result tests round-trip required provenance, canonical
+effective configuration hashes, p95 summaries, unknown dirty-state handling, secret redaction,
+cleanup state, completed measurement on teardown failure, and raw artifact references. Tamper tests
+also reject unknown result fields, broken source-digest graphs, mismatched embedded source/effective
+JSON, missing enabled-phase evidence, impossible percentile summaries, non-HDR payloads with updated
+self-checksums, and unsafe histogram paths. Secret tests cover connection strings, signed URLs, URI
+userinfo, JSON credentials, and HTTP bearer authorization values.
+
+The pull-request smoke reflects the built microbenchmark assembly and requires exactly the reviewed
+15 `[Benchmark]` identities and every exact `[Params]` vector. It validates the actual
+BenchmarkDotNet job, GC, diagnoser, p95 column, exporters, and artifact-retention config rather than
+trusting duplicated provenance text, then invokes every production-backed fixture with semantic
+oracles for query-plan construction/evaluation, wire and journal serialization, journal append and
+replay, and snapshot detachment. It executes small Memory scenarios through searchable closed-loop,
+searchable open-loop, and plain closed-loop point-operation paths and asserts each resulting
+effective mode. A pinned Crank Controller `--debug` expansion gate checks both distributed-client
+coordinates, exact source revision/environment/arguments, and artifact download paths without
+executing an agent. These are correctness gates with no wall-clock threshold. Dedicated nightly and
+capacity workflows retain raw artifacts;
+see [benchmarks.md](benchmarks.md) for environment and comparison requirements.
+
 ### Storage contract tests
 
 The reusable contract exercises normal `IGrainStorage` behavior for indexed object state and
