@@ -177,13 +177,13 @@ jobs:
           dotnet build tests/Orleans.SearchableStorage.Benchmarking.Tests/Orleans.SearchableStorage.Benchmarking.Tests.csproj --configuration Release --no-restore
 
       - name: Test benchmark infrastructure
+        # Adversarial test display names intentionally contain fake credential canaries.
+        # Keep TRX metadata out of the raw benchmark artifact tree that is secret-scanned.
         run: >-
           dotnet test tests/Orleans.SearchableStorage.Benchmarking.Tests/Orleans.SearchableStorage.Benchmarking.Tests.csproj
           --configuration Release
           --no-build
           --no-restore
-          --logger "trx;LogFileName=benchmarking-test-results.trx"
-          --results-directory artifacts/benchmark-smoke/tests
 
       - name: Validate every committed scenario
         id: scenarios
