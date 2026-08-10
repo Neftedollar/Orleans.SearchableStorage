@@ -227,11 +227,12 @@ grain activation on an old silo which does not implement them, and an old activa
 format-4 layout. Operators must quiesce searchable storage and query traffic, update every silo and
 Orleans client, and verify that no version-3 process remains. While traffic is still paused, one
 normal grain-state storage operation must adopt each provider namespace as the epoch-1 identity map;
-operators should verify format 4 and epoch 1 through the admin client before resuming traffic.
-Adoption performs one layout CAS and no partition-persistence write. Query and admin reads do not
-perform adoption. Legacy calls remain available on updated processes and the identity map preserves
-their modulo placement, but this is not an online rolling upgrade guarantee. This release exposes no
-`MoveSlot` operation; future assignment changes require a separate coordinated all-v4 protocol gate.
+operators should verify that the admin read succeeds and reports epoch 1 before resuming traffic.
+The admin path returns a snapshot only for format 4. Adoption performs one layout CAS and no
+partition-persistence write. Query and admin reads do not perform adoption. Legacy calls remain
+available on updated processes, and the identity map preserves their modulo placement, but this is
+not an online rolling upgrade guarantee. This release exposes no `MoveSlot` operation; future
+assignment changes require a separate coordinated all-v4 protocol gate.
 
 Physical providers can use serializers other than Orleans' binary serializer. With JSON persistence, CLR type and property names plus configured JSON converters are part of the compatibility surface; Orleans `[Id]` values do not rename JSON members. The memory contract suite explicitly uses `JsonGrainStorageSerializer` so partition and layout reactivation exercise that representation.
 
