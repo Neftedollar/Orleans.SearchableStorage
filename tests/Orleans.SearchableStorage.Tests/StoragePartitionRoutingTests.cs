@@ -1,6 +1,7 @@
 using AwesomeAssertions;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
 using Orleans.SearchableStorage.Tests.Infrastructure;
 
@@ -295,6 +296,147 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
             .WithMessage("*Unknown partition query operation*");
     }
 
+    [Fact]
+    public async Task BoundedPageRoundTripsThroughOrleansAndTracksCommittedMutations()
+    {
+        const string stateName = "bounded-routing-state";
+        var context = await CreateContextAsync(partitionCount: 1);
+        var partition = GetPartition(context.ProviderName, partitionIndex: 0);
+        var (grainId, _) = CreateGrainOwnedBy(context.Layout, owner: 0);
+        var recordKey = CreateCanonicalRecordKey(stateName, grainId);
+        var etag = await partition.WriteAsync(
+            CreateWriteRequest(recordKey, grainId, "initial", salary: 10));
+        var initialPlan = ExactCityPlan("initial");
+
+        try
+        {
+            var initial = await partition.QueryPageRoutedAsync(
+                CreatePageRequest(context.Layout, stateName, initialPlan));
+
+            initial.Items.Should().ContainSingle().Which.Should().Be(grainId);
+            initial.Exhausted.Should().BeTrue();
+            initial.HasFrontier.Should().BeFalse();
+            initial.StopReason.Should().Be(PartitionQueryPageStopReason.Exhausted);
+            initial.Work.TotalOperationCount.Should().Be(7);
+            initial.ItemByteCount.Should().Be(GrainIdCanonicalOrder.GetEncodedLength(grainId));
+            initial.ProtocolVersion.Should().Be(QueryProtocol.PagingVersion);
+            initial.OrderingVersion.Should().Be(QueryProtocol.OrderingVersion);
+            initial.WorkPolicyVersion.Should().Be(QueryProtocol.WorkPolicyVersion);
+            initial.ResponseFamily.Should().Be(PartitionQueryResponseFamily.GrainIdPage);
+            initial.Epoch.Should().Be(context.Layout.Epoch);
+            initial.QueryFingerprint.Should().Equal(QueryPlanFingerprint.Compute(stateName, initialPlan));
+            initial.LayoutFingerprint.Should().Equal(StorageLayoutFingerprint.Compute(context.Layout));
+
+            var rangePlan = SalaryRangePlan(0, 20);
+            var range = await partition.QueryPageRoutedAsync(
+                CreatePageRequest(context.Layout, stateName, rangePlan));
+            range.Items.Should().ContainSingle().Which.Should().Be(grainId);
+            range.Work.PostingSeekCount.Should().Be(2);
+            range.Work.RangeBucketVisitCount.Should().Be(1);
+            range.Work.RangeMergeOperationCount.Should().Be(1);
+            range.Work.TotalOperationCount.Should().Be(11);
+
+            await _fixture.Cluster.DeactivateAsync(partition);
+            partition = GetPartition(context.ProviderName, partitionIndex: 0);
+            var rebuilt = await partition.QueryPageRoutedAsync(
+                CreatePageRequest(context.Layout, stateName, initialPlan));
+            rebuilt.Items.Should().ContainSingle().Which.Should().Be(grainId);
+            rebuilt.Work.Should().BeEquivalentTo(initial.Work);
+
+            var insufficient = CopyPageRequest(
+                CreatePageRequest(context.Layout, stateName, initialPlan),
+                workBudget: 2);
+            Func<Task> insufficientCall = async () =>
+                await partition.QueryPageRoutedAsync(insufficient);
+            var budgetException = (await insufficientCall
+                .Should().ThrowAsync<PartitionQueryBudgetTooSmallException>()).Which;
+            budgetException.RequestedLimit.Should().Be(2);
+            budgetException.MinimumRequired.Should().Be(3);
+            budgetException.Reason.Should().Be(PartitionQueryPageStopReason.WorkBudget);
+
+            var replacementEtag = await partition.WriteAsync(
+                CreateWriteRequest(
+                    recordKey,
+                    grainId,
+                    "replacement",
+                    salary: 20,
+                    expectedETag: etag));
+            etag = replacementEtag;
+
+            (await partition.QueryPageRoutedAsync(
+                    CreatePageRequest(context.Layout, stateName, initialPlan)))
+                .Items.Should().BeEmpty();
+            (await partition.QueryPageRoutedAsync(
+                    CreatePageRequest(context.Layout, stateName, ExactCityPlan("replacement"))))
+                .Items.Should().ContainSingle().Which.Should().Be(grainId);
+        }
+        finally
+        {
+            await partition.ClearAsync(CreateClearRequest(recordKey, etag));
+        }
+
+        (await partition.QueryPageRoutedAsync(
+                CreatePageRequest(context.Layout, stateName, ExactCityPlan("replacement"))))
+            .Items.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BoundedPageValidatesPlanFingerprintAndCapsBeforeStaleRouteLookup()
+    {
+        const string stateName = "bounded-validation-state";
+        var context = await CreateContextAsync(partitionCount: 1);
+        var partition = GetPartition(context.ProviderName, partitionIndex: 0);
+        var plan = ExactCityPlan("value");
+        var staleEpoch = checked(context.Layout.Epoch + 1);
+
+        var malformed = CreatePageRequest(context.Layout, stateName, plan);
+        malformed = CopyPageRequest(
+            malformed,
+            query: new PartitionQueryPlan { Operation = (PartitionQueryOperation)int.MaxValue },
+            epoch: staleEpoch);
+        Func<Task> malformedCall = async () => await partition.QueryPageRoutedAsync(malformed);
+        await malformedCall.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithMessage("*Unknown partition query operation*");
+
+        var wrongFingerprint = CopyPageRequest(
+            CreatePageRequest(context.Layout, stateName, plan),
+            epoch: staleEpoch,
+            queryFingerprint: new byte[32]);
+        Func<Task> fingerprintCall = async () => await partition.QueryPageRoutedAsync(wrongFingerprint);
+        await fingerprintCall.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*query fingerprint does not match*");
+
+        var oversizedWork = CopyPageRequest(
+            CreatePageRequest(context.Layout, stateName, plan),
+            epoch: staleEpoch,
+            workBudget: checked(SearchableStorageQueryOptions.MaximumPartitionWorkBudget + 1));
+        Func<Task> capCall = async () => await partition.QueryPageRoutedAsync(oversizedWork);
+        await capCall.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithMessage("*work budget must be between*");
+
+        var validButStale = CopyPageRequest(
+            CreatePageRequest(context.Layout, stateName, plan),
+            epoch: staleEpoch);
+        Func<Task> staleCall = async () => await partition.QueryPageRoutedAsync(validButStale);
+        await staleCall.Should().ThrowAsync<StorageRouteMismatchException>();
+    }
+
+    [Fact]
+    public async Task BoundedPageRejectsCallerLayoutFingerprintAgainstAuthoritativeSnapshot()
+    {
+        const string stateName = "bounded-layout-state";
+        var context = await CreateContextAsync(partitionCount: 1);
+        var partition = GetPartition(context.ProviderName, partitionIndex: 0);
+        var request = CopyPageRequest(
+            CreatePageRequest(context.Layout, stateName, ExactCityPlan("value")),
+            layoutFingerprint: new byte[32]);
+
+        Func<Task> query = async () => await partition.QueryPageRoutedAsync(request);
+
+        await query.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*layout fingerprint does not match*");
+    }
+
     [Theory]
     [InlineData("provider", "provider:00000003", 3)]
     [InlineData("provider:with:colons", "provider:with:colons:00000042", 42)]
@@ -422,6 +564,91 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
             MaximumJournalReplayEntries = StoragePersistence.DefaultMaximumJournalReplayEntries,
             CompactionThreshold = StoragePersistence.DefaultCompactionThreshold,
         };
+    }
+
+    private static PartitionQueryPlan ExactCityPlan(string value)
+    {
+        return new PartitionQueryPlan
+        {
+            Operation = PartitionQueryOperation.Exact,
+            Scope = "state/city",
+            IndexKind = SearchableIndexKind.Hash,
+            Value = IndexValue.Create(value),
+        };
+    }
+
+    private static PartitionQueryPlan SalaryRangePlan(int lower, int upper)
+    {
+        return new PartitionQueryPlan
+        {
+            Operation = PartitionQueryOperation.Range,
+            Scope = "state/salary",
+            LowerBound = IndexValue.Create(lower),
+            UpperBound = IndexValue.Create(upper),
+            IncludeLowerBound = true,
+            IncludeUpperBound = true,
+        };
+    }
+
+    private static RoutedPartitionQueryPageRequest CreatePageRequest(
+        StorageLayoutSnapshot layout,
+        string stateName,
+        PartitionQueryPlan query)
+    {
+        return new RoutedPartitionQueryPageRequest
+        {
+            Query = query,
+            Epoch = layout.Epoch,
+            WorkBudget = SearchableStorageQueryOptions.DefaultPartitionWorkBudget,
+            ItemLimit = SearchableStorageQueryOptions.DefaultPartitionResponseItems,
+            ByteLimit = SearchableStorageQueryOptions.DefaultPartitionResponseBytes,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.OrderingVersion,
+            WorkPolicyVersion = QueryProtocol.WorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.GrainIdPage,
+            QueryFingerprint = QueryPlanFingerprint.Compute(stateName, query),
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = StorageLayoutFingerprint.Compute(layout),
+            StateName = stateName,
+        };
+    }
+
+    private static RoutedPartitionQueryPageRequest CopyPageRequest(
+        RoutedPartitionQueryPageRequest source,
+        PartitionQueryPlan? query = null,
+        long? epoch = null,
+        long? workBudget = null,
+        byte[]? queryFingerprint = null,
+        byte[]? layoutFingerprint = null)
+    {
+        return new RoutedPartitionQueryPageRequest
+        {
+            Query = query ?? source.Query,
+            Epoch = epoch ?? source.Epoch,
+            HasAfter = source.HasAfter,
+            After = source.After,
+            WorkBudget = workBudget ?? source.WorkBudget,
+            ItemLimit = source.ItemLimit,
+            ByteLimit = source.ByteLimit,
+            ProtocolVersion = source.ProtocolVersion,
+            OrderingVersion = source.OrderingVersion,
+            WorkPolicyVersion = source.WorkPolicyVersion,
+            ResponseFamily = source.ResponseFamily,
+            QueryFingerprint = queryFingerprint ?? source.QueryFingerprint,
+            LayoutFormatVersion = source.LayoutFormatVersion,
+            LayoutFingerprint = layoutFingerprint ?? source.LayoutFingerprint,
+            StateName = source.StateName,
+        };
+    }
+
+    private static string CreateCanonicalRecordKey(string stateName, GrainId grainId)
+    {
+        return string.Concat(
+            stateName,
+            "/",
+            Convert.ToHexString(grainId.Type.AsSpan()),
+            "/",
+            Convert.ToHexString(grainId.Key.AsSpan()));
     }
 
     private sealed record RoutingContext(string ProviderName, StorageLayoutSnapshot Layout);

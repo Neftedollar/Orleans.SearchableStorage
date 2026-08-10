@@ -80,6 +80,11 @@ public static class SearchableStorageSiloBuilderExtensions
                 "CompactionThreshold must not exceed MaximumJournalReplayEntries.")
             .ValidateOnStart();
 
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<
+                IValidateOptions<SearchableStorageOptions>,
+                Querying.SearchableStorageQueryOptionsValidator>());
+
         services.AddTransient<
             IPostConfigureOptions<SearchableStorageOptions>,
             DefaultStorageProviderSerializerOptionsConfigurator<SearchableStorageOptions>>();
@@ -99,7 +104,8 @@ public static class SearchableStorageSiloBuilderExtensions
                 return new SearchableStorageClient(
                     serviceProvider.GetRequiredService<IGrainFactory>(),
                     providerName,
-                    configuredOptions.PartitionCount);
+                    configuredOptions.PartitionCount,
+                    configuredOptions.Query);
             });
 
         services.AddKeyedSingleton<ISearchableStorageClient>(

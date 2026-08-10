@@ -8,17 +8,24 @@ using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Order;
 using BenchmarkDotNet.Reports;
+using BenchmarkDotNet.Toolchains.InProcess.NoEmit;
 
 namespace Orleans.SearchableStorage.Benchmarks;
 
 internal sealed class SearchableStorageBenchmarkConfig : ManualConfig
 {
-    public SearchableStorageBenchmarkConfig()
+    private readonly bool _smoke;
+
+    public SearchableStorageBenchmarkConfig(bool smoke = false)
     {
+        _smoke = smoke;
         ArtifactsPath = Path.Combine("BenchmarkDotNet.Artifacts");
+        var job = smoke
+            ? Job.Dry.WithToolchain(InProcessNoEmitToolchain.Instance)
+            : Job.Default;
         AddJob(
-            Job.Default
-                .WithId("net10-server")
+            job
+                .WithId(smoke ? "net10-server-smoke" : "net10-server")
                 .WithRuntime(CoreRuntime.Core10_0)
                 .WithGcServer(true)
                 .WithGcConcurrent(true)
@@ -38,7 +45,8 @@ internal sealed class SearchableStorageBenchmarkConfig : ManualConfig
         ValidateContract();
         var job = GetJobs().Single();
         return $"{job.ResolvedId};serverGC={FormatBoolean(job.Environment.Gc.Server)};" +
-            $"concurrentGC={FormatBoolean(job.Environment.Gc.Concurrent)}";
+            $"concurrentGC={FormatBoolean(job.Environment.Gc.Concurrent)}" +
+            (_smoke ? ";nonComparableInProcessDryRun=true" : string.Empty);
     }
 
     internal void ValidateContract()
@@ -50,13 +58,19 @@ internal sealed class SearchableStorageBenchmarkConfig : ManualConfig
         }
 
         var job = jobs[0];
-        if (!string.Equals(job.ResolvedId, "net10-server", StringComparison.Ordinal)
+        var expectedId = _smoke ? "net10-server-smoke" : "net10-server";
+        if (!string.Equals(job.ResolvedId, expectedId, StringComparison.Ordinal)
             || job.Environment.Runtime?.RuntimeMoniker != RuntimeMoniker.Net10_0
             || !job.Environment.Gc.Server
-            || !job.Environment.Gc.Concurrent)
+            || !job.Environment.Gc.Concurrent
+            || (_smoke
+                && !ReferenceEquals(
+                    job.Infrastructure.Toolchain,
+                    InProcessNoEmitToolchain.Instance)))
         {
             throw new InvalidOperationException(
-                "The benchmark contract requires the net10-server job with server and concurrent GC enabled.");
+                $"The benchmark contract requires the '{expectedId}' job with .NET 10, server/concurrent GC"
+                + (_smoke ? ", and the non-comparable in-process dry-run toolchain." : "."));
         }
 
         var diagnosers = GetDiagnosers().ToArray();
@@ -82,9 +96,12 @@ internal sealed class SearchableStorageBenchmarkConfig : ManualConfig
             || columnProviders.Where((provider, index) =>
                 !ReferenceEquals(provider, expectedColumnProviders[index])).Any())
         {
+            var observed = string.Join(
+                ", ",
+                columnProviders.Select(static provider => provider.GetType().FullName));
             throw new InvalidOperationException(
                 "The benchmark contract requires the default columns and the exact P95 column provider. "
-                + $"Observed: {string.Join(", ", columnProviders.Select(static provider => provider.GetType().FullName))}.");
+                + $"Observed: {observed}.");
         }
 
         var statisticColumns = SearchableStorageStatisticColumnProvider.ContractColumns;

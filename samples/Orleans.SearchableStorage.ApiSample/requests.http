@@ -53,6 +53,16 @@ Accept: application/json
 GET {{host}}/vacancies/search/by-city?city=Helsinki
 Accept: application/json
 
+### Bounded first page. Copy continuationToken from the response into the next request.
+
+GET {{host}}/vacancies/search/by-city/page?city=Helsinki&pageSize=1
+Accept: application/json
+
+### Resume the same query (replace the placeholder with the opaque token from the first page)
+
+GET {{host}}/vacancies/search/by-city/page?city=Helsinki&pageSize=1&continuation={{continuationToken}}
+Accept: application/json
+
 ### IQueryable range lookup: values greater than 5 and less than 8
 
 GET {{host}}/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false

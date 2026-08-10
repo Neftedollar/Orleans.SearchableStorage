@@ -16,8 +16,19 @@ siloBuilder.AddSearchableGrainStorage(
         options.JournalSegmentCapacity = 64;
         options.MaximumJournalReplayEntries = 4_096;
         options.CompactionThreshold = 1_024;
+        options.Query.ContinuationProtection.CurrentKey =
+            new SearchableStorageContinuationKey(
+                "searchable-v1",
+                Convert.FromBase64String(
+                    configuration["SearchableStorage:ContinuationKey"]!));
     });
 ```
+
+Public paging requires exactly 32 bytes of secret key material. Configure the same provider-scoped
+current/decrypt-only key ring on every silo and external Orleans client which can create or resume a
+page. The key is independent of the physical backend and must come from secret configuration; it is
+not stored in PostgreSQL, Redis, Blob Storage, layout state, or continuations. Legacy all-results
+queries remain token-free but still use the bounded page RPC internally.
 
 These are the defaults. `VirtualSlotTargetCount` seeds the exact persisted map for that provider
 namespace by rounding upward to a multiple of `PartitionCount`; it does not change an existing
@@ -45,6 +56,12 @@ legacy methods for updated consumers and its epoch-1 identity map preserves old 
 but it does not expose `MoveSlot`. Future ownership changes require a separate coordinated all-v4
 protocol gate.
 
+The bounded query protocol has a separate mixed-version rule and no persistence migration. Before
+upgrading from a release which lacks the page RPC, quiesce searchable query traffic, deploy every
+partition-hosting silo and built-in query client, distribute the common continuation key ring, and
+then resume queries. Point reads, writes, and clears may continue during this query-only rollout.
+Never send the page RPC to an old activation and never fall back to the old unbounded query RPC.
+
 The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, and snapshot states is required; the manifest is the searchable-storage commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, or snapshot state.
 
 Journal segments are bounded by operation count, not serialized bytes, and each snapshot contains
@@ -53,6 +70,8 @@ approximately four raw bytes per slot before serializer overhead and is read as 
 Partition activations share one retained map per provider and silo instead of cloning it per
 partition. The keyed storage provider and query/admin clients retain a bounded constant number of
 additional process-local snapshots, never one per partition activation.
+Each partition also derives and retains canonical ordered catalogs/postings for paging in addition to
+the existing hash/range lookup indexes; these are activation memory, not physical-backend bytes.
 Choose the initial partition count, virtual-slot target, and journal capacity with the provider's
 row/value/blob limits, serialization cost, and activation memory in mind. Repeatable capacity
 benchmarks are tracked in [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8).

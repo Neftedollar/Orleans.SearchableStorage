@@ -88,7 +88,8 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         await first.SetAsync(city, 10);
         await second.SetAsync(city, 20);
 
-        var results = await CreateClient().FindAsync<VacancyState, string>(
+        var client = CreateClient();
+        var results = await client.FindAsync<VacancyState, string>(
             VacancyGrain.StateName,
             state => state.City,
             city);
@@ -96,8 +97,22 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             .Order()
             .ToArray();
 
+        var query = client
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == city);
+        var firstPage = await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(pageSize: 1));
+        var secondPage = await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(
+                pageSize: 1,
+                firstPage.ContinuationToken));
+
         GetPartitionIndex(first.GetGrainId()).Should().NotBe(GetPartitionIndex(second.GetGrainId()));
         results.Should().Equal(expected);
+        firstPage.Items.Should().ContainSingle().Which.Should().Be(expected[0]);
+        firstPage.ContinuationToken.Should().NotBeNullOrWhiteSpace();
+        secondPage.Items.Should().ContainSingle().Which.Should().Be(expected[1]);
+        secondPage.ContinuationToken.Should().BeNull();
 
         await ClearAsync(first, second);
     }
@@ -1594,10 +1609,14 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
 
     protected SearchableStorageClient CreateClient()
     {
+        var queryOptions = new SearchableStorageQueryOptions();
+        queryOptions.ContinuationProtection.CurrentKey =
+            new SearchableStorageContinuationKey("contract-tests-v1", new byte[32]);
         return new SearchableStorageClient(
             Fixture.Cluster.GrainFactory,
             VacancyGrain.StorageProviderName,
-            Fixture.PartitionCount);
+            Fixture.PartitionCount,
+            queryOptions);
     }
 
     private protected IStoragePartitionGrain GetPartition(GrainId grainId)

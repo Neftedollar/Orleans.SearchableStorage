@@ -1,5 +1,6 @@
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Querying;
 
 namespace Orleans.SearchableStorage.Storage;
 
@@ -275,6 +276,218 @@ internal sealed class RoutedPartitionQuery
 
     [Id(1)]
     public long Epoch { get; init; }
+}
+
+/// <summary>
+/// Carries one bounded, stateless partition-page request for an authoritative routing epoch.
+/// </summary>
+[GenerateSerializer]
+internal sealed class RoutedPartitionQueryPageRequest
+{
+    [Id(0)]
+    public required PartitionQueryPlan Query { get; init; }
+
+    [Id(1)]
+    public long Epoch { get; init; }
+
+    [Id(2)]
+    public bool HasAfter { get; init; }
+
+    [Id(3)]
+    public GrainId After { get; init; }
+
+    [Id(4)]
+    public long WorkBudget { get; init; }
+
+    [Id(5)]
+    public int ItemLimit { get; init; }
+
+    [Id(6)]
+    public int ByteLimit { get; init; }
+
+    [Id(7)]
+    public int ProtocolVersion { get; init; }
+
+    [Id(8)]
+    public int OrderingVersion { get; init; }
+
+    [Id(9)]
+    public int WorkPolicyVersion { get; init; }
+
+    [Id(10)]
+    public PartitionQueryResponseFamily ResponseFamily { get; init; }
+
+    [Id(11)]
+    public required byte[] QueryFingerprint { get; init; }
+
+    [Id(12)]
+    public int LayoutFormatVersion { get; init; }
+
+    [Id(13)]
+    public required byte[] LayoutFingerprint { get; init; }
+
+    [Id(14)]
+    public required string StateName { get; init; }
+}
+
+/// <summary>
+/// Returns one sorted, distinct prefix from a partition-local bounded query turn.
+/// </summary>
+[GenerateSerializer]
+internal sealed class PartitionQueryPageResult
+{
+    [Id(0)]
+    public required GrainId[] Items { get; init; }
+
+    [Id(1)]
+    public bool HasFrontier { get; init; }
+
+    [Id(2)]
+    public GrainId Frontier { get; init; }
+
+    [Id(3)]
+    public bool Exhausted { get; init; }
+
+    [Id(4)]
+    public PartitionQueryPageStopReason StopReason { get; init; }
+
+    [Id(5)]
+    public required PartitionQueryPageWork Work { get; init; }
+
+    [Id(6)]
+    public int ItemByteCount { get; init; }
+
+    [Id(7)]
+    public int ProtocolVersion { get; init; }
+
+    [Id(8)]
+    public int OrderingVersion { get; init; }
+
+    [Id(9)]
+    public int WorkPolicyVersion { get; init; }
+
+    [Id(10)]
+    public PartitionQueryResponseFamily ResponseFamily { get; init; }
+
+    [Id(11)]
+    public long Epoch { get; init; }
+
+    [Id(12)]
+    public required byte[] QueryFingerprint { get; init; }
+
+    [Id(13)]
+    public int LayoutFormatVersion { get; init; }
+
+    [Id(14)]
+    public required byte[] LayoutFingerprint { get; init; }
+}
+
+/// <summary>
+/// Serializable logical-work vector for one bounded partition turn.
+/// </summary>
+[GenerateSerializer]
+internal sealed class PartitionQueryPageWork
+{
+    /// <summary>
+    /// One precharge before a complete canonical <see cref="GrainId"/> candidate group is exposed
+    /// to ownership and predicate evaluation. A later predicate-budget stop retains this charge.
+    /// </summary>
+    [Id(0)]
+    public long OrderedCandidateVisitCount { get; init; }
+
+    /// <summary>One per live record occurrence inspected within a candidate group.</summary>
+    [Id(1)]
+    public long RecordProbeCount { get; init; }
+
+    /// <summary>One per query-plan node occurrence evaluated against a record.</summary>
+    [Id(2)]
+    public long PredicateNodeProbeCount { get; init; }
+
+    /// <summary>One per record index-entry occurrence inspected by a leaf predicate.</summary>
+    [Id(3)]
+    public long IndexEntryProbeCount { get; init; }
+
+    /// <summary>One routing-ownership probe per visited canonical candidate group.</summary>
+    [Id(4)]
+    public long OwnershipProbeCount { get; init; }
+
+    /// <summary>
+    /// One before each ordered catalog, exact posting, range-bucket view, or selected range-bucket
+    /// posting seek.
+    /// </summary>
+    [Id(5)]
+    public long PostingSeekCount { get; init; }
+
+    /// <summary>One per ordered range bucket visited while constructing a candidate stream.</summary>
+    [Id(6)]
+    public long RangeBucketVisitCount { get; init; }
+
+    /// <summary>One per matching <see cref="GrainId"/> materialized into the response.</summary>
+    [Id(7)]
+    public long ResultMaterializationCount { get; init; }
+
+    /// <summary>
+    /// One per range-posting candidate occurrence loaded into the merge and one per canonical
+    /// comparison performed while merging or grouping those occurrences.
+    /// </summary>
+    [Id(8)]
+    public long RangeMergeOperationCount { get; init; }
+
+    /// <summary>Gets the checked sum of every logical-work component.</summary>
+    public long TotalOperationCount => checked(
+        OrderedCandidateVisitCount
+        + RecordProbeCount
+        + PredicateNodeProbeCount
+        + IndexEntryProbeCount
+        + OwnershipProbeCount
+        + PostingSeekCount
+        + RangeBucketVisitCount
+        + ResultMaterializationCount
+        + RangeMergeOperationCount);
+}
+
+internal enum PartitionQueryPageStopReason
+{
+    Exhausted = 0,
+    WorkBudget = 1,
+    ItemLimit = 2,
+    ByteLimit = 3,
+}
+
+/// <summary>
+/// Reports that a positive partition limit cannot complete even one canonical candidate group.
+/// </summary>
+[GenerateSerializer]
+internal sealed class PartitionQueryBudgetTooSmallException : Exception
+{
+    public PartitionQueryBudgetTooSmallException(
+        long requestedLimit,
+        long minimumRequired,
+        PartitionQueryPageStopReason reason)
+        : base(CreateMessage(requestedLimit, minimumRequired, reason))
+    {
+        RequestedLimit = requestedLimit;
+        MinimumRequired = minimumRequired;
+        Reason = reason;
+    }
+
+    [Id(0)]
+    public long RequestedLimit { get; private set; }
+
+    [Id(1)]
+    public long MinimumRequired { get; private set; }
+
+    [Id(2)]
+    public PartitionQueryPageStopReason Reason { get; private set; }
+
+    private static string CreateMessage(
+        long requestedLimit,
+        long minimumRequired,
+        PartitionQueryPageStopReason reason)
+    {
+        return $"The partition {reason} limit {requestedLimit} cannot complete the next "
+            + $"canonical candidate group; at least {minimumRequired} is required.";
+    }
 }
 
 /// <summary>

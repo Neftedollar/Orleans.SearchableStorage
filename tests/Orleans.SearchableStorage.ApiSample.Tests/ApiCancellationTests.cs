@@ -24,6 +24,7 @@ public sealed class ApiCancellationTests : IClassFixture<CancellationWebApplicat
 
     [Theory]
     [InlineData("/vacancies/search/by-city?city=Helsinki")]
+    [InlineData("/vacancies/search/by-city/page?city=Helsinki&pageSize=1")]
     [InlineData("/vacancies/search/by-salary?lower=5&upper=8")]
     public async Task HttpRequestCancellationReachesBlockedQueryClient(string path)
     {
@@ -91,8 +92,7 @@ public sealed class BlockingSearchQueryClient : ISearchableStorageQueryClient
         return _invocations.Reader.ReadAsync();
     }
 
-    private async Task<IReadOnlyList<GrainId>> ExecuteAsync(
-        CancellationToken cancellationToken)
+    private async Task WaitForCancellationAsync(CancellationToken cancellationToken)
     {
         var invocation = new BlockedInvocation();
         using var registration = cancellationToken.Register(
@@ -100,7 +100,20 @@ public sealed class BlockingSearchQueryClient : ISearchableStorageQueryClient
             invocation);
         await _invocations.Writer.WriteAsync(invocation, CancellationToken.None);
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<GrainId>> ExecuteAsync(
+        CancellationToken cancellationToken)
+    {
+        await WaitForCancellationAsync(cancellationToken);
         return [];
+    }
+
+    private async Task<SearchableStorageQueryPage> ExecutePageAsync(
+        CancellationToken cancellationToken)
+    {
+        await WaitForCancellationAsync(cancellationToken);
+        return new SearchableStorageQueryPage([], continuationToken: null);
     }
 
     public sealed class BlockedInvocation
@@ -110,7 +123,7 @@ public sealed class BlockingSearchQueryClient : ISearchableStorageQueryClient
     }
 
     private sealed class BlockingQueryProvider(BlockingSearchQueryClient owner)
-        : IQueryProvider, ISearchableStorageAsyncQueryProvider
+        : IQueryProvider, ISearchableStorageAsyncQueryProvider, ISearchableStoragePagedQueryProvider
     {
         public IQueryable CreateQuery(Expression expression)
         {
@@ -139,6 +152,14 @@ public sealed class BlockingSearchQueryClient : ISearchableStorageQueryClient
             CancellationToken cancellationToken)
         {
             return owner.ExecuteAsync(cancellationToken);
+        }
+
+        public Task<SearchableStorageQueryPage> ExecuteToGrainIdPageAsync(
+            Expression expression,
+            SearchableStorageQueryPageRequest request,
+            CancellationToken cancellationToken)
+        {
+            return owner.ExecutePageAsync(cancellationToken);
         }
     }
 

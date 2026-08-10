@@ -10,6 +10,18 @@ internal static class BenchmarkSelfTest
     {
         ValidateBenchmarkContract();
         new SearchableStorageBenchmarkConfig().ValidateContract();
+        var smokeConfig = new SearchableStorageBenchmarkConfig(smoke: true);
+        smokeConfig.ValidateContract();
+        Ensure(
+            BenchmarkProvenance.ExecutionModes.Count == 3
+            && BenchmarkProvenance.ExecutionModes[0] == "BenchmarkDotNet"
+            && BenchmarkProvenance.ExecutionModes[1] == "BenchmarkDotNetInProcessDryRun"
+            && BenchmarkProvenance.ExecutionModes[2] == "DeterministicEvidence",
+            "exact benchmark provenance execution-mode contract");
+        Ensure(
+            smokeConfig.GetValidatedJobIdentity()
+                == "net10-server-smoke;serverGC=true;concurrentGC=true;nonComparableInProcessDryRun=true",
+            "non-comparable BenchmarkDotNet smoke identity");
         ValidateIndexMutation();
         ValidateRangeQuery();
         ValidateQueryPlanning();
@@ -26,6 +38,7 @@ internal static class BenchmarkSelfTest
         string[] expectedBenchmarks =
         [
             $"{prefix}ExactRangeLookupBenchmarks.ExactRangeValueLookup",
+            $"{prefix}DerivedIndexBuildBenchmarks.BuildDerivedIndexes",
             $"{prefix}IndexMutationBenchmarks.DeleteAndRestoreIndexedRecord",
             $"{prefix}IndexMutationBenchmarks.ReplaceIndexedRecord",
             $"{prefix}JournalAppendBenchmarks.AppendBoundedJournalSegment",
@@ -57,13 +70,19 @@ internal static class BenchmarkSelfTest
         var expectedParameters = new Dictionary<string, int[]>(StringComparer.Ordinal)
         {
             [$"{prefix}ExactRangeLookupBenchmarks.BucketCount"] = [4_096, 65_536],
+            [$"{prefix}DerivedIndexBuildBenchmarks.RecordCount"] = [4_096, 65_536],
+            [$"{prefix}DerivedIndexBuildBenchmarks.Representation"] = [0, 1],
+            [$"{prefix}DerivedIndexBuildBenchmarks.Distribution"] = [0, 1],
             [$"{prefix}IndexMutationBenchmarks.RecordCount"] = [1_024, 65_536],
+            [$"{prefix}IndexMutationBenchmarks.Representation"] = [0, 1],
+            [$"{prefix}IndexMutationBenchmarks.Distribution"] = [0, 1],
             [$"{prefix}JournalReplayBenchmarks.EntryCount"] = [64, 4_096],
             [$"{prefix}JournalSerializationBenchmarks.EntryCount"] = [1, 64],
             [$"{prefix}QueryPlanConstructionBenchmarks.LeafCount"] = [2, 16, 64],
+            [$"{prefix}QueryPlanEvaluationBenchmarks.Dataset"] = [0, 1, 2],
             [$"{prefix}QueryPlanEvaluationBenchmarks.Distribution"] = [0, 1],
-            [$"{prefix}QueryPlanEvaluationBenchmarks.RecordCount"] = [4_096, 65_536],
             [$"{prefix}QueryPlanEvaluationBenchmarks.Scenario"] = [0, 1, 2, 3, 4, 5],
+            [$"{prefix}QueryPlanEvaluationBenchmarks.Variant"] = [0, 1, 2, 3, 4, 5],
             [$"{prefix}QueryPlanSerializationBenchmarks.LeafCount"] = [4, 64],
             [$"{prefix}RangeQueryBenchmarks.BucketCount"] = [4_096, 65_536],
             [$"{prefix}RangeQueryBenchmarks.MatchCount"] = [1, 256],
@@ -94,12 +113,42 @@ internal static class BenchmarkSelfTest
 
     private static void ValidateIndexMutation()
     {
-        var benchmark = new IndexMutationBenchmarks { RecordCount = 1_024 };
-        benchmark.GlobalSetup();
-        Ensure(benchmark.ReplaceIndexedRecord() == benchmark.RecordCount, "index replacement");
-        benchmark.ValidateFixture();
-        Ensure(benchmark.DeleteAndRestoreIndexedRecord() == benchmark.RecordCount, "index delete/restore");
-        benchmark.ValidateFixture();
+        foreach (var distribution in Enum.GetValues<BenchmarkIndexDistribution>())
+        {
+            foreach (var representation in Enum.GetValues<DerivedIndexRepresentation>())
+            {
+                var benchmark = new IndexMutationBenchmarks
+                {
+                    RecordCount = 1_024,
+                    Representation = representation,
+                    Distribution = distribution,
+                };
+                benchmark.GlobalSetup();
+                Ensure(
+                    benchmark.ReplaceIndexedRecord() == benchmark.RecordCount,
+                    $"index replacement ({distribution}/{representation})");
+                benchmark.ValidateFixture();
+                Ensure(
+                    benchmark.DeleteAndRestoreIndexedRecord() == benchmark.RecordCount,
+                    $"index delete/restore ({distribution}/{representation})");
+                benchmark.ValidateFixture();
+            }
+        }
+
+        foreach (var distribution in Enum.GetValues<BenchmarkIndexDistribution>())
+        {
+            foreach (var representation in Enum.GetValues<DerivedIndexRepresentation>())
+            {
+                var build = new DerivedIndexBuildBenchmarks
+                {
+                    RecordCount = 4_096,
+                    Representation = representation,
+                    Distribution = distribution,
+                };
+                build.GlobalSetup();
+                build.ValidateFixture(build.BuildDerivedIndexes());
+            }
+        }
     }
 
     private static void ValidateRangeQuery()
@@ -131,19 +180,77 @@ internal static class BenchmarkSelfTest
         {
             foreach (var scenario in Enum.GetValues<QueryEvaluationScenario>())
             {
-                var evaluation = new QueryPlanEvaluationBenchmarks
+                foreach (var variant in Enum.GetValues<QueryEvaluationVariant>())
                 {
-                    RecordCount = 4_096,
-                    Distribution = distribution,
-                    Scenario = scenario,
-                };
-                evaluation.GlobalSetup();
-                Ensure(
-                    evaluation.EvaluatePartitionPlan() == evaluation.ExpectedResultCount,
-                    $"partition query evaluation ({distribution}/{scenario})");
-                evaluation.ValidateFixture();
+                    var evaluation = new QueryPlanEvaluationBenchmarks
+                    {
+                        Dataset = QueryEvaluationDataset.ShortIds4K,
+                        Distribution = distribution,
+                        Scenario = scenario,
+                        Variant = variant,
+                    };
+                    evaluation.GlobalSetup();
+                    Ensure(
+                        evaluation.EvaluatePartitionPlan() == evaluation.ExpectedTimedResultCount,
+                        $"partition query evaluation ({distribution}/{scenario}/{variant})");
+                    evaluation.ValidateFixture();
+                    if (variant != QueryEvaluationVariant.MaterializingWholePlan)
+                    {
+                        var diagnostics = evaluation.OrderedDiagnostics
+                            ?? throw new InvalidOperationException("Ordered benchmark diagnostics were omitted.");
+                        Ensure(
+                            diagnostics.FirstPage.Work.TotalOperationCount > 0,
+                            $"ordered work vector ({distribution}/{scenario}/{variant})");
+                        if (scenario == QueryEvaluationScenario.SelectiveExactAndBroadRange)
+                        {
+                            Ensure(
+                                diagnostics.SelectiveExactDriverCount > 0
+                                && diagnostics.FirstPage.Work.OrderedCandidateVisitCount
+                                    <= diagnostics.SelectiveExactDriverCount,
+                                $"selective exact driver ({distribution}/{variant})");
+                        }
+                    }
+                }
             }
         }
+
+        Ensure(
+            SearchableStorageQueryOptions.DefaultLegacyResultItems
+                == checked(
+                    SearchableStorageQueryOptions.DefaultPageSize
+                    * SearchableStorageQueryOptions.DefaultLegacyRounds),
+            "default legacy item ceiling equals the default page-by-round window");
+
+        var longIds = new QueryPlanEvaluationBenchmarks
+        {
+            Dataset = QueryEvaluationDataset.LongIds4K,
+            Distribution = QueryEvaluationDistribution.Uniform,
+            Scenario = QueryEvaluationScenario.Range,
+            Variant = QueryEvaluationVariant.OrderedDefaultPartitionPage,
+        };
+        longIds.GlobalSetup();
+        var longDiagnostics = longIds.OrderedDiagnostics
+            ?? throw new InvalidOperationException("Long-GrainId diagnostics were omitted.");
+        Ensure(longDiagnostics.MinimumGrainKeyLength == 1_024, "long-GrainId fixture length");
+        Ensure(longDiagnostics.FirstPage.ItemByteCount > 0, "long-GrainId page-byte accounting");
+
+        var conservativeRange = new QueryPlanEvaluationBenchmarks
+        {
+            Dataset = QueryEvaluationDataset.ShortIds64K,
+            Distribution = QueryEvaluationDistribution.Uniform,
+            Scenario = QueryEvaluationScenario.Range,
+            Variant = QueryEvaluationVariant.OrderedMaximumPolicyPartitionPage,
+        };
+        conservativeRange.GlobalSetup();
+        var conservativeDiagnostics = conservativeRange.OrderedDiagnostics
+            ?? throw new InvalidOperationException("Conservative range diagnostics were omitted.");
+        Ensure(
+            conservativeDiagnostics.RangeExecutionStrategy
+                == QueryRangeExecutionStrategy.CatalogFallback
+            && conservativeDiagnostics.FirstPage.Work.PostingSeekCount >= 2
+            && conservativeDiagnostics.FirstPage.Work.RangeBucketVisitCount == 0
+            && conservativeDiagnostics.FirstPage.Work.RangeMergeOperationCount == 0,
+            "65K whole-scope range preflight conservatively selects catalog fallback");
     }
 
     private static void ValidateQuerySerialization()

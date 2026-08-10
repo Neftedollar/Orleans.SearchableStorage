@@ -61,17 +61,16 @@ reviewed change.
 
 ### Bounded query protocol gate
 
-PR13 freezes deterministic query-work instrumentation and the
-[bounded query and paging contract](bounded-query-contract.md); it does not claim that paging exists.
-PR14 must add the complete gate before changing public query behavior. The required matrix covers
+The [bounded query and paging contract](bounded-query-contract.md) is enforced by production-path
+tests. The matrix covers
 exact work-vector totals, every work/result/byte stop boundary, selective and broad boolean plans,
 duplicate-heavy union, ordered partition frontiers, multi-owner merge, short and empty non-terminal
 pages, and concatenation equivalence when no writes occur. It must also cover activation rebuild and
 mutation equivalence for the ordered state catalog/postings, ordered exact drivers,
 candidate-tested exact-and-range intersection, bounded range k-way merge, complete candidate-group
-frontiers, and ordered-catalog fallback. PR13's current materializing matrix is only the baseline;
-PR14 adds implementation-specific activation-build, mutation, memory, latency, allocation, and work
-measurements before selecting limits.
+frontiers, and ordered-catalog fallback. The PR13 materializing evaluator remains the benchmark
+baseline; the ordered implementation matrix adds activation-build, mutation, retained-memory,
+latency, allocation, paging-progress, and work-vector evidence.
 
 Scheduled concurrency cases must prove the documented weak behavior when a record begins or stops
 matching on either side of the global frontier; they must not assert snapshot isolation. Token tests
@@ -102,13 +101,16 @@ self-checksums, and unsafe histogram paths. Secret tests cover connection string
 userinfo, JSON credentials, and HTTP bearer authorization values.
 
 The pull-request smoke reflects the built microbenchmark assembly and requires exactly the reviewed
-15 `[Benchmark]` identities and every exact `[Params]` vector. It validates the actual
+16 `[Benchmark]` identities and every exact `[Params]` vector. It validates the actual
 BenchmarkDotNet job, GC, diagnoser, p95 column, exporters, and artifact-retention config rather than
 trusting duplicated provenance text, then invokes every production-backed fixture with semantic
 oracles for query-plan construction/evaluation, wire and journal serialization, journal append and
 replay, and snapshot detachment. It executes small Memory scenarios through searchable closed-loop,
 searchable open-loop, and plain closed-loop point-operation paths and asserts each resulting
-effective mode. A pinned Crank Controller `--debug` expansion gate checks both distributed-client
+effective mode. It also emits and validates the 62-entry quick ordered-work matrix, four retained-
+managed-memory cells, all nine work components, both range execution strategies, and clean
+`DeterministicEvidence` provenance; these JSON files are correctness evidence, not a timing gate.
+A pinned Crank Controller `--debug` expansion gate checks both distributed-client
 coordinates, exact source revision/environment/arguments, and artifact download paths without
 executing an agent. These are correctness gates with no wall-clock threshold. Dedicated nightly and
 capacity workflows retain raw artifacts;
@@ -120,7 +122,7 @@ The reusable contract exercises normal `IGrainStorage` behavior for indexed obje
 non-object state without indexes, exact and range primitives, nested `IQueryable` intersection and
 union, empty plans, nullable indexed values, compiler-promoted byte and enum queries through real
 Orleans serialization, inclusive and exclusive one-sided and equal bounds, deterministic sorted
-deduplication, cancellation, updates, clears, layout validation, ETags, deterministic
+deduplication, a resumed bounded hash-index page, cancellation, updates, clears, layout validation, ETags, deterministic
 multi-partition fan-out, activation rehydration, malformed wire-plan rejection followed by a
 healthy call, protection against boolean mutation of live index buckets, and physical-write failure
 boundaries. Its version-3 adoption case seeds a real record plus hash and range entries, performs the
@@ -136,11 +138,13 @@ Lower-level tests isolate the durable protocol from provider setup. They cover j
 
 Serializer and API contract tests freeze the required non-null fields and IDs of the existing
 bounded range message, the IDs and nullable bounds of the new non-persisted query plan, and a nested
-plan round trip through the configured Orleans serializer. They also freeze every virtual-routing
+plan round trip through the configured Orleans serializer. They freeze the routed page request,
+partition page result, all nine work-vector fields, stop reason, and budget exception; real Orleans
+round trips cover non-terminal responses and exceptions with non-zero work components. They also freeze every virtual-routing
 envelope, mismatch exception, layout descriptor, identity, snapshot, and durable layout-state field
 ID, including the original `PartitionCount` property identity. Compile-time test implementations
-keep the old direct-client interface independent from the opt-in query interface and exercise an
-external public async terminal provider.
+keep the old direct-client interface independent from the opt-in query and paging interfaces and
+exercise external public async terminal providers.
 
 The memory, PostgreSQL, Redis, and Azure Blob fixtures inherit this same contract class; backend tests do not copy or weaken its assertions.
 
@@ -173,7 +177,12 @@ derivation. For local execution and connection-string overrides, see
 
 ### Executable sample tests
 
-The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`. These tests ensure the documented host starts, keyed Orleans services resolve, writes reach the searchable provider, the focused `IQueryable` API returns indexed ids, the layout endpoint reports the persisted epoch-1 identity map, and deletes remove both state and index entries. A keyed blocking query client verifies that HTTP request cancellation reaches both search endpoints and their async terminal operation while it is in flight.
+The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`. These tests ensure
+the documented host starts, keyed Orleans services resolve, writes reach the searchable provider,
+the focused `IQueryable` API returns both compatibility results and resumable pages, concatenated
+pages preserve canonical order, the layout endpoint reports the persisted epoch-1 identity map, and
+deletes remove both state and index entries. A keyed blocking query client verifies that HTTP request
+cancellation reaches every search endpoint and its async terminal while it is in flight.
 
 ## Coverage artifacts
 

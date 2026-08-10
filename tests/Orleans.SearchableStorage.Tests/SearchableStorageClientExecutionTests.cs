@@ -50,13 +50,11 @@ public sealed class SearchableStorageClientExecutionTests
     }
 
     [Fact]
-    public async Task BoundedRangeApiKeepsUsingItsRequiredBoundedMessage()
+    public async Task RangeApiUsesTheSharedBoundedPageMessage()
     {
         var match = GrainId.Create("vacancy", "match");
-        RangeIndexQuery? sentQuery = null;
-        var partition = new ControlledPartition(
-            _ => Task.FromResult(Array.Empty<GrainId>()),
-            range: query =>
+        PartitionQueryPlan? sentQuery = null;
+        var partition = new ControlledPartition(query =>
             {
                 sentQuery = query;
                 return Task.FromResult(new[] { match });
@@ -71,11 +69,12 @@ public sealed class SearchableStorageClientExecutionTests
             includeUpperBound: true);
 
         matches.Should().ContainSingle().Which.Should().Be(match);
-        partition.RangeCallCount.Should().Be(1);
-        partition.QueryCallCount.Should().Be(0);
+        partition.RangeCallCount.Should().Be(0);
+        partition.QueryCallCount.Should().Be(1);
+        partition.UnboundedQueryCallCount.Should().Be(0);
         sentQuery.Should().NotBeNull();
-        sentQuery!.LowerBound.SignedInteger.Should().Be(5);
-        sentQuery.UpperBound.SignedInteger.Should().Be(8);
+        sentQuery!.LowerBound!.SignedInteger.Should().Be(5);
+        sentQuery.UpperBound!.SignedInteger.Should().Be(8);
         sentQuery.IncludeLowerBound.Should().BeFalse();
         sentQuery.IncludeUpperBound.Should().BeTrue();
     }
@@ -584,6 +583,8 @@ public sealed class SearchableStorageClientExecutionTests
 
         public int QueryCallCount { get; private set; }
 
+        public int UnboundedQueryCallCount { get; private set; }
+
         public List<PartitionQueryPlan> Plans { get; } = [];
 
         public Task<GrainId[]>? LastQueryTask { get; private set; }
@@ -665,16 +666,51 @@ public sealed class SearchableStorageClientExecutionTests
 
         public Task<GrainId[]> QueryAsync(PartitionQueryPlan query)
         {
-            QueryCallCount++;
-            Plans.Add(query);
-            _started.TrySetResult();
-            LastQueryTask = _query(query);
-            return LastQueryTask;
+            UnboundedQueryCallCount++;
+            return _query(query);
         }
 
         public Task<GrainId[]> QueryRoutedAsync(RoutedPartitionQuery query)
         {
             return QueryAsync(query.Query);
+        }
+
+        public Task<PartitionQueryPageResult> QueryPageRoutedAsync(
+            RoutedPartitionQueryPageRequest request)
+        {
+            QueryCallCount++;
+            Plans.Add(request.Query);
+            _started.TrySetResult();
+            LastQueryTask = _query(request.Query);
+            return CreatePageResultAsync(LastQueryTask, request);
+        }
+
+        private static async Task<PartitionQueryPageResult> CreatePageResultAsync(
+            Task<GrainId[]> task,
+            RoutedPartitionQueryPageRequest request)
+        {
+            var items = (await task)
+                .Where(item => !request.HasAfter
+                    || GrainIdCanonicalOrder.Compare(item, request.After) > 0)
+                .Distinct(GrainIdCanonicalOrder.EqualityComparer)
+                .Order(GrainIdCanonicalOrder.Comparer)
+                .ToArray();
+            return new PartitionQueryPageResult
+            {
+                Items = items,
+                Exhausted = true,
+                StopReason = PartitionQueryPageStopReason.Exhausted,
+                Work = new PartitionQueryPageWork(),
+                ItemByteCount = items.Sum(GrainIdCanonicalOrder.GetEncodedLength),
+                ProtocolVersion = request.ProtocolVersion,
+                OrderingVersion = request.OrderingVersion,
+                WorkPolicyVersion = request.WorkPolicyVersion,
+                ResponseFamily = request.ResponseFamily,
+                Epoch = request.Epoch,
+                QueryFingerprint = [.. request.QueryFingerprint],
+                LayoutFormatVersion = request.LayoutFormatVersion,
+                LayoutFingerprint = [.. request.LayoutFingerprint],
+            };
         }
     }
 }

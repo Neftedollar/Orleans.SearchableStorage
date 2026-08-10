@@ -6,7 +6,10 @@ namespace Orleans.SearchableStorage.Querying;
 
 internal sealed class SearchableStorageQueryProvider<TState>(
     SearchableStorageClient client,
-    string stateName) : IQueryProvider, ISearchableStorageAsyncQueryProvider
+    string stateName) :
+    IQueryProvider,
+    ISearchableStorageAsyncQueryProvider,
+    ISearchableStoragePagedQueryProvider
 {
     public IQueryable CreateQuery(Expression expression)
     {
@@ -47,17 +50,31 @@ internal sealed class SearchableStorageQueryProvider<TState>(
         return client.ExecuteQueryAsync<TState>(stateName, expression, cancellationToken);
     }
 
+    public Task<SearchableStorageQueryPage> ExecuteToGrainIdPageAsync(
+        Expression expression,
+        SearchableStorageQueryPageRequest request,
+        CancellationToken cancellationToken)
+    {
+        return client.ExecuteQueryPageAsync<TState>(
+            stateName,
+            expression,
+            request,
+            cancellationToken);
+    }
+
     private static NotSupportedException UnsupportedElementType(Type elementType)
     {
         return new NotSupportedException(
             $"LINQ projections and element type '{elementType}' are not supported. " +
-            "Searchable storage queries return GrainId values through ToGrainIdsAsync.");
+            "Searchable storage queries return GrainId values through ToGrainIdPageAsync "
+            + "or ToGrainIdsAsync.");
     }
 
     private static NotSupportedException SynchronousExecutionNotSupported()
     {
         return new NotSupportedException(
-            "Synchronous query execution is not supported. Use ToGrainIdsAsync.");
+            "Synchronous query execution is not supported. Use ToGrainIdPageAsync or "
+            + "ToGrainIdsAsync.");
     }
 }
 
@@ -84,7 +101,8 @@ internal sealed class SearchableStorageQuery<TState> : IOrderedQueryable<TState>
     public IEnumerator<TState> GetEnumerator()
     {
         throw new NotSupportedException(
-            "Synchronous query enumeration is not supported. Use ToGrainIdsAsync.");
+            "Synchronous query enumeration is not supported. Use ToGrainIdPageAsync or "
+            + "ToGrainIdsAsync.");
     }
 
     IEnumerator IEnumerable.GetEnumerator()
