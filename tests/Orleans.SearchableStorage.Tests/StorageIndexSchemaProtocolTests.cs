@@ -67,7 +67,8 @@ public sealed class StorageIndexSchemaProtocolTests
             maximumWriterEpoch: 1,
             [],
             ref nextVersion,
-            ref operationId);
+            ref operationId,
+            new StorageCapacityTracker(records));
 
         nextVersion.Should().Be(8);
         records["state/record"].ETag.Should().Be("7");
@@ -117,7 +118,8 @@ public sealed class StorageIndexSchemaProtocolTests
             maximumWriterEpoch: 1,
             [],
             ref nextVersion,
-            ref operationId);
+            ref operationId,
+            new StorageCapacityTracker(records));
 
         action.Should().Throw<InvalidOperationException>()
             .WithMessage("*identity or version*");
@@ -152,7 +154,8 @@ public sealed class StorageIndexSchemaProtocolTests
             maximumWriterEpoch: 1,
             [],
             ref nextVersion,
-            ref operationId);
+            ref operationId,
+            new StorageCapacityTracker(records));
 
         action.Should().Throw<InvalidOperationException>()
             .WithMessage("*identity or version*");
@@ -186,7 +189,8 @@ public sealed class StorageIndexSchemaProtocolTests
             maximumWriterEpoch: 1,
             [],
             ref nextVersion,
-            ref operationId);
+            ref operationId,
+            new StorageCapacityTracker(records));
 
         action.Should().Throw<InvalidOperationException>()
             .WithMessage("*identity or version*");

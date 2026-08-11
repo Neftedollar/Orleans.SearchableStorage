@@ -45,6 +45,7 @@ public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
     /// </summary>
     /// <remarks>
     /// This value is part of the persisted data layout and must not be changed after data is written.
+    /// It cannot exceed <see cref="SearchableStorageCapacityLimits.MaximumJournalSegmentEntries"/>.
     /// </remarks>
     public int JournalSegmentCapacity { get; set; } = Storage.StoragePersistence.DefaultJournalSegmentCapacity;
 
@@ -53,6 +54,7 @@ public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
     /// </summary>
     /// <remarks>
     /// This value is part of the persisted data layout and must not be changed after data is written.
+    /// It cannot exceed <see cref="SearchableStorageCapacityLimits.MaximumJournalReplayEntries"/>.
     /// </remarks>
     public int MaximumJournalReplayEntries { get; set; } = Storage.StoragePersistence.DefaultMaximumJournalReplayEntries;
 

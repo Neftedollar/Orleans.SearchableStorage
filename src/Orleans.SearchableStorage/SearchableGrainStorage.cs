@@ -55,7 +55,9 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         SearchableStorageOptions options,
         IActivatorProvider activatorProvider,
         StorageLayoutCache layoutCache,
-        Func<int, IStoragePartitionGrain> getPartition)
+        Func<int, IStoragePartitionGrain> getPartition,
+        SearchableStateRegistry? stateRegistry = null,
+        Func<string, IStorageIndexSchemaGrain>? getIndexSchema = null)
     {
         ArgumentNullException.ThrowIfNull(activatorProvider);
         ArgumentNullException.ThrowIfNull(layoutCache);
@@ -66,8 +68,8 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         _persistenceSettings = configuration.PersistenceSettings;
         _serializer = configuration.Serializer;
         _activatorProvider = activatorProvider;
-        _stateRegistry = SearchableStateRegistry.Empty;
-        _getIndexSchema = null;
+        _stateRegistry = stateRegistry ?? SearchableStateRegistry.Empty;
+        _getIndexSchema = getIndexSchema;
         _layoutCache = layoutCache;
         _getPartition = getPartition;
     }
@@ -115,8 +117,10 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     public async Task ReadStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
+        StorageCapacityGuardrails.ValidateGrainId(grainId);
 
         var recordKey = CreateRecordKey(stateName, grainId);
+        StorageCapacityGuardrails.ValidateRecordKey(recordKey);
         var result = await ExecuteRoutedAsync(
             grainId,
             (partition, slot, epoch) => partition.ReadRoutedAsync(new RoutedStorageReadRequest
@@ -147,11 +151,22 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     public async Task WriteStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
+        StorageCapacityGuardrails.ValidateGrainId(grainId);
 
         var recordKey = CreateRecordKey(stateName, grainId);
+        StorageCapacityGuardrails.ValidateRecordKey(recordKey);
         var payload = _serializer.Serialize(grainState.State).ToArray();
+        StorageCapacityGuardrails.ValidateRecordKeyAndPayload(recordKey, payload);
         var registration = _stateRegistry.Find<T>(_providerName, stateName);
-        await EnsureSchemaActiveAsync(stateName, registration);
+        var requiresPreExtractionSchemaGate = registration is not null
+            || _stateRegistry.ContainsProvider(_providerName);
+        if (requiresPreExtractionSchemaGate)
+        {
+            // Registered schemas fail closed while a rebuild is active, before invoking application
+            // getters. A partial managed registration is also rejected locally at this point.
+            await EnsureSchemaActiveAsync(stateName, registration);
+        }
+
         var indexes = registration is null
             ? IndexMetadataProvider.Extract(stateName, grainState.State)
             : IndexMetadataProvider.Extract(
@@ -172,6 +187,13 @@ internal sealed class SearchableGrainStorage : IGrainStorage
                 ? 0
                 : StorageIndexSchema.ProtocolVersion,
         };
+        StorageCapacityGuardrails.ValidateWriteRequest(request);
+        if (!requiresPreExtractionSchemaGate)
+        {
+            // A legacy/unmanaged first write completes all local materialization and capacity
+            // admission before the layout probe is allowed to initialize durable authority.
+            await EnsureSchemaActiveAsync(stateName, registration);
+        }
 
         grainState.ETag = await ExecuteRoutedAsync(
             grainId,
@@ -187,10 +209,13 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     public async Task ClearStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
+        StorageCapacityGuardrails.ValidateGrainId(grainId);
+
+        var recordKey = CreateRecordKey(stateName, grainId);
+        StorageCapacityGuardrails.ValidateRecordKey(recordKey);
         var registration = _stateRegistry.Find<T>(_providerName, stateName);
         await EnsureSchemaActiveAsync(stateName, registration);
 
-        var recordKey = CreateRecordKey(stateName, grainId);
         await ExecuteRoutedAsync(
             grainId,
             (partition, slot, epoch) => partition.ClearRoutedAsync(new RoutedStorageClearRequest
@@ -358,6 +383,11 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         }
 
         StoragePersistence.ValidateOptions(journalSegmentCapacity, maximumJournalReplayEntries);
+        StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+            journalSegmentCapacity,
+            maximumJournalReplayEntries,
+            nameof(journalSegmentCapacity),
+            nameof(maximumJournalReplayEntries));
 
         if (compactionThreshold <= 0)
         {

@@ -174,6 +174,10 @@ coordinates, exact source revision/environment/arguments, and artifact download 
 executing an agent. These are correctness gates with no wall-clock threshold. Dedicated nightly and
 capacity workflows retain raw artifacts;
 see [benchmarks.md](benchmarks.md) for environment and comparison requirements.
+Focused guardrail tests separately pin the fixed logical capacity limits, representative inclusive
+and next-byte/next-element boundaries, fail-before-authority ordering, healthy retry, and fail-closed durable
+recovery described in [storage-capacity-limits.md](storage-capacity-limits.md). Those are safety and
+contract tests, not throughput or provider-capacity evidence.
 
 ### Storage contract tests
 
