@@ -1,8 +1,10 @@
+using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
 using Orleans.SearchableStorage;
 using Orleans.SearchableStorage.ApiSample;
 
 var builder = WebApplication.CreateBuilder(args);
+var ephemeralContinuationKey = RandomNumberGenerator.GetBytes(32);
 
 builder.Host.UseOrleans(siloBuilder =>
 {
@@ -17,10 +19,12 @@ builder.Host.UseOrleans(siloBuilder =>
             options.JournalSegmentCapacity = 16;
             options.MaximumJournalReplayEntries = 256;
             options.CompactionThreshold = 64;
-            // Development-only sample key. Production deployments must load a shared 32-byte
-            // provider-scoped key from secret configuration and follow the documented rotation flow.
+            // Development-only process key. Restarting the sample invalidates its continuations.
+            // Production deployments must load one stable, shared provider-scoped secret.
             options.Query.ContinuationProtection.CurrentKey =
-                new SearchableStorageContinuationKey("api-sample-v1", new byte[32]);
+                new SearchableStorageContinuationKey(
+                    "api-sample-ephemeral",
+                    ephemeralContinuationKey);
         });
 });
 
@@ -34,6 +38,9 @@ app.MapDelete("/vacancies/{id}", DeleteVacancyAsync);
 app.MapGet("/vacancies/search/by-city", VacancySearchEndpoints.FindByCityAsync);
 app.MapGet("/vacancies/search/by-city/page", VacancySearchEndpoints.FindByCityPageAsync);
 app.MapGet("/vacancies/search/by-salary", VacancySearchEndpoints.FindBySalaryAsync);
+app.MapGet("/vacancies/facets/cities", VacancySearchEndpoints.GetDistinctCitiesAsync);
+app.MapGet("/vacancies/facets/cities/top", VacancySearchEndpoints.GetTopCitiesAsync);
+app.MapGet("/vacancies/facets/salaries/min-max", VacancySearchEndpoints.GetSalaryMinMaxAsync);
 app.MapGet("/storage/layout", GetStorageLayoutAsync);
 
 app.Run();
@@ -105,6 +112,19 @@ internal sealed record SearchResponse(IReadOnlyList<string> Ids);
 
 internal sealed record SearchPageResponse(IReadOnlyList<string> Ids, string? ContinuationToken);
 
+internal sealed record DistinctCityFacetResponse(
+    IReadOnlyList<string> Values,
+    string? ContinuationToken);
+
+internal sealed record CityFacetValueCountResponse(string Value, long Count);
+
+internal sealed record CityFacetCountsResponse(
+    IReadOnlyList<CityFacetValueCountResponse> Items,
+    bool IsExact,
+    long MaximumOmittedCount);
+
+internal sealed record SalaryFacetMinMaxResponse(int? Minimum, int? Maximum);
+
 internal sealed record ApiDescription(string Name, string Storage, IReadOnlyList<string> Endpoints);
 
 internal static class SampleMetadata
@@ -119,6 +139,9 @@ internal static class SampleMetadata
             "GET /vacancies/search/by-city?city={city}",
             "GET /vacancies/search/by-city/page?city={city}&pageSize={size}",
             "GET /vacancies/search/by-salary?lower={value}&upper={value}",
+            "GET /vacancies/facets/cities?pageSize={size}",
+            "GET /vacancies/facets/cities/top?topN={count}&accuracy={Exact|Approximate}",
+            "GET /vacancies/facets/salaries/min-max?city={city}",
             "GET /storage/layout",
         ]);
 }

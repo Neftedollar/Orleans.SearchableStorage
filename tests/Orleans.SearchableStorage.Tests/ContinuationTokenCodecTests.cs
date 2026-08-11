@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using AwesomeAssertions;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
 
 namespace Orleans.SearchableStorage.Tests;
@@ -13,6 +14,21 @@ public sealed class ContinuationTokenCodecTests
     private static readonly byte[] CurrentMaterial = SHA256.HashData("current secret"u8);
     private static readonly byte[] OldMaterial = SHA256.HashData("old secret"u8);
     private static readonly byte[] NewMaterial = SHA256.HashData("new secret"u8);
+
+    [Fact]
+    public void CapturedPr14V1GrainIdTokenRemainsDecodable()
+    {
+        const string capturedToken =
+            "AAAAAQAAAAEAAAAHY3VycmVudMfuhzQ6VBL6HqXT3wAAAMl28Tm577txN9R0FMJ76Cjof9pStuYR280I3XkxqXU8Ag_6AouNhd4jKrzeJ8l6O83_d0ChJ-dvrfe4hh8ipli4FXrsTi4eJ2nzPsxY1PuBmIdSioEbLEGWxekSlo2xBIc3eARbUx3Z4jrpmRSNvy244qrAt1aTocZC-J8SFh7X-yYlTegblznGxeUvQWuX45xGk3-chCB77Y4rUKz8I3p-46R9xDKfr1wY9Is3A0LWMbkOLc4XYMK40hNrlrxvzoz4f9VPLPpgY0B56qnnTkANBtkoV7g5utqt";
+        var codec = CreateCodec("current", CurrentMaterial);
+        var binding = CreateBinding();
+
+        var decoded = codec.Unprotect(capturedToken, binding);
+
+        decoded.ResponseFamily.Should().Be(PartitionQueryResponseFamily.GrainIdPage);
+        decoded.After.Should().Be(GrainId.Create("pr14-frontier", "captured-v1"));
+        decoded.AfterFacetValue.Should().BeNull();
+    }
 
     [Fact]
     public void RoundTripPreservesEveryBoundFieldAndExclusiveFrontier()
@@ -274,6 +290,67 @@ public sealed class ContinuationTokenCodecTests
         codec.Unprotect(token, binding).After.Should().Be(frontier);
     }
 
+    [Fact]
+    public void MaximumFacetTextCursorFitsTheHardProtectedTokenCeiling()
+    {
+        var providerName = new string('p', 1_024);
+        var keyId = new string('k', SearchableStorageContinuationKey.MaximumKeyIdBytes);
+        var options = CreateOptions(keyId, CurrentMaterial);
+        options.ContinuationTokenByteLimit = SearchableStorageQueryOptions.MaximumContinuationTokenBytes;
+        var codec = new ContinuationTokenCodec(
+            providerName,
+            SearchableStorageQueryConfiguration.Create(options));
+        var binding = CreateBinding(
+            providerName: providerName,
+            responseFamily: PartitionQueryResponseFamily.DistinctFacetValuePage);
+        var frontier = IndexValue.Create(new string('x', IndexValueCanonicalEncoding.MaximumTextBytes));
+
+        var token = codec.Protect(ContinuationTokenPayload.CreateFacet(binding, frontier));
+        var decoded = codec.Unprotect(token, binding);
+
+        token.Length.Should().BeLessThanOrEqualTo(SearchableStorageQueryOptions.MaximumContinuationTokenBytes);
+        decoded.AfterFacetValue.Should().Be(frontier);
+        decoded.After.Should().Be(default);
+    }
+
+    [Fact]
+    public void OversizedFacetTextCursorIsRejectedBeforeTokenEmission()
+    {
+        var options = CreateOptions("current", CurrentMaterial);
+        options.ContinuationTokenByteLimit = SearchableStorageQueryOptions.MaximumContinuationTokenBytes;
+        var codec = new ContinuationTokenCodec(
+            ProviderName,
+            SearchableStorageQueryConfiguration.Create(options));
+        var binding = CreateBinding(
+            responseFamily: PartitionQueryResponseFamily.DistinctFacetValuePage);
+        var frontier = IndexValue.Create(new string(
+            'x',
+            IndexValueCanonicalEncoding.MaximumTextBytes + 1));
+
+        Action protect = () => _ = codec.Protect(
+            ContinuationTokenPayload.CreateFacet(binding, frontier));
+
+        protect.Should().Throw<CanonicalEncodingLimitExceededException>();
+    }
+
+    [Fact]
+    public void FacetCursorIsBoundToItsResponseFamilyAndFacetPolicy()
+    {
+        var codec = CreateCodec("current", CurrentMaterial);
+        var facet = CreateBinding(
+            responseFamily: PartitionQueryResponseFamily.DistinctFacetValuePage);
+        var token = codec.Protect(ContinuationTokenPayload.CreateFacet(
+            facet,
+            IndexValue.Create("frontier")));
+        var regular = CreateBinding();
+        var changedPolicy = CreateBinding(
+            responseFamily: PartitionQueryResponseFamily.DistinctFacetValuePage,
+            policy: facet.Policy with { PartitionWorkBudget = facet.Policy.PartitionWorkBudget + 1 });
+
+        AssertInvalid(() => _ = codec.Unprotect(token, regular));
+        AssertInvalid(() => _ = codec.Unprotect(token, changedPolicy));
+    }
+
     [Theory]
     [InlineData(0, 1)]
     [InlineData(GrainIdCanonicalOrder.MaximumTypeBytes + 1, 1)]
@@ -336,7 +413,9 @@ public sealed class ContinuationTokenCodecTests
             providerName,
             responseFamily,
             queryFingerprint ?? SHA256.HashData("query fingerprint"u8),
-            QueryProtocol.OrderingVersion,
+            responseFamily == PartitionQueryResponseFamily.DistinctFacetValuePage
+                ? QueryProtocol.FacetValueOrderingVersion
+                : QueryProtocol.OrderingVersion,
             layoutFormatVersion: 4,
             routingEpoch,
             layoutFingerprint ?? SHA256.HashData("layout fingerprint"u8),

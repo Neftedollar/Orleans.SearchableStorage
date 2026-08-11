@@ -29,7 +29,7 @@ internal static class QueryPlanValidator
 
             switch (current.Plan)
             {
-                case EmptyQueryPlan or ExactQueryPlan or RangeQueryPlan:
+                case AllQueryPlan or EmptyQueryPlan or ExactQueryPlan or RangeQueryPlan:
                     break;
                 case AndQueryPlan and:
                     pending.Push((and.Right, current.Depth + 1));
@@ -65,6 +65,7 @@ internal static class QueryPlanValidator
 
             switch (current.Plan.Operation)
             {
+                case PartitionQueryOperation.All:
                 case PartitionQueryOperation.Empty:
                     ValidateEmpty(current.Plan, query);
                     break;
@@ -101,7 +102,7 @@ internal static class QueryPlanValidator
         if (HasLeafPayload(plan) || plan.Left is not null || plan.Right is not null)
         {
             throw new ArgumentException(
-                "An empty partition query cannot contain leaf data or child plans.",
+                "An all/empty partition query cannot contain leaf data or child plans.",
                 nameof(query));
         }
     }

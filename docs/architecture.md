@@ -22,9 +22,22 @@ serially consistent activation view, and returns a sorted local prefix plus a sa
 coordinator merges the global safe prefix under item and byte caps and protects the next boundary in
 a stateless authenticated-encrypted continuation.
 
+The same query provider exposes a separate `ISearchableStorageFacetQueryProvider`. It compiles the
+focused predicate once, resolves one indexed-property selector, and uses typed partition families
+for distinct values, candidate metadata, and resumable exact counts. Exact/approximate top-N and
+min/max are coordinator reductions over those bounded primitives; they never deserialize state into
+the client or introduce untyped aggregate payloads.
+
 ## Sample topology
 
-`Orleans.SearchableStorage.ApiSample` co-hosts an ASP.NET Core minimal API and one Orleans silo only to provide a zero-infrastructure executable walkthrough. HTTP writes call an application grain, its normal `IPersistentState<T>` uses `SearchableGrainStorage`, and the provider routes the serialized record plus extracted index entries to one storage-partition grain. HTTP search endpoints use `Query<TState>` and `Where` on the named `ISearchableStorageQueryClient`; one endpoint demonstrates `ToGrainIdPageAsync`, while compatibility endpoints demonstrate bounded all-results collection. ASP.NET Core supplies `HttpContext.RequestAborted` as the endpoint cancellation token.
+`Orleans.SearchableStorage.ApiSample` co-hosts an ASP.NET Core minimal API and one Orleans silo only
+to provide a zero-infrastructure executable walkthrough. HTTP writes call an application grain, its
+normal `IPersistentState<T>` uses `SearchableGrainStorage`, and the provider routes the serialized
+record plus extracted index entries to one storage-partition grain. HTTP search endpoints use
+`Query<TState>` and `Where` on the named `ISearchableStorageQueryClient`; one endpoint demonstrates
+`ToGrainIdPageAsync`, compatibility endpoints demonstrate bounded all-results collection, and three
+facet endpoints demonstrate distinct values, explicit exact/approximate top-N counts, and filtered
+extrema. ASP.NET Core supplies `HttpContext.RequestAborted` as the endpoint cancellation token.
 
 This co-hosting is not an architectural constraint. An API can run in another process as an Orleans client and construct a `SearchableStorageClient` with the same provider namespace and partition count. The sample deliberately uses in-memory physical persistence, so process termination removes its data; backend durability is covered by the reusable provider contract rather than by the sample.
 
@@ -159,7 +172,11 @@ construction, comparer-equal buckets are canonicalized and merged. A mutation ad
 the affected bucket in O(log d), where d is the number of distinct indexed values, and empty buckets
 and scopes are removed. `GetViewBetween` seeks into the tree and visits only the requested ordered
 window, giving O(log d + k) traversal for k visited buckets. Hash indexes likewise update only the
-affected record buckets.
+affected record buckets. Hash scopes now use the same canonical balanced value projection rather
+than an unordered bucket dictionary, so value seeks and affected bucket updates are also O(log d).
+Each bucket stores its posting cardinality as scalar metadata; facet candidate nomination does not
+enumerate posting members. These structures remain activation-derived and add no durable index
+representation.
 
 Once a successful write returns, that partition's activation already contains the committed state
 and corresponding index entries. No asynchronous index-maintenance pipeline exists in this version;
@@ -169,6 +186,13 @@ entries.
 ## Query translation and execution
 
 `ISearchableStorageQueryClient.Query<TState>(stateName)` returns an `IQueryable<TState>` only as a familiar expression-building surface. It is not an in-memory state collection and cannot enumerate `TState` values. `ToGrainIdPageAsync` opts into the public `ISearchableStoragePagedQueryProvider` contract. `ToGrainIdsAsync` remains an all-results terminal through `ISearchableStorageAsyncQueryProvider`; external providers own and must document their own bounding semantics.
+
+Facet terminals opt in independently through `ISearchableStorageFacetQueryProvider`, preserving the
+existing async and paging provider contracts for external implementations. Their selector must map
+the query element directly to one declared index. `IndexValueMaterializer` uses that selected
+index's converter to reconstruct the exact public CLR type from the canonical wire value; the
+internal value kind alone is insufficient for shared representations such as enum/integer,
+nullable/non-nullable, `char`/string, or `DateTime`/`DateTimeOffset`.
 
 Translation accepts one or more `Queryable.Where` calls. Predicate leaves must compare one direct indexed property with a constant or captured value using equality or an ordered comparison. Boolean `AndAlso` and `OrElse` become plan intersection and union. Reversed operands are normalized. Intersected bounds on the same index are combined before execution; contradictory bounds become an empty plan. Equality can use either index kind, while ordered comparisons require a range index. Null comparison is rejected because null index values are deliberately omitted. An empty plan still validates persisted layout compatibility and cancellation, but skips partition fan-out.
 
@@ -206,6 +230,25 @@ cursor or buffered result. A non-terminal page may be short or empty; only a nul
 aggregate work, item, byte, and round ceilings. They return a complete result or throw
 `SearchableStorageQueryLimitExceededException`; no old unbounded RPC fallback exists.
 
+### Bounded facet protocol
+
+Distinct-value requests merge one safe canonical `IndexValue` prefix and protect one exclusive
+value boundary in a response-family-bound continuation. Candidate requests return value/raw
+posting-count metadata plus checked page and pinned owner-total raw counts. The coordinator
+accumulates page totals locally and derives the conservative remaining bound. Exact-count requests seek one
+nominated posting and evaluate the complete predicate in resumable canonical `GrainId` slices.
+Candidate, probe, and filtered-predicate work all have explicit checked counters.
+
+One multi-turn attempt pins each owner to the partition data version observed on its first response.
+A change discards and restarts the whole attempt once; a second change fails without a partial
+aggregate. Owners still have no common observation instant, and distinct continuations across public
+calls are weakly consistent. Exact top-N deepens value-order pages until owners exhaust or the Nth
+count strictly exceeds the summed unseen bound. Approximate top-N stops after one candidate turn and
+reports both `IsExact` and an inclusive `MaximumOmittedCount`. Min/max exhausts candidates. Aggregate
+work, turns, candidate items, and encoded bytes make every terminal all-or-throw. The normative proof
+and response-family values are in the
+[bounded query contract](bounded-query-contract.md#indexed-facet-protocol).
+
 ## Index metadata
 
 Public readable state properties marked with `SearchableIndexAttribute` are indexed. Index scope combines a length-prefixed persisted state-type identity, Orleans state name, and stable index name. A named type identity contains its assembly simple name, culture, public-key token, and full type name. Constructed generic identities contain the generic definition followed by recursively encoded argument identities; arrays encode their shape and element identity. Assembly versions are deliberately excluded. Length prefixes make every boundary unambiguous and prevent unrelated states from sharing buckets accidentally.
@@ -216,7 +259,14 @@ PolyType usage is contained behind the indexing model. Storage grains and persis
 
 The runtime reflection provider is intentional. Orleans `IGrainStorage` accepts unconstrained application state types, and this project does not require consumers to annotate those types for PolyType source generation. Native AOT and trimming are not supported.
 
-Null values are omitted. String ordering is ordinal. `DateTime` values must be UTC so index ordering cannot depend on a silo's local time zone. Floating-point NaN values are rejected because they do not provide a useful total ordering for these indexes.
+Null values are omitted. String ordering is ordinal. The canonical facet wire representation accepts
+at most 16,384 bytes of valid strict UTF-8 for string/`char` values. Writes retain their older CLR
+domain and do not enforce this wire limit; a facet traversal which reaches an overlong value or
+unpaired surrogate fails atomically with `SearchableStorageQueryLimitExceededException`, so
+applications must validate facet text as a schema rule.
+`DateTime` values must be UTC so index ordering cannot depend on a silo's local time zone.
+Floating-point NaN values are rejected because they do not provide a useful total ordering for these
+indexes.
 
 Index names, index kinds, and indexed property types are persisted schema. Adding an attribute does not backfill records which were written before that index existed. Renaming an index, changing its kind or property type, or changing the index-scope format requires a migration or complete record rewrite.
 
@@ -254,6 +304,12 @@ The query-plan and routed RPCs change the internal grain contract; mixed-version
 supported. The bounded `ExactIndexQuery` and `RangeIndexQuery` messages and legacy partition methods
 remain frozen for compatibility on updated processes, while the current client carries them inside
 additive routed envelopes.
+
+Facet request/result messages are likewise non-persisted but wire-frozen. Adding them and changing
+the activation-derived hash value projection do not change layout format 4, partition persistence
+format 3, record/index entries, snapshots, journals, manifests, or the write protocol. Mixed-version
+facet traffic is unsupported: query traffic remains quiesced until every partition host and built-in
+query client understands all typed response families.
 
 Virtual routing adds server methods without removing the legacy partition and layout methods, but
 method addition alone does not make a mixed-version cluster safe. A new `SearchableGrainStorage`

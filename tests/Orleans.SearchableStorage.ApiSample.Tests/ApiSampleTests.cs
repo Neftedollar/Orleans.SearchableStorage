@@ -30,7 +30,7 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         description.Should().NotBeNull();
         description!.Name.Should().Be("Orleans.SearchableStorage API sample");
         description.Storage.Should().Be("Journaled Orleans storage over in-memory physical persistence");
-        description.Endpoints.Should().HaveCount(7);
+        description.Endpoints.Should().HaveCount(10);
     }
 
     [Fact]
@@ -46,7 +46,91 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         options.MaximumJournalReplayEntries.Should().Be(256);
         options.CompactionThreshold.Should().Be(64);
         options.Query.ContinuationProtection.CurrentKey.Should().NotBeNull();
-        options.Query.ContinuationProtection.CurrentKey!.KeyId.Should().Be("api-sample-v1");
+        options.Query.ContinuationProtection.CurrentKey!.KeyId.Should().Be("api-sample-ephemeral");
+    }
+
+    [Fact]
+    public async Task FacetEndpointsExposePagingExactnessAndFilteredAggregates()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var firstCity = $"Facet-A-{suffix}";
+        var secondCity = $"Facet-B-{suffix}";
+        var firstId = $"facet-first-{suffix}";
+        var secondId = $"facet-second-{suffix}";
+        var thirdId = $"facet-third-{suffix}";
+        const int isolationSalary = int.MaxValue - 1;
+
+        await PutAsync(firstId, firstCity, isolationSalary);
+        await PutAsync(secondId, firstCity, int.MaxValue);
+        await PutAsync(thirdId, secondCity, int.MaxValue);
+
+        try
+        {
+            var values = new List<string>();
+            string? continuation = null;
+            do
+            {
+                var path = "/vacancies/facets/cities?pageSize=1";
+                if (continuation is not null)
+                {
+                    path += $"&continuation={Uri.EscapeDataString(continuation)}";
+                }
+
+                var response = await _client.GetAsync(path);
+                response.StatusCode.Should().Be(HttpStatusCode.OK);
+                var page = await response.Content.ReadFromJsonAsync<DistinctCityFacetResponse>();
+                page.Should().NotBeNull();
+                values.AddRange(page!.Values);
+                continuation = page.ContinuationToken;
+            }
+            while (continuation is not null);
+
+            values.Should().Contain([firstCity, secondCity]);
+            values.Should().BeInAscendingOrder(StringComparer.Ordinal);
+
+            var countsResponse = await _client.GetAsync(
+                $"/vacancies/facets/cities/top?topN=2&accuracy=Exact&minimumSalary={isolationSalary}");
+            countsResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var counts = await countsResponse.Content.ReadFromJsonAsync<CityFacetCountsResponse>();
+            counts.Should().NotBeNull();
+            counts!.IsExact.Should().BeTrue();
+            counts.MaximumOmittedCount.Should().Be(0);
+            counts.Items.Should().Equal(
+                new CityFacetValueCountResponse(firstCity, 2),
+                new CityFacetValueCountResponse(secondCity, 1));
+
+            var approximateResponse = await _client.GetAsync(
+                $"/vacancies/facets/cities/top?topN=1&accuracy=Approximate&minimumSalary={isolationSalary}");
+            approximateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var approximate = await approximateResponse.Content
+                .ReadFromJsonAsync<CityFacetCountsResponse>();
+            approximate.Should().NotBeNull();
+            approximate!.Items.Should().ContainSingle();
+            approximate.Items[0].Should().Be(new CityFacetValueCountResponse(firstCity, 2));
+            approximate.MaximumOmittedCount.Should().BeGreaterThanOrEqualTo(1);
+            if (approximate.IsExact)
+            {
+                approximate.MaximumOmittedCount.Should().Be(1);
+            }
+
+            var minMaxResponse = await _client.GetAsync(
+                $"/vacancies/facets/salaries/min-max?city={Uri.EscapeDataString(firstCity)}");
+            minMaxResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var minMax = await minMaxResponse.Content.ReadFromJsonAsync<SalaryFacetMinMaxResponse>();
+            minMax.Should().Be(new SalaryFacetMinMaxResponse(isolationSalary, int.MaxValue));
+
+            var emptyResponse = await _client.GetAsync(
+                $"/vacancies/facets/salaries/min-max?city={Uri.EscapeDataString($"Missing-{suffix}")}");
+            emptyResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var empty = await emptyResponse.Content.ReadFromJsonAsync<SalaryFacetMinMaxResponse>();
+            empty.Should().Be(new SalaryFacetMinMaxResponse(null, null));
+        }
+        finally
+        {
+            await _client.DeleteAsync($"/vacancies/{firstId}");
+            await _client.DeleteAsync($"/vacancies/{secondId}");
+            await _client.DeleteAsync($"/vacancies/{thirdId}");
+        }
     }
 
     [Fact]
@@ -128,6 +212,12 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
     [InlineData("PUT", "/vacancies/blank-city", "{\"city\":\" \",\"salary\":1}")]
     [InlineData("PUT", "/vacancies/negative-salary", "{\"city\":\"Helsinki\",\"salary\":-1}")]
     [InlineData("GET", "/vacancies/search/by-salary?lower=8&upper=5", null)]
+    [InlineData("GET", "/vacancies/facets/cities?pageSize=0", null)]
+    [InlineData("GET", "/vacancies/facets/cities/top?topN=0", null)]
+    [InlineData("GET", "/vacancies/facets/cities/top?topN=129", null)]
+    [InlineData("GET", "/vacancies/facets/cities/top?accuracy=999", null)]
+    [InlineData("GET", "/vacancies/facets/cities/top?minimumSalary=-1", null)]
+    [InlineData("GET", "/vacancies/facets/salaries/min-max?city=%20", null)]
     public async Task InvalidRequestsReturnBadRequest(string method, string path, string? body)
     {
         using var request = new HttpRequestMessage(new HttpMethod(method), path);
@@ -176,4 +266,17 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
     private sealed record SearchResponse(IReadOnlyList<string> Ids);
 
     private sealed record SearchPageResponse(IReadOnlyList<string> Ids, string? ContinuationToken);
+
+    private sealed record DistinctCityFacetResponse(
+        IReadOnlyList<string> Values,
+        string? ContinuationToken);
+
+    private sealed record CityFacetValueCountResponse(string Value, long Count);
+
+    private sealed record CityFacetCountsResponse(
+        IReadOnlyList<CityFacetValueCountResponse> Items,
+        bool IsExact,
+        long MaximumOmittedCount);
+
+    private sealed record SalaryFacetMinMaxResponse(int? Minimum, int? Maximum);
 }

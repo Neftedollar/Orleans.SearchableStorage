@@ -26,6 +26,9 @@ public sealed class ApiCancellationTests : IClassFixture<CancellationWebApplicat
     [InlineData("/vacancies/search/by-city?city=Helsinki")]
     [InlineData("/vacancies/search/by-city/page?city=Helsinki&pageSize=1")]
     [InlineData("/vacancies/search/by-salary?lower=5&upper=8")]
+    [InlineData("/vacancies/facets/cities?pageSize=1")]
+    [InlineData("/vacancies/facets/cities/top?topN=1&accuracy=Exact")]
+    [InlineData("/vacancies/facets/salaries/min-max?city=Helsinki")]
     public async Task HttpRequestCancellationReachesBlockedQueryClient(string path)
     {
         using var cancellation = new CancellationTokenSource();
@@ -123,7 +126,10 @@ public sealed class BlockingSearchQueryClient : ISearchableStorageQueryClient
     }
 
     private sealed class BlockingQueryProvider(BlockingSearchQueryClient owner)
-        : IQueryProvider, ISearchableStorageAsyncQueryProvider, ISearchableStoragePagedQueryProvider
+        : IQueryProvider,
+          ISearchableStorageAsyncQueryProvider,
+          ISearchableStoragePagedQueryProvider,
+          ISearchableStorageFacetQueryProvider
     {
         public IQueryable CreateQuery(Expression expression)
         {
@@ -160,6 +166,35 @@ public sealed class BlockingSearchQueryClient : ISearchableStorageQueryClient
             CancellationToken cancellationToken)
         {
             return owner.ExecutePageAsync(cancellationToken);
+        }
+
+        public async Task<SearchableStorageDistinctFacetPage<TValue>> ExecuteDistinctFacetValuePageAsync<TValue>(
+            Expression queryExpression,
+            LambdaExpression propertySelector,
+            SearchableStorageFacetPageRequest request,
+            CancellationToken cancellationToken)
+        {
+            await owner.WaitForCancellationAsync(cancellationToken);
+            return new SearchableStorageDistinctFacetPage<TValue>([], continuationToken: null);
+        }
+
+        public async Task<SearchableStorageFacetResult<TValue>> ExecuteFacetValueCountsAsync<TValue>(
+            Expression queryExpression,
+            LambdaExpression propertySelector,
+            SearchableStorageFacetRequest request,
+            CancellationToken cancellationToken)
+        {
+            await owner.WaitForCancellationAsync(cancellationToken);
+            return new SearchableStorageFacetResult<TValue>([], isExact: true, maximumOmittedCount: 0);
+        }
+
+        public async Task<SearchableStorageFacetMinMax<TValue>?> ExecuteFacetMinMaxAsync<TValue>(
+            Expression queryExpression,
+            LambdaExpression propertySelector,
+            CancellationToken cancellationToken)
+        {
+            await owner.WaitForCancellationAsync(cancellationToken);
+            return null;
         }
     }
 

@@ -180,8 +180,8 @@ case "$1" in
     mapfile -t listed_benchmarks < <(
       grep --extended-regexp '^Orleans\.SearchableStorage\.Benchmarks\.[A-Za-z0-9_+]+\.[A-Za-z0-9_]+$' "$list_output" || true
     )
-    if [[ ${#listed_benchmarks[@]} -ne 16 ]]; then
-      echo "BenchmarkDotNet must list exactly 16 benchmark methods; found ${#listed_benchmarks[@]}." >&2
+    if [[ ${#listed_benchmarks[@]} -ne 18 ]]; then
+      echo "BenchmarkDotNet must list exactly 18 benchmark methods; found ${#listed_benchmarks[@]}." >&2
       exit 1
     fi
 
@@ -189,6 +189,8 @@ case "$1" in
     mapfile -t expected_benchmarks <<'EOF'
 Orleans.SearchableStorage.Benchmarks.DerivedIndexBuildBenchmarks.BuildDerivedIndexes
 Orleans.SearchableStorage.Benchmarks.ExactRangeLookupBenchmarks.ExactRangeValueLookup
+Orleans.SearchableStorage.Benchmarks.FacetPartitionBenchmarks.EvaluateCandidateMetadataPage
+Orleans.SearchableStorage.Benchmarks.FacetPartitionBenchmarks.EvaluateResumableFilteredCount
 Orleans.SearchableStorage.Benchmarks.IndexMutationBenchmarks.DeleteAndRestoreIndexedRecord
 Orleans.SearchableStorage.Benchmarks.IndexMutationBenchmarks.ReplaceIndexedRecord
 Orleans.SearchableStorage.Benchmarks.JournalAppendBenchmarks.AppendBoundedJournalSegment
@@ -207,7 +209,7 @@ EOF
     if ! diff --unified \
       <(printf '%s\n' "${expected_benchmarks[@]}") \
       <(printf '%s\n' "${actual_benchmarks[@]}") >&2; then
-      echo "BenchmarkDotNet listed a method set outside the reviewed 16-method contract." >&2
+      echo "BenchmarkDotNet listed a method set outside the reviewed 18-method contract." >&2
       exit 1
     fi
     ;;

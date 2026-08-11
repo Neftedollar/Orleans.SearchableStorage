@@ -108,3 +108,21 @@ public sealed class SearchableStorageQueryLimitExceededException : InvalidOperat
     {
     }
 }
+
+/// <summary>
+/// Reports that partition data changed again while one bounded facet attempt or page was executing.
+/// </summary>
+public sealed class SearchableStorageFacetConcurrentChangeException : InvalidOperationException
+{
+    /// <summary>Initializes the exception with its stable default message.</summary>
+    public SearchableStorageFacetConcurrentChangeException()
+        : base("Partition data kept changing while the bounded facet was executing; retry the facet.")
+    {
+    }
+
+    /// <summary>Initializes the exception with an underlying partition failure.</summary>
+    public SearchableStorageFacetConcurrentChangeException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}

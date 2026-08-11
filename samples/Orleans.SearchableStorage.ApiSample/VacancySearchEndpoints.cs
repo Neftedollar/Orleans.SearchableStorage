@@ -80,6 +80,100 @@ internal static class VacancySearchEndpoints
         return Results.Ok(ToSearchResponse(matches));
     }
 
+    public static async Task<IResult> GetDistinctCitiesAsync(
+        int? pageSize,
+        string? continuation,
+        [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageQueryClient search,
+        CancellationToken cancellationToken)
+    {
+        var effectivePageSize = pageSize ?? SearchableStorageQueryOptions.DefaultPageSize;
+        if (effectivePageSize <= 0
+            || effectivePageSize > SearchableStorageQueryOptions.MaximumPageSize)
+        {
+            return ValidationError(
+                nameof(pageSize),
+                $"Page size must be between 1 and {SearchableStorageQueryOptions.MaximumPageSize}.");
+        }
+
+        var page = await search
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .ToDistinctFacetValuePageAsync(
+                state => state.City,
+                new SearchableStorageFacetPageRequest(effectivePageSize, continuation),
+                cancellationToken);
+        return Results.Ok(new DistinctCityFacetResponse(page.Items, page.ContinuationToken));
+    }
+
+    public static async Task<IResult> GetTopCitiesAsync(
+        int? topN,
+        SearchableStorageFacetAccuracy? accuracy,
+        int? minimumSalary,
+        [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageQueryClient search,
+        CancellationToken cancellationToken)
+    {
+        var effectiveTopN = topN ?? 10;
+        if (effectiveTopN <= 0
+            || effectiveTopN > SearchableStorageQueryOptions.DefaultFacetTopN)
+        {
+            return ValidationError(
+                nameof(topN),
+                $"Top N must be between 1 and {SearchableStorageQueryOptions.DefaultFacetTopN}.");
+        }
+
+        if (minimumSalary < 0)
+        {
+            return ValidationError(nameof(minimumSalary), "Minimum salary must not be negative.");
+        }
+
+        var effectiveAccuracy = accuracy ?? SearchableStorageFacetAccuracy.Exact;
+        if (!Enum.IsDefined(effectiveAccuracy))
+        {
+            return ValidationError(
+                nameof(accuracy),
+                "Accuracy must be Exact or Approximate.");
+        }
+
+        IQueryable<VacancyState> query = search.Query<VacancyState>(VacancyGrain.StateName);
+        if (minimumSalary is { } lowerBound)
+        {
+            query = query.Where(state => state.Salary >= lowerBound);
+        }
+
+        var facet = await query.ToFacetValueCountsAsync(
+            state => state.City,
+            new SearchableStorageFacetRequest(effectiveTopN, effectiveAccuracy),
+            cancellationToken);
+        return Results.Ok(new CityFacetCountsResponse(
+            facet.Items
+                .Select(static item => new CityFacetValueCountResponse(item.Value, item.Count))
+                .ToArray(),
+            facet.IsExact,
+            facet.MaximumOmittedCount));
+    }
+
+    public static async Task<IResult> GetSalaryMinMaxAsync(
+        string? city,
+        [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageQueryClient search,
+        CancellationToken cancellationToken)
+    {
+        if (city is not null && string.IsNullOrWhiteSpace(city))
+        {
+            return ValidationError(nameof(city), "City must not be blank when supplied.");
+        }
+
+        IQueryable<VacancyState> query = search.Query<VacancyState>(VacancyGrain.StateName);
+        if (city is not null)
+        {
+            var normalizedCity = city.Trim();
+            query = query.Where(state => state.City == normalizedCity);
+        }
+
+        var facet = await query.ToFacetMinMaxAsync(
+            state => state.Salary,
+            cancellationToken);
+        return Results.Ok(new SalaryFacetMinMaxResponse(facet?.Minimum, facet?.Maximum));
+    }
+
     private static SearchResponse ToSearchResponse(IEnumerable<GrainId> matches)
     {
         return new SearchResponse(matches.Select(static grainId => grainId.Key.ToString()).ToArray());

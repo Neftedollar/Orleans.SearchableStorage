@@ -642,6 +642,15 @@ public sealed class SearchableStorageClientExecutionTests
             throw new NotSupportedException();
         }
 
+        public Task<PartitionDistinctFacetPageResult> QueryDistinctFacetPageRoutedAsync(
+            RoutedPartitionDistinctFacetPageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCandidatePageResult> QueryFacetCandidatesRoutedAsync(
+            RoutedPartitionFacetCandidatePageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
+            RoutedPartitionFacetCountSliceRequest request) => throw new NotSupportedException();
+
         public Task<GrainId[]> FindAsync(ExactIndexQuery query)
         {
             FindCallCount++;

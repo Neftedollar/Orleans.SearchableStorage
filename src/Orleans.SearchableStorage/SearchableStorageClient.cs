@@ -11,7 +11,7 @@ namespace Orleans.SearchableStorage;
 /// <summary>
 /// Queries storage partitions through an Orleans grain factory.
 /// </summary>
-public sealed class SearchableStorageClient : ISearchableStorageQueryClient
+public sealed partial class SearchableStorageClient : ISearchableStorageQueryClient
 {
     private readonly string _providerName;
     private readonly Func<int, IStoragePartitionGrain> _getPartition;

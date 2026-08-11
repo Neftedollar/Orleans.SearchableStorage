@@ -909,6 +909,15 @@ public sealed class SearchableStoragePagingCoordinatorTests
             return _query(request);
         }
 
+        public Task<PartitionDistinctFacetPageResult> QueryDistinctFacetPageRoutedAsync(
+            RoutedPartitionDistinctFacetPageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCandidatePageResult> QueryFacetCandidatesRoutedAsync(
+            RoutedPartitionFacetCandidatePageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
+            RoutedPartitionFacetCountSliceRequest request) => throw new NotSupportedException();
+
         public Task<GrainId[]> FindAsync(ExactIndexQuery query) =>
             throw new NotSupportedException();
 

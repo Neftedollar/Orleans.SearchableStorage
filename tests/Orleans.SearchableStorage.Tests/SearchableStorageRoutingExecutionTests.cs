@@ -433,6 +433,15 @@ public sealed class SearchableStorageRoutingExecutionTests
             return CreatePageResultAsync(_find(request), request);
         }
 
+        public Task<PartitionDistinctFacetPageResult> QueryDistinctFacetPageRoutedAsync(
+            RoutedPartitionDistinctFacetPageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCandidatePageResult> QueryFacetCandidatesRoutedAsync(
+            RoutedPartitionFacetCandidatePageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
+            RoutedPartitionFacetCountSliceRequest request) => throw new NotSupportedException();
+
         private static async Task<PartitionQueryPageResult> CreatePageResultAsync(
             Task<GrainId[]> task,
             RoutedPartitionQueryPageRequest request)

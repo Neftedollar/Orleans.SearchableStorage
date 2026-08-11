@@ -15,6 +15,7 @@ serialization costs. Its cases invoke the same internal production helpers as th
 - steady indexed mutation for production-shaped `state/type-hex/key-hex` record keys across unique
   and low-cardinality index distributions;
 - expression translation, wire-plan construction, and partition boolean-plan evaluation;
+- facet candidate metadata pages and resumable filtered exact-count slices;
 - Orleans serialization of query plans and journal segments;
 - bounded journal-segment append using an in-memory `IPersistentState` test double;
 - validated journal replay and compaction snapshot construction.
@@ -192,7 +193,7 @@ comparable.
 - Pull requests validate all specifications, run unit/golden tests, execute the microbenchmark
   self-test, and run small deterministic searchable closed-loop, searchable open-loop, and plain
   closed-loop Memory scenarios. The self-test reflects the built benchmark assembly and requires
-  the reviewed set of exactly 16 `[Benchmark]` methods, the exact `[Params]` vectors, the semantic
+  the reviewed set of exactly 18 `[Benchmark]` methods, the exact `[Params]` vectors, the semantic
   fixture results, and the real BenchmarkDotNet config (one .NET 10 server/concurrent-GC job,
   memory diagnostics, p95, full JSON plus GitHub Markdown exporters, and retained benchmark files).
   The benchmark-smoke job also generates the 62-entry quick ordered-work matrix and four-cell
@@ -288,7 +289,40 @@ that the selected range was materialized or merged.
 `StoragePartitionView` (materializing plus ordered indexes). `IndexMutationBenchmarks` makes the same
 comparison for replacement and delete/restore work using real stored-key structure. Both cover a
 unique range distribution and a hot/low-cardinality distribution. MemoryDiagnoser reports transient
-allocation; the isolated retained-memory document reports the live managed delta.
+allocation; the isolated retained-memory document reports the live managed delta. This comparison
+includes the hash projection's change from average-`O(1)` dictionary access to `O(log D)` canonical
+tree mutation and its checked scope-total update. Setup/cleanup invariants require both hash and range
+scope totals to remain exactly equal to the live record count after rebuild, replacement, and
+delete/restore.
+
+### Partition-facet evaluation matrix
+
+`FacetPartitionBenchmarks` adds two production-evaluator identities: one bounded candidate metadata
+page and one complete traversal of resumable filtered exact-count slices. Their reviewed parameters
+cover 4,096 and 65,536 records, 8 and 1,024 distinct values, uniform and 50%-hot skewed value
+distributions, and `All` or selective range predicates. That is 16 cases per identity and 32 cases
+across the two identities.
+
+Setup builds record/value/count expectations independently from the production indexes. It requires
+the candidate page to return the exact canonical values and raw bucket counts, and freezes the exact
+work vector. A 16-item candidate page is exactly one value seek, 16 value visits, and 16 result
+materializations, with zero group, ownership, record, predicate, index-entry, or count-increment
+work. Low-cardinality pages exhaust with unseen bound zero; non-exhausted high-cardinality pages use
+an exact checked `PageRawCount`, pinned `TotalRawCount`, and the coordinator's documented
+`total - cumulative` remaining bound. This proves nomination reads activation-local bucket scalar
+metadata rather than hiding a posting scan or using a count-ranked index.
+
+The count case nominates one exact posting and deliberately admits 16 complete canonical `GrainId`
+groups per non-terminal slice. The independent oracle verifies the final filtered count, progress,
+round count, and every aggregate work component. The focused 4,096-record/8-value/uniform/selective
+self-test freezes 32 seeks/slices, 512 group/ownership/record/predicate probes, 1,024 index-entry
+probes, and 256 count increments.
+
+These microbenchmarks do not measure owner fan-out, Orleans transport/serialization, coordinator
+ranking, data-version restart, AEAD continuation protection, or end-to-end public facet latency.
+They also do not introduce or imply a count-ranked tree or additional retained-memory result. Those
+behaviors remain correctness tests or future load-driver evidence; shared-runner timing is not a
+facet performance claim.
 
 ### Interpreting query policy constants
 

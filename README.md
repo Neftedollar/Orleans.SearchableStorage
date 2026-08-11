@@ -19,6 +19,9 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
 - Every partition evaluates at most one configured logical-work slice in a non-reentrant turn;
   continuations are stateless, authenticated-encrypted, and bound to the query and routing epoch.
+- Indexed-only facet terminals provide value-ordered distinct pages, explicit exact or bounded-
+  approximate top-N counts, and exact minimum/maximum values without loading record payloads into
+  the caller.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
 The journal removes partition-sized writes from the mutation path, but it does not make the current
@@ -133,6 +136,39 @@ do
 while (continuation is not null);
 ```
 
+Use the same deferred predicate for facets over one indexed property:
+
+```csharp
+var filtered = search
+    .Query<VacancyState>("vacancy")
+    .Where(state => state.Salary >= minimumSalary);
+
+var cities = await filtered.ToDistinctFacetValuePageAsync(
+    state => state.City,
+    new SearchableStorageFacetPageRequest(128, continuation),
+    cancellationToken);
+
+var topCities = await filtered.ToFacetValueCountsAsync(
+    state => state.City,
+    new SearchableStorageFacetRequest(
+        topN: 10,
+        accuracy: SearchableStorageFacetAccuracy.Exact),
+    cancellationToken);
+
+var salaryExtrema = await filtered.ToFacetMinMaxAsync(
+    state => state.Salary,
+    cancellationToken);
+```
+
+Distinct values use canonical indexed-value order; follow their opaque continuation until it is
+null. Top-N accuracy is deliberately explicit. Every returned count is exact, but an approximate
+result can omit a winner: inspect `IsExact` and the inclusive `MaximumOmittedCount` certificate
+instead of treating its items as a proven global ranking. Exact top-N and min/max are all-or-throw
+under aggregate work, item, byte, and round ceilings. Facets exclude nulls because null values are
+not indexed. They are not a cross-partition snapshot; one multi-turn attempt pins each owner to one
+data version and restarts once if it changes, while a later distinct continuation remains weakly
+consistent like id paging.
+
 The keyed admin client exposes the persisted routing summary without returning its mutable
 assignment array:
 
@@ -161,6 +197,13 @@ item, and byte budget. The coordinator merges only a globally safe canonical pre
 page can therefore be short or empty; only a null continuation means completion. Pages are weakly
 consistent rather than a distributed snapshot, so concurrent writes have the precise consequences
 documented in the paging contract.
+
+`ToDistinctFacetValuePageAsync`, `ToFacetValueCountsAsync`, and `ToFacetMinMaxAsync` are separate
+indexed-only terminals. They reject selectors which do not name one declared hash or range index.
+The built-in provider bounds candidate metadata, exact-count probes, filtered predicate work, and
+retry rounds independently from legacy result collection. External LINQ providers opt in through
+`ISearchableStorageFacetQueryProvider`; the existing async and paging provider interfaces remain
+source and binary independent.
 
 The [bounded query and paging contract](docs/bounded-query-contract.md) is the normative description
 of the implemented work accounting, ordered partition prefix, coordinator merge, continuation
@@ -191,11 +234,13 @@ discards a first-page attempt, refreshes the shared layout cache, and retries on
 is pinned to its authenticated layout and throws `SearchableStorageStaleContinuationTokenException`
 instead of moving the old frontier into a new epoch; results from different epochs are never merged.
 
-The bounded query RPC is additive but replaces the built-in client's legacy unbounded query path.
+The bounded query and facet RPCs are additive but replace the built-in client's legacy unbounded
+query path.
 For this upgrade, quiesce searchable query traffic, deploy every partition-hosting silo and query
 client, configure the same provider key ring wherever public paging is used, and only then resume
 queries. Point reads, writes, and clears may continue because persistence and their routed protocol
-do not change. Mixed-version paging and fallback to an old array-returning RPC are unsupported.
+do not change. Mixed-version paging/facets and fallback to an old array-returning RPC are unsupported.
+Existing continuations cannot be reused as another response family.
 
 Separately, adopting a version-3 layout into format 4 is not an online mixed-version rollout.
 Quiesce searchable storage and query traffic, deploy this package to every silo and Orleans client,
@@ -215,7 +260,11 @@ empty namespace, so renaming a provider requires an explicit migration. The init
 are validated within that namespace and must not change without migration. Index names, kinds, and property types are also
 persisted schema: adding an index does not backfill existing records, and changing or renaming one
 requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime`
-values must use `DateTimeKind.Utc`.
+values must use `DateTimeKind.Utc`. Facet text values are limited to 16,384 bytes of valid strict
+UTF-8. The write path does not impose that newer wire constraint, so applications using string or
+`char` facets must validate it before writes and rewrite pre-existing overlong or unpaired-surrogate
+values; a facet which reaches one throws `SearchableStorageQueryLimitExceededException` without a
+partial result rather than truncating or skipping it.
 
 Layout format version 4 stores virtual routing independently from partition persistence format 3.
 A valid format-3 layout is upgraded in place with one layout compare-and-swap; the seeded identity
@@ -224,6 +273,13 @@ count, including non-powers-of-two. No partition manifest, journal segment, snap
 is rewritten. Partition persistence format 3 continues to use a small manifest, bounded journal ring,
 and two snapshot slots. Existing format-1 and format-2 namespaces still require an explicit migration
 or complete rewrite and are rejected rather than read as a fresh or partial namespace.
+
+Facet support does not change a durable record, journal, manifest, snapshot, layout, or write-path
+format. On activation, hash scopes now derive the same balanced, canonical value projection already
+used for range scopes instead of retaining unordered hash-bucket enumeration as their facet source.
+Rebuild and every committed incremental mutation update that projection together with the existing
+lookup indexes. Value seek and live add/remove are logarithmic in the number of distinct values;
+candidate nomination reads bucket cardinality metadata and does not enumerate posting members.
 
 Index declarations and value accessors are resolved through a cached [PolyType](https://github.com/eiriktsarpalis/PolyType) runtime type model. Complete index scopes are cached per state name, so steady-state writes do not rebuild persisted type identities through reflection. Collection, scalar, and other non-object state shapes remain valid storage values and simply contribute no index entries. Applications only use `SearchableIndexAttribute`; no PolyType attributes or generated witness types are required. This project uses PolyType's reflection provider and does not support Native AOT or trimming.
 

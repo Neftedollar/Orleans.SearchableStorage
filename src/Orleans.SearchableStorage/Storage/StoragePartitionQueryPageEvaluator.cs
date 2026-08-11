@@ -426,6 +426,8 @@ internal static class StoragePartitionQueryPageEvaluator
 
         switch (query.Operation)
         {
+            case PartitionQueryOperation.All:
+                return PredicateEvaluation.Match;
             case PartitionQueryOperation.Empty:
                 return PredicateEvaluation.NoMatch;
             case PartitionQueryOperation.Exact:

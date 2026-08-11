@@ -1385,6 +1385,370 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
     }
 
     [SkippableFact]
+    public async Task FacetPartitionMethodsRoundTripThroughRealOrleansProxies()
+    {
+        var city = $"facet-wire-{Guid.NewGuid():N}";
+        var grain = CreateGrain();
+        await grain.SetAsync(city, 37);
+        var layoutGrain = Fixture.Cluster.GrainFactory.GetGrain<IStorageLayoutGrain>(
+            VacancyGrain.StorageProviderName);
+        var layout = (await layoutGrain.GetCurrentLayoutAsync())!;
+        var owner = layout.GetOwner(StorageLayout.GetSlot(
+            grain.GetGrainId(),
+            layout.VirtualSlotCount));
+        var partition = Fixture.Cluster.GrainFactory.GetGrain<IStoragePartitionGrain>(
+            StorageLayout.CreatePartitionKey(VacancyGrain.StorageProviderName, owner));
+        var selected = IndexMetadataProvider.GetSelectedIndex<VacancyState, string>(
+            VacancyGrain.StateName,
+            state => state.City);
+        var query = new PartitionQueryPlan { Operation = PartitionQueryOperation.All };
+        var requestFingerprint = FacetQueryFingerprint.Compute(
+            VacancyGrain.StateName,
+            query,
+            selected.Scope,
+            selected.Kind);
+        var layoutFingerprint = StorageLayoutFingerprint.Compute(layout);
+        var distinctRequest = new RoutedPartitionDistinctFacetPageRequest
+        {
+            Query = query,
+            FacetScope = selected.Scope,
+            FacetKind = selected.Kind,
+            Epoch = layout.Epoch,
+            WorkBudget = 1_000,
+            ItemLimit = 10,
+            ByteLimit = 100_000,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+            WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.DistinctFacetValuePage,
+            RequestFingerprint = requestFingerprint,
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = layoutFingerprint,
+            StateName = VacancyGrain.StateName,
+        };
+        var candidateRequest = new RoutedPartitionFacetCandidatePageRequest
+        {
+            Query = query,
+            FacetScope = selected.Scope,
+            FacetKind = selected.Kind,
+            Epoch = layout.Epoch,
+            WorkBudget = 1_000,
+            ItemLimit = 10,
+            ByteLimit = 100_000,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+            WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.FacetValueCountCandidates,
+            RequestFingerprint = requestFingerprint,
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = layoutFingerprint,
+            StateName = VacancyGrain.StateName,
+        };
+
+        var distinct = await partition.QueryDistinctFacetPageRoutedAsync(distinctRequest);
+        var candidates = await partition.QueryFacetCandidatesRoutedAsync(candidateRequest);
+        RoutedPartitionFacetCountSliceRequest CreateCountRequest(
+            IndexValue value,
+            bool hasExpectedDataVersion,
+            long expectedDataVersion,
+            bool hasAfter = false,
+            GrainId after = default)
+        {
+            return new RoutedPartitionFacetCountSliceRequest
+            {
+                Query = query,
+                FacetScope = selected.Scope,
+                FacetKind = selected.Kind,
+                Value = value,
+                Epoch = layout.Epoch,
+                HasAfter = hasAfter,
+                After = after,
+                WorkBudget = 1_000,
+                ProtocolVersion = QueryProtocol.PagingVersion,
+                OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+                WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+                ResponseFamily = PartitionQueryResponseFamily.FacetValueCountProbe,
+                RequestFingerprint = requestFingerprint,
+                LayoutFormatVersion = layout.FormatVersion,
+                LayoutFingerprint = layoutFingerprint,
+                StateName = VacancyGrain.StateName,
+                HasExpectedDataVersion = hasExpectedDataVersion,
+                ExpectedDataVersion = expectedDataVersion,
+            };
+        }
+
+        var countRequest = CreateCountRequest(
+            IndexValue.Create(city),
+            hasExpectedDataVersion: true,
+            candidates.DataVersion);
+        var count = await partition.QueryFacetCountSliceRoutedAsync(countRequest);
+
+        distinct.Items.Should().Contain(value => value.Text == city);
+        distinct.DataVersion.Should().BeGreaterThan(0);
+        candidates.Items.Should().Contain(item => item.Value.Text == city && item.RawCount >= 1);
+        candidates.PageRawCount.Should().BePositive();
+        candidates.TotalRawCount.Should().BeGreaterThanOrEqualTo(candidates.PageRawCount);
+        candidates.DataVersion.Should().Be(distinct.DataVersion);
+        count.CountDelta.Should().Be(1);
+        count.Exhausted.Should().BeTrue();
+        count.DataVersion.Should().Be(candidates.DataVersion);
+
+        var changedRequest = CreateCountRequest(
+            IndexValue.Create(city),
+            hasExpectedDataVersion: true,
+            candidates.DataVersion + 1);
+        Func<Task> changed = async () =>
+            await partition.QueryFacetCountSliceRoutedAsync(changedRequest);
+        var changedFailure = await changed.Should().ThrowAsync<StorageFacetDataChangedException>();
+        changedFailure.Which.ExpectedVersion.Should().Be(candidates.DataVersion + 1);
+        changedFailure.Which.CurrentVersion.Should().Be(candidates.DataVersion);
+
+        var unpinnedRequest = CreateCountRequest(
+            IndexValue.Create(city),
+            hasExpectedDataVersion: false,
+            expectedDataVersion: 0);
+        Func<Task> unpinned = async () =>
+            await partition.QueryFacetCountSliceRoutedAsync(unpinnedRequest);
+        await unpinned.Should().ThrowAsync<ArgumentException>();
+
+        var validFrontierRequest = CreateCountRequest(
+            IndexValue.Create(city),
+            hasExpectedDataVersion: true,
+            candidates.DataVersion,
+            hasAfter: true,
+            after: GrainId.Create("facet-wire", "frontier"));
+        var validFrontier = await partition.QueryFacetCountSliceRoutedAsync(validFrontierRequest);
+        validFrontier.DataVersion.Should().Be(candidates.DataVersion);
+
+        var oversizedFrontierRequest = CreateCountRequest(
+            IndexValue.Create(city),
+            hasExpectedDataVersion: true,
+            candidates.DataVersion,
+            hasAfter: true,
+            after: GrainId.Create(
+                new GrainType(new byte[GrainIdCanonicalOrder.MaximumTypeBytes + 1]),
+                new IdSpan([1])));
+        Func<Task> oversizedFrontier = async () =>
+            await partition.QueryFacetCountSliceRoutedAsync(oversizedFrontierRequest);
+        await oversizedFrontier.Should().ThrowAsync<ArgumentException>();
+
+        var nanValueRequest = CreateCountRequest(
+            new IndexValue
+            {
+                Kind = IndexValueKind.FloatingPoint,
+                FloatingPoint = double.NaN,
+            },
+            hasExpectedDataVersion: true,
+            candidates.DataVersion);
+        Func<Task> nanValue = async () =>
+            await partition.QueryFacetCountSliceRoutedAsync(nanValueRequest);
+        await nanValue.Should().ThrowAsync<ArgumentException>();
+
+        var oversizedValueRequest = CreateCountRequest(
+            IndexValue.Create(new string(
+                'x',
+                IndexValueCanonicalEncoding.MaximumTextBytes + 1)),
+            hasExpectedDataVersion: true,
+            candidates.DataVersion);
+        Func<Task> oversizedValue = async () =>
+            await partition.QueryFacetCountSliceRoutedAsync(oversizedValueRequest);
+        var oversizedValueFailure = await oversizedValue.Should().ThrowAsync<ArgumentException>();
+        oversizedValueFailure.Which.InnerException.Should().BeNull();
+
+        var tooSmallRequest = new RoutedPartitionFacetCandidatePageRequest
+        {
+            Query = query,
+            FacetScope = selected.Scope,
+            FacetKind = selected.Kind,
+            Epoch = layout.Epoch,
+            WorkBudget = 1,
+            ItemLimit = 1,
+            ByteLimit = 100_000,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+            WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.FacetValueCountCandidates,
+            RequestFingerprint = requestFingerprint,
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = layoutFingerprint,
+            StateName = VacancyGrain.StateName,
+        };
+        Func<Task> tooSmall = async () =>
+            await partition.QueryFacetCandidatesRoutedAsync(tooSmallRequest);
+        await tooSmall.Should().ThrowAsync<PartitionQueryBudgetTooSmallException>();
+
+        var unpinnedCandidateRequest = new RoutedPartitionFacetCandidatePageRequest
+        {
+            Query = query,
+            FacetScope = selected.Scope,
+            FacetKind = selected.Kind,
+            Epoch = layout.Epoch,
+            AfterValue = IndexValue.Create(city),
+            WorkBudget = 1_000,
+            ItemLimit = 1,
+            ByteLimit = 100_000,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+            WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.FacetValueCountCandidates,
+            RequestFingerprint = requestFingerprint,
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = layoutFingerprint,
+            StateName = VacancyGrain.StateName,
+        };
+        Func<Task> unpinnedCandidate = async () =>
+            await partition.QueryFacetCandidatesRoutedAsync(unpinnedCandidateRequest);
+        await unpinnedCandidate.Should().ThrowAsync<ArgumentException>();
+
+        var oversizedScopeRequest = new RoutedPartitionFacetCandidatePageRequest
+        {
+            Query = query,
+            FacetScope = new string('x', QueryPlanFingerprint.MaximumPlanTextBytes + 1),
+            FacetKind = selected.Kind,
+            Epoch = layout.Epoch,
+            WorkBudget = 1_000,
+            ItemLimit = 1,
+            ByteLimit = 100_000,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+            WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.FacetValueCountCandidates,
+            RequestFingerprint = requestFingerprint,
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = layoutFingerprint,
+            StateName = VacancyGrain.StateName,
+        };
+        Func<Task> oversizedScope = async () =>
+            await partition.QueryFacetCandidatesRoutedAsync(oversizedScopeRequest);
+        var oversizedScopeFailure = await oversizedScope.Should().ThrowAsync<ArgumentException>();
+        oversizedScopeFailure.Which.InnerException.Should().BeNull();
+
+        var oversizedQueryRequest = new RoutedPartitionFacetCandidatePageRequest
+        {
+            Query = new PartitionQueryPlan
+            {
+                Operation = PartitionQueryOperation.Exact,
+                Scope = new string('q', QueryPlanFingerprint.MaximumPlanTextBytes + 1),
+                IndexKind = SearchableIndexKind.Hash,
+                Value = IndexValue.Create(city),
+            },
+            FacetScope = selected.Scope,
+            FacetKind = selected.Kind,
+            Epoch = layout.Epoch,
+            WorkBudget = 1_000,
+            ItemLimit = 1,
+            ByteLimit = 100_000,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+            WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.FacetValueCountCandidates,
+            RequestFingerprint = requestFingerprint,
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = layoutFingerprint,
+            StateName = VacancyGrain.StateName,
+        };
+        Func<Task> oversizedQuery = async () =>
+            await partition.QueryFacetCandidatesRoutedAsync(oversizedQueryRequest);
+        var oversizedQueryFailure = await oversizedQuery.Should().ThrowAsync<ArgumentException>();
+        oversizedQueryFailure.Which.InnerException.Should().BeNull();
+
+        await grain.SetAsync(
+            "\uffff" + new string('x', IndexValueCanonicalEncoding.MaximumTextBytes),
+            37);
+        var unsupportedDataVersion = (await partition.GetPersistenceInfoAsync()).CommittedSequence;
+        var unsupportedRequest = new RoutedPartitionFacetCandidatePageRequest
+        {
+            Query = query,
+            FacetScope = selected.Scope,
+            FacetKind = selected.Kind,
+            Epoch = layout.Epoch,
+            AfterValue = IndexValue.Create("\ufffe"),
+            WorkBudget = 1_000,
+            ItemLimit = 1,
+            ByteLimit = 100_000,
+            ProtocolVersion = QueryProtocol.PagingVersion,
+            OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+            WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+            ResponseFamily = PartitionQueryResponseFamily.FacetValueCountCandidates,
+            RequestFingerprint = requestFingerprint,
+            LayoutFormatVersion = layout.FormatVersion,
+            LayoutFingerprint = layoutFingerprint,
+            StateName = VacancyGrain.StateName,
+            HasExpectedDataVersion = true,
+            ExpectedDataVersion = unsupportedDataVersion,
+        };
+        Func<Task> unsupported = async () =>
+            await partition.QueryFacetCandidatesRoutedAsync(unsupportedRequest);
+        await unsupported.Should().ThrowAsync<StorageFacetValueUnsupportedException>();
+
+        await grain.ClearAsync();
+    }
+
+    [SkippableFact]
+    public async Task FacetProxyExceptionsMapToPublicAllOrThrowFailures()
+    {
+        var grain = CreateGrain();
+        await grain.SetAsync("facet-budget", 1);
+        var options = new SearchableStorageQueryOptions { PartitionWorkBudget = 1 };
+        options.ContinuationProtection.CurrentKey = new SearchableStorageContinuationKey(
+            "facet-proxy",
+            new byte[32]);
+        var constrained = new SearchableStorageClient(
+            Fixture.Cluster.GrainFactory,
+            VacancyGrain.StorageProviderName,
+            Fixture.PartitionCount,
+            options);
+        Func<Task> budget = async () => await constrained
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .ToFacetValueCountsAsync(
+                state => state.City,
+                new SearchableStorageFacetRequest(1, SearchableStorageFacetAccuracy.Exact));
+
+        await budget.Should().ThrowAsync<SearchableStorageQueryLimitExceededException>();
+
+        await grain.ClearAsync();
+    }
+
+    [SkippableFact]
+    public async Task AllThreePublicFacetFormsUseRealPartitionProxies()
+    {
+        var city = $"facet-public-{Guid.NewGuid():N}";
+        var first = CreateGrain();
+        var second = CreateGrain();
+        await first.SetAsync(city, 10);
+        await second.SetAsync(city, 20);
+        var query = CreateClient()
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == city);
+
+        var distinct = await query.ToDistinctFacetValuePageAsync(
+            state => state.City,
+            new SearchableStorageFacetPageRequest(10));
+        var counts = await query.ToFacetValueCountsAsync(
+            state => state.City,
+            new SearchableStorageFacetRequest(1, SearchableStorageFacetAccuracy.Exact));
+        var approximateCounts = await query.ToFacetValueCountsAsync(
+            state => state.City,
+            new SearchableStorageFacetRequest(1, SearchableStorageFacetAccuracy.Approximate));
+        var minMax = await query.ToFacetMinMaxAsync(state => state.Salary);
+
+        distinct.Items.Should().Equal(city);
+        counts.Items.Should().ContainSingle();
+        counts.Items[0].Value.Should().Be(city);
+        counts.Items[0].Count.Should().Be(2);
+        approximateCounts.Items.Should().ContainSingle();
+        approximateCounts.Items[0].Value.Should().Be(city);
+        approximateCounts.Items[0].Count.Should().Be(2);
+        approximateCounts.IsExact.Should().BeTrue();
+        approximateCounts.MaximumOmittedCount.Should().Be(0);
+        minMax.Should().NotBeNull();
+        minMax!.Minimum.Should().Be(10);
+        minMax.Maximum.Should().Be(20);
+
+        await ClearAsync(first, second);
+    }
+
+    [SkippableFact]
     public void PersistenceSettingsRoundTripWithMutationRequests()
     {
         var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);

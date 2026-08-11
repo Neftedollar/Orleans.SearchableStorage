@@ -9,7 +9,8 @@ internal sealed class SearchableStorageQueryProvider<TState>(
     string stateName) :
     IQueryProvider,
     ISearchableStorageAsyncQueryProvider,
-    ISearchableStoragePagedQueryProvider
+    ISearchableStoragePagedQueryProvider,
+    ISearchableStorageFacetQueryProvider
 {
     public IQueryable CreateQuery(Expression expression)
     {
@@ -62,6 +63,46 @@ internal sealed class SearchableStorageQueryProvider<TState>(
             cancellationToken);
     }
 
+    public Task<SearchableStorageDistinctFacetPage<TValue>> ExecuteDistinctFacetValuePageAsync<TValue>(
+        Expression queryExpression,
+        LambdaExpression propertySelector,
+        SearchableStorageFacetPageRequest request,
+        CancellationToken cancellationToken)
+    {
+        return client.ExecuteDistinctFacetPageAsync<TState, TValue>(
+            stateName,
+            queryExpression,
+            propertySelector,
+            request,
+            cancellationToken);
+    }
+
+    public Task<SearchableStorageFacetResult<TValue>> ExecuteFacetValueCountsAsync<TValue>(
+        Expression queryExpression,
+        LambdaExpression propertySelector,
+        SearchableStorageFacetRequest request,
+        CancellationToken cancellationToken)
+    {
+        return client.ExecuteFacetValueCountsAsync<TState, TValue>(
+            stateName,
+            queryExpression,
+            propertySelector,
+            request,
+            cancellationToken);
+    }
+
+    public Task<SearchableStorageFacetMinMax<TValue>?> ExecuteFacetMinMaxAsync<TValue>(
+        Expression queryExpression,
+        LambdaExpression propertySelector,
+        CancellationToken cancellationToken)
+    {
+        return client.ExecuteFacetMinMaxAsync<TState, TValue>(
+            stateName,
+            queryExpression,
+            propertySelector,
+            cancellationToken);
+    }
+
     private static NotSupportedException UnsupportedElementType(Type elementType)
     {
         return new NotSupportedException(
@@ -73,8 +114,7 @@ internal sealed class SearchableStorageQueryProvider<TState>(
     private static NotSupportedException SynchronousExecutionNotSupported()
     {
         return new NotSupportedException(
-            "Synchronous query execution is not supported. Use ToGrainIdPageAsync or "
-            + "ToGrainIdsAsync.");
+            "Synchronous query execution is not supported. Use an asynchronous id or facet terminal.");
     }
 }
 

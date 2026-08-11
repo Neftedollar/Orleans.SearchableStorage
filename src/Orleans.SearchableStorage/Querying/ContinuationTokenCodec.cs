@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 
 namespace Orleans.SearchableStorage.Querying;
 
@@ -85,6 +86,25 @@ internal sealed class ContinuationTokenPayload
         After = after;
     }
 
+    public static ContinuationTokenPayload CreateFacet(
+        ContinuationTokenBinding binding,
+        IndexValue afterFacetValue)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        ArgumentNullException.ThrowIfNull(afterFacetValue);
+        return new ContinuationTokenPayload(
+            binding.ProviderName,
+            binding.ResponseFamily,
+            binding.QueryFingerprint,
+            binding.OrderingVersion,
+            binding.LayoutFormatVersion,
+            binding.RoutingEpoch,
+            binding.LayoutFingerprint,
+            binding.Policy,
+            after: default,
+            afterFacetValue);
+    }
+
     private ContinuationTokenPayload(
         string providerName,
         PartitionQueryResponseFamily responseFamily,
@@ -94,7 +114,8 @@ internal sealed class ContinuationTokenPayload
         long routingEpoch,
         byte[] layoutFingerprint,
         QueryExecutionPolicy policy,
-        GrainId after)
+        GrainId after,
+        IndexValue? afterFacetValue)
     {
         ProviderName = providerName;
         ResponseFamily = responseFamily;
@@ -105,6 +126,7 @@ internal sealed class ContinuationTokenPayload
         _layoutFingerprint = layoutFingerprint;
         Policy = policy;
         After = after;
+        AfterFacetValue = afterFacetValue;
     }
 
     public string ProviderName { get; }
@@ -125,6 +147,8 @@ internal sealed class ContinuationTokenPayload
 
     public GrainId After { get; }
 
+    public IndexValue? AfterFacetValue { get; }
+
     internal ReadOnlySpan<byte> QueryFingerprintSpan => _queryFingerprint;
 
     internal ReadOnlySpan<byte> LayoutFingerprintSpan => _layoutFingerprint;
@@ -138,7 +162,8 @@ internal sealed class ContinuationTokenPayload
         long routingEpoch,
         byte[] layoutFingerprint,
         QueryExecutionPolicy policy,
-        GrainId after)
+        GrainId after,
+        IndexValue? afterFacetValue = null)
     {
         return new ContinuationTokenPayload(
             providerName,
@@ -149,7 +174,8 @@ internal sealed class ContinuationTokenPayload
             routingEpoch,
             layoutFingerprint,
             policy,
-            after);
+            after,
+            afterFacetValue);
     }
 }
 
@@ -310,11 +336,11 @@ internal sealed class ContinuationTokenCodec
     private void ValidatePayloadForProtection(ContinuationTokenPayload payload)
     {
         if (!string.Equals(payload.ProviderName, _providerName, StringComparison.Ordinal)
-            || payload.ResponseFamily != PartitionQueryResponseFamily.GrainIdPage
-            || payload.OrderingVersion != QueryProtocol.OrderingVersion
+            || payload.ResponseFamily is not PartitionQueryResponseFamily.GrainIdPage
+                and not PartitionQueryResponseFamily.DistinctFacetValuePage
+            || payload.OrderingVersion != GetOrderingVersion(payload.ResponseFamily)
             || payload.LayoutFormatVersion <= 0
             || payload.RoutingEpoch <= 0
-            || payload.After.IsDefault
             || payload.QueryFingerprintSpan.Length != FingerprintBytes
             || payload.LayoutFingerprintSpan.Length != FingerprintBytes)
         {
@@ -324,7 +350,19 @@ internal sealed class ContinuationTokenCodec
         }
 
         ValidatePolicy(payload.Policy);
-        GrainIdCanonicalOrder.Validate(payload.After, nameof(payload));
+        if (payload.ResponseFamily == PartitionQueryResponseFamily.GrainIdPage)
+        {
+            if (payload.After.IsDefault || payload.AfterFacetValue is not null)
+            {
+                throw new ArgumentException("A grain-id cursor payload is invalid.", nameof(payload));
+            }
+
+            GrainIdCanonicalOrder.Validate(payload.After, nameof(payload));
+        }
+        else if (!payload.After.IsDefault || payload.AfterFacetValue is null)
+        {
+            throw new ArgumentException("A facet-value cursor payload is invalid.", nameof(payload));
+        }
     }
 
     private static byte[] EncodePayload(ContinuationTokenPayload payload)
@@ -339,8 +377,15 @@ internal sealed class ContinuationTokenCodec
         writer.WriteInt32(payload.LayoutFormatVersion);
         writer.WriteInt64(payload.RoutingEpoch);
         writer.WriteRawBytes(payload.LayoutFingerprintSpan);
-        GrainIdCanonicalOrder.Write(writer, payload.After);
-        writer.WriteInt32(QueryProtocol.WorkPolicyVersion);
+        if (payload.ResponseFamily == PartitionQueryResponseFamily.GrainIdPage)
+        {
+            GrainIdCanonicalOrder.Write(writer, payload.After);
+        }
+        else
+        {
+            IndexValueCanonicalEncoding.Write(writer, payload.AfterFacetValue!);
+        }
+        writer.WriteInt32(GetWorkPolicyVersion(payload.ResponseFamily));
         WritePolicy(writer, payload.Policy);
         return writer.ToArray();
     }
@@ -361,14 +406,20 @@ internal sealed class ContinuationTokenCodec
         var layoutFormatVersion = reader.ReadInt32();
         var routingEpoch = reader.ReadInt64();
         var layoutFingerprint = reader.ReadRawBytes(FingerprintBytes).ToArray();
-        var after = GrainIdCanonicalOrder.Read(ref reader);
+        var after = responseFamily == PartitionQueryResponseFamily.GrainIdPage
+            ? GrainIdCanonicalOrder.Read(ref reader)
+            : default;
+        var afterFacetValue = responseFamily == PartitionQueryResponseFamily.DistinctFacetValuePage
+            ? IndexValueCanonicalEncoding.Read(ref reader)
+            : null;
         var workPolicyVersion = reader.ReadInt32();
         var policy = ReadPolicy(ref reader);
         reader.EnsureFullyConsumed();
 
-        if (responseFamily != PartitionQueryResponseFamily.GrainIdPage
-            || orderingVersion != QueryProtocol.OrderingVersion
-            || workPolicyVersion != QueryProtocol.WorkPolicyVersion
+        if (responseFamily is not PartitionQueryResponseFamily.GrainIdPage
+            and not PartitionQueryResponseFamily.DistinctFacetValuePage
+            || orderingVersion != GetOrderingVersion(responseFamily)
+            || workPolicyVersion != GetWorkPolicyVersion(responseFamily)
             || layoutFormatVersion <= 0
             || routingEpoch <= 0)
         {
@@ -385,7 +436,8 @@ internal sealed class ContinuationTokenCodec
             routingEpoch,
             layoutFingerprint,
             policy,
-            after);
+            after,
+            afterFacetValue);
     }
 
     private void ValidateBinding(
@@ -412,6 +464,26 @@ internal sealed class ContinuationTokenCodec
         {
             throw new SearchableStorageStaleContinuationTokenException();
         }
+    }
+
+    private static int GetOrderingVersion(PartitionQueryResponseFamily family)
+    {
+        return family switch
+        {
+            PartitionQueryResponseFamily.GrainIdPage => QueryProtocol.OrderingVersion,
+            PartitionQueryResponseFamily.DistinctFacetValuePage => QueryProtocol.FacetValueOrderingVersion,
+            _ => throw InvalidToken(),
+        };
+    }
+
+    private static int GetWorkPolicyVersion(PartitionQueryResponseFamily family)
+    {
+        return family switch
+        {
+            PartitionQueryResponseFamily.GrainIdPage => QueryProtocol.WorkPolicyVersion,
+            PartitionQueryResponseFamily.DistinctFacetValuePage => QueryProtocol.FacetWorkPolicyVersion,
+            _ => throw InvalidToken(),
+        };
     }
 
     private byte[] CreateAssociatedData(string keyId)

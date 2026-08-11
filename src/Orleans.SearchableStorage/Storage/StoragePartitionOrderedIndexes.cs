@@ -13,7 +13,7 @@ internal sealed class StoragePartitionOrderedIndexes
     private static readonly OrderedGrainGroups EmptyGroups = new(isReadOnly: true);
     private readonly Dictionary<string, OrderedGrainGroups> _catalogs =
         new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<IndexValue, OrderedGrainGroups>> _hash =
+    private readonly Dictionary<string, OrderedRangeIndex> _hash =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, OrderedRangeIndex> _range =
         new(StringComparer.Ordinal);
@@ -51,7 +51,7 @@ internal sealed class StoragePartitionOrderedIndexes
         catalog.Add(record.GrainId, recordKey);
         foreach (var entry in record.IndexEntries)
         {
-            GetOrAddPosting(entry).Add(record.GrainId, recordKey);
+            AddPostingEntry(entry, record.GrainId, recordKey);
         }
     }
 
@@ -93,12 +93,44 @@ internal sealed class StoragePartitionOrderedIndexes
         return kind switch
         {
             SearchableIndexKind.Hash => _hash.TryGetValue(scope, out var hash)
-                && hash.TryGetValue(value, out var hashPosting)
-                    ? hashPosting
-                    : EmptyGroups,
+                ? hash.GetExactPosting(value)
+                : EmptyGroups,
             SearchableIndexKind.Range => _range.TryGetValue(scope, out var range)
                 ? range.GetExactPosting(value)
                 : EmptyGroups,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown index kind."),
+        };
+    }
+
+    public OrderedRangeBucketCursor CreateFacetValueCursor(
+        string scope,
+        SearchableIndexKind kind,
+        IndexValue? after)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        return kind switch
+        {
+            SearchableIndexKind.Hash => _hash.TryGetValue(scope, out var hash)
+                ? hash.CreateCursorAfter(after)
+                : OrderedRangeBucketCursor.Empty(),
+            SearchableIndexKind.Range => _range.TryGetValue(scope, out var range)
+                ? range.CreateCursorAfter(after)
+                : OrderedRangeBucketCursor.Empty(),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown index kind."),
+        };
+    }
+
+    public long GetFacetRecordCount(string scope, SearchableIndexKind kind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        return kind switch
+        {
+            SearchableIndexKind.Hash => _hash.TryGetValue(scope, out var hash)
+                ? hash.TotalRecordCount
+                : 0,
+            SearchableIndexKind.Range => _range.TryGetValue(scope, out var range)
+                ? range.TotalRecordCount
+                : 0,
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown index kind."),
         };
     }
@@ -119,24 +151,19 @@ internal sealed class StoragePartitionOrderedIndexes
             range.CreateCursor(lowerBound, upperBound));
     }
 
-    private OrderedGrainGroups GetOrAddPosting(IndexEntry entry)
+    private void AddPostingEntry(IndexEntry entry, GrainId grainId, string recordKey)
     {
         switch (entry.Kind)
         {
             case SearchableIndexKind.Hash:
                 if (!_hash.TryGetValue(entry.Scope, out var hash))
                 {
-                    hash = new Dictionary<IndexValue, OrderedGrainGroups>();
+                    hash = new OrderedRangeIndex();
                     _hash.Add(entry.Scope, hash);
                 }
 
-                if (!hash.TryGetValue(entry.Value, out var hashPosting))
-                {
-                    hashPosting = new OrderedGrainGroups();
-                    hash.Add(entry.Value, hashPosting);
-                }
-
-                return hashPosting;
+                hash.Add(entry.Value, grainId, recordKey);
+                return;
             case SearchableIndexKind.Range:
                 if (!_range.TryGetValue(entry.Scope, out var range))
                 {
@@ -144,7 +171,8 @@ internal sealed class StoragePartitionOrderedIndexes
                     _range.Add(entry.Scope, range);
                 }
 
-                return range.GetOrAddPosting(entry.Value);
+                range.Add(entry.Value, grainId, recordKey);
+                return;
             default:
                 throw new InvalidOperationException($"Unknown index kind '{entry.Kind}'.");
         }
@@ -159,16 +187,12 @@ internal sealed class StoragePartitionOrderedIndexes
         {
             case SearchableIndexKind.Hash:
                 if (!_hash.TryGetValue(entry.Scope, out var hash)
-                    || !hash.TryGetValue(entry.Value, out var hashPosting))
+                    || hash.GetExactPosting(entry.Value) == EmptyGroups)
                 {
                     return;
                 }
 
-                hashPosting.Remove(grainId, recordKey);
-                if (hashPosting.Count == 0)
-                {
-                    hash.Remove(entry.Value);
-                }
+                hash.Remove(entry.Value, grainId, recordKey);
 
                 if (hash.Count == 0)
                 {
@@ -218,6 +242,7 @@ internal sealed class OrderedGrainGroups
 {
     private readonly SortedSet<OrderedGrainGroup> _groups = new(OrderedGrainGroupComparer.Instance);
     private readonly bool _isReadOnly;
+    private int _recordCount;
 
     public OrderedGrainGroups(bool isReadOnly = false)
     {
@@ -225,6 +250,8 @@ internal sealed class OrderedGrainGroups
     }
 
     public int Count => _groups.Count;
+
+    public int RecordCount => _recordCount;
 
     public void Add(GrainId grainId, string recordKey)
     {
@@ -238,7 +265,10 @@ internal sealed class OrderedGrainGroups
             _groups.Add(group);
         }
 
-        group.RecordKeys.Add(recordKey);
+        if (group.RecordKeys.Add(recordKey))
+        {
+            _recordCount = checked(_recordCount + 1);
+        }
     }
 
     public void Remove(GrainId grainId, string recordKey)
@@ -252,7 +282,12 @@ internal sealed class OrderedGrainGroups
             return;
         }
 
-        group.RecordKeys.Remove(recordKey);
+        if (!group.RecordKeys.Remove(recordKey))
+        {
+            return;
+        }
+
+        _recordCount--;
         if (group.RecordKeys.Count == 0)
         {
             _groups.Remove(group);
@@ -409,6 +444,8 @@ internal sealed class OrderedRangeIndex
 
     public int Count => _buckets.Count;
 
+    public long TotalRecordCount { get; private set; }
+
     public OrderedGrainGroups GetExactPosting(IndexValue value)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -430,6 +467,18 @@ internal sealed class OrderedRangeIndex
         return bucket.Posting;
     }
 
+    public void Add(IndexValue value, GrainId grainId, string recordKey)
+    {
+        var posting = GetOrAddPosting(value);
+        var before = posting.RecordCount;
+        posting.Add(grainId, recordKey);
+        if (posting.RecordCount != before)
+        {
+            TotalRecordCount = checked(TotalRecordCount + 1);
+        }
+
+    }
+
     public void Remove(IndexValue value, GrainId grainId, string recordKey)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -438,7 +487,13 @@ internal sealed class OrderedRangeIndex
             return;
         }
 
+        var before = bucket.Posting.RecordCount;
         bucket.Posting.Remove(grainId, recordKey);
+        if (bucket.Posting.RecordCount != before)
+        {
+            TotalRecordCount--;
+        }
+
         if (bucket.Posting.Count == 0)
         {
             _buckets.Remove(bucket);
@@ -476,6 +531,30 @@ internal sealed class OrderedRangeIndex
         return new OrderedRangeBucketCursor(
             _buckets.GetViewBetween(lower, upper).GetEnumerator());
     }
+
+    public OrderedRangeBucketCursor CreateCursorAfter(IndexValue? after)
+    {
+        if (_buckets.Count == 0)
+        {
+            return OrderedRangeBucketCursor.Empty();
+        }
+
+        if (after is null)
+        {
+            return new OrderedRangeBucketCursor(_buckets.GetEnumerator());
+        }
+
+        var last = _buckets.Max!;
+        if (after.CompareTo(last.Value) >= 0)
+        {
+            return OrderedRangeBucketCursor.Empty();
+        }
+
+        return new OrderedRangeBucketCursor(
+            _buckets.GetViewBetween(new OrderedRangeBucket(after), last).GetEnumerator(),
+            after);
+    }
+
 }
 
 internal sealed class OrderedRangeBucketCursor : IDisposable
@@ -484,10 +563,21 @@ internal sealed class OrderedRangeBucketCursor : IDisposable
     private bool _hasCurrent;
 
     public OrderedRangeBucketCursor(IEnumerator<OrderedRangeBucket> enumerator)
+        : this(enumerator, after: null)
+    {
+    }
+
+    public OrderedRangeBucketCursor(
+        IEnumerator<OrderedRangeBucket> enumerator,
+        IndexValue? after)
     {
         ArgumentNullException.ThrowIfNull(enumerator);
         _enumerator = enumerator;
         _hasCurrent = _enumerator.MoveNext();
+        if (_hasCurrent && after is not null && _enumerator.Current.Value.CompareTo(after) <= 0)
+        {
+            _hasCurrent = _enumerator.MoveNext();
+        }
     }
 
     public bool HasCurrent => _hasCurrent;

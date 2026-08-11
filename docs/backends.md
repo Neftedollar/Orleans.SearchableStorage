@@ -28,7 +28,8 @@ Public paging requires exactly 32 bytes of secret key material. Configure the sa
 current/decrypt-only key ring on every silo and external Orleans client which can create or resume a
 page. The key is independent of the physical backend and must come from secret configuration; it is
 not stored in PostgreSQL, Redis, Blob Storage, layout state, or continuations. Legacy all-results
-queries remain token-free but still use the bounded page RPC internally.
+queries and terminal facets remain token-free; distinct facets use the same key ring for their own
+response-family-bound continuation.
 
 These are the defaults. `VirtualSlotTargetCount` seeds the exact persisted map for that provider
 namespace by rounding upward to a multiple of `PartitionCount`; it does not change an existing
@@ -60,7 +61,9 @@ The bounded query protocol has a separate mixed-version rule and no persistence 
 upgrading from a release which lacks the page RPC, quiesce searchable query traffic, deploy every
 partition-hosting silo and built-in query client, distribute the common continuation key ring, and
 then resume queries. Point reads, writes, and clears may continue during this query-only rollout.
-Never send the page RPC to an old activation and never fall back to the old unbounded query RPC.
+Never send a page or facet RPC to an old activation and never fall back to the old unbounded query
+RPC. Facets require no durable migration: their messages are non-persisted wire protocol, and the
+canonical hash-value projection is rebuilt from the same durable records/index entries on activation.
 
 The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, and snapshot states is required; the manifest is the searchable-storage commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, or snapshot state.
 
@@ -72,6 +75,9 @@ partition. The keyed storage provider and query/admin clients retain a bounded c
 additional process-local snapshots, never one per partition activation.
 Each partition also derives and retains canonical ordered catalogs/postings for paging in addition to
 the existing hash/range lookup indexes; these are activation memory, not physical-backend bytes.
+Hash and range scopes share a balanced canonical value projection for facets. Candidate nomination
+reads only bucket metadata, while exact filtered probes traverse nominated postings in bounded
+slices. No facet candidate, count, cursor, or owner data version is persisted in the backend.
 Choose the initial partition count, virtual-slot target, and journal capacity with the provider's
 row/value/blob limits, serialization cost, and activation memory in mind. Repeatable capacity
 benchmarks are tracked in [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8).

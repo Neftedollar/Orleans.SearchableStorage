@@ -382,6 +382,202 @@ internal sealed class PartitionQueryPageResult
     public required byte[] LayoutFingerprint { get; init; }
 }
 
+/// <summary>Carries one bounded canonical value-order turn for a distinct facet.</summary>
+[GenerateSerializer]
+internal sealed class RoutedPartitionDistinctFacetPageRequest
+{
+    [Id(0)] public required PartitionQueryPlan Query { get; init; }
+    [Id(1)] public required string FacetScope { get; init; }
+    [Id(2)] public SearchableIndexKind FacetKind { get; init; }
+    [Id(3)] public long Epoch { get; init; }
+    [Id(4)] public IndexValue? After { get; init; }
+    [Id(5)] public long WorkBudget { get; init; }
+    [Id(6)] public int ItemLimit { get; init; }
+    [Id(7)] public int ByteLimit { get; init; }
+    [Id(8)] public int ProtocolVersion { get; init; }
+    [Id(9)] public int OrderingVersion { get; init; }
+    [Id(10)] public int WorkPolicyVersion { get; init; }
+    [Id(11)] public PartitionQueryResponseFamily ResponseFamily { get; init; }
+    [Id(12)] public required byte[] RequestFingerprint { get; init; }
+    [Id(13)] public int LayoutFormatVersion { get; init; }
+    [Id(14)] public required byte[] LayoutFingerprint { get; init; }
+    [Id(15)] public required string StateName { get; init; }
+    [Id(16)] public bool HasExpectedDataVersion { get; init; }
+    [Id(17)] public long ExpectedDataVersion { get; init; }
+}
+
+/// <summary>Returns one bounded canonical value-order candidate page.</summary>
+[GenerateSerializer]
+internal sealed class PartitionDistinctFacetPageResult
+{
+    [Id(0)] public required IndexValue[] Items { get; init; }
+    [Id(1)] public IndexValue? Frontier { get; init; }
+    [Id(2)] public bool Exhausted { get; init; }
+    [Id(3)] public PartitionQueryPageStopReason StopReason { get; init; }
+    [Id(4)] public required PartitionFacetWork Work { get; init; }
+    [Id(5)] public int ItemByteCount { get; init; }
+    [Id(6)] public int ProtocolVersion { get; init; }
+    [Id(7)] public int OrderingVersion { get; init; }
+    [Id(8)] public int WorkPolicyVersion { get; init; }
+    [Id(9)] public PartitionQueryResponseFamily ResponseFamily { get; init; }
+    [Id(10)] public long Epoch { get; init; }
+    [Id(11)] public required byte[] RequestFingerprint { get; init; }
+    [Id(12)] public int LayoutFormatVersion { get; init; }
+    [Id(13)] public required byte[] LayoutFingerprint { get; init; }
+    [Id(14)] public long DataVersion { get; set; }
+}
+
+/// <summary>Carries one bounded canonical value-ordered candidate turn.</summary>
+[GenerateSerializer]
+internal sealed class RoutedPartitionFacetCandidatePageRequest
+{
+    [Id(0)] public required PartitionQueryPlan Query { get; init; }
+    [Id(1)] public required string FacetScope { get; init; }
+    [Id(2)] public SearchableIndexKind FacetKind { get; init; }
+    [Id(3)] public long Epoch { get; init; }
+    [Id(4)] public IndexValue? AfterValue { get; init; }
+    [Id(5)] public long WorkBudget { get; init; }
+    [Id(6)] public int ItemLimit { get; init; }
+    [Id(7)] public int ByteLimit { get; init; }
+    [Id(8)] public int ProtocolVersion { get; init; }
+    [Id(9)] public int OrderingVersion { get; init; }
+    [Id(10)] public int WorkPolicyVersion { get; init; }
+    [Id(11)] public PartitionQueryResponseFamily ResponseFamily { get; init; }
+    [Id(12)] public required byte[] RequestFingerprint { get; init; }
+    [Id(13)] public int LayoutFormatVersion { get; init; }
+    [Id(14)] public required byte[] LayoutFingerprint { get; init; }
+    [Id(15)] public required string StateName { get; init; }
+    [Id(16)] public bool HasExpectedDataVersion { get; init; }
+    [Id(17)] public long ExpectedDataVersion { get; init; }
+}
+
+/// <summary>One metadata-only partition-local facet candidate.</summary>
+[GenerateSerializer]
+internal sealed class PartitionFacetCandidate
+{
+    [Id(0)] public required IndexValue Value { get; init; }
+    [Id(1)] public long RawCount { get; init; }
+}
+
+/// <summary>Returns one bounded canonical value-ordered candidate page.</summary>
+[GenerateSerializer]
+internal sealed class PartitionFacetCandidatePageResult
+{
+    [Id(0)] public required PartitionFacetCandidate[] Items { get; init; }
+    [Id(1)] public IndexValue? FrontierValue { get; init; }
+    [Id(2)] public bool Exhausted { get; init; }
+    [Id(3)] public long PageRawCount { get; init; }
+    [Id(4)] public long TotalRawCount { get; init; }
+    [Id(5)] public PartitionQueryPageStopReason StopReason { get; init; }
+    [Id(6)] public required PartitionFacetWork Work { get; init; }
+    [Id(7)] public int ItemByteCount { get; init; }
+    [Id(8)] public int ProtocolVersion { get; init; }
+    [Id(9)] public int OrderingVersion { get; init; }
+    [Id(10)] public int WorkPolicyVersion { get; init; }
+    [Id(11)] public PartitionQueryResponseFamily ResponseFamily { get; init; }
+    [Id(12)] public long Epoch { get; init; }
+    [Id(13)] public required byte[] RequestFingerprint { get; init; }
+    [Id(14)] public int LayoutFormatVersion { get; init; }
+    [Id(15)] public required byte[] LayoutFingerprint { get; init; }
+    [Id(16)] public long DataVersion { get; set; }
+}
+
+/// <summary>Requests one resumable exact-count slice for one nominated value.</summary>
+[GenerateSerializer]
+internal sealed class RoutedPartitionFacetCountSliceRequest
+{
+    [Id(0)] public required PartitionQueryPlan Query { get; init; }
+    [Id(1)] public required string FacetScope { get; init; }
+    [Id(2)] public SearchableIndexKind FacetKind { get; init; }
+    [Id(3)] public required IndexValue Value { get; init; }
+    [Id(4)] public long Epoch { get; init; }
+    [Id(5)] public bool HasAfter { get; init; }
+    [Id(6)] public GrainId After { get; init; }
+    [Id(7)] public long WorkBudget { get; init; }
+    [Id(8)] public int ProtocolVersion { get; init; }
+    [Id(9)] public int OrderingVersion { get; init; }
+    [Id(10)] public int WorkPolicyVersion { get; init; }
+    [Id(11)] public PartitionQueryResponseFamily ResponseFamily { get; init; }
+    [Id(12)] public required byte[] RequestFingerprint { get; init; }
+    [Id(13)] public int LayoutFormatVersion { get; init; }
+    [Id(14)] public required byte[] LayoutFingerprint { get; init; }
+    [Id(15)] public required string StateName { get; init; }
+    [Id(16)] public bool HasExpectedDataVersion { get; init; }
+    [Id(17)] public long ExpectedDataVersion { get; init; }
+}
+
+/// <summary>Returns one resumable exact-count delta.</summary>
+[GenerateSerializer]
+internal sealed class PartitionFacetCountSliceResult
+{
+    [Id(0)] public long CountDelta { get; init; }
+    [Id(1)] public bool HasFrontier { get; init; }
+    [Id(2)] public GrainId Frontier { get; init; }
+    [Id(3)] public bool Exhausted { get; init; }
+    [Id(4)] public PartitionQueryPageStopReason StopReason { get; init; }
+    [Id(5)] public required PartitionFacetWork Work { get; init; }
+    [Id(6)] public int ProtocolVersion { get; init; }
+    [Id(7)] public int OrderingVersion { get; init; }
+    [Id(8)] public int WorkPolicyVersion { get; init; }
+    [Id(9)] public PartitionQueryResponseFamily ResponseFamily { get; init; }
+    [Id(10)] public long Epoch { get; init; }
+    [Id(11)] public required byte[] RequestFingerprint { get; init; }
+    [Id(12)] public int LayoutFormatVersion { get; init; }
+    [Id(13)] public required byte[] LayoutFingerprint { get; init; }
+    [Id(14)] public long DataVersion { get; set; }
+}
+
+/// <summary>Reports that a multi-turn facet observed a changed partition data version.</summary>
+[GenerateSerializer]
+internal sealed class StorageFacetDataChangedException : Exception
+{
+    public StorageFacetDataChangedException(long expectedVersion, long currentVersion)
+        : base($"Facet data version changed from {expectedVersion} to {currentVersion}.")
+    {
+        ExpectedVersion = expectedVersion;
+        CurrentVersion = currentVersion;
+    }
+
+    [Id(0)] public long ExpectedVersion { get; private set; }
+    [Id(1)] public long CurrentVersion { get; private set; }
+}
+
+/// <summary>Reports a stored facet value outside the bounded canonical facet domain.</summary>
+[GenerateSerializer]
+internal sealed class StorageFacetValueUnsupportedException : Exception
+{
+    public StorageFacetValueUnsupportedException()
+        : base("A stored facet value is not valid strict UTF-8 or exceeds the canonical facet-value limit.")
+    {
+    }
+
+    public StorageFacetValueUnsupportedException(Exception exception)
+        : this()
+    {
+        _ = exception;
+    }
+}
+
+/// <summary>Serializable logical-work vector for one bounded facet turn.</summary>
+[GenerateSerializer]
+internal sealed class PartitionFacetWork
+{
+    [Id(0)] public long ValueSeekCount { get; init; }
+    [Id(1)] public long ValueVisitCount { get; init; }
+    [Id(2)] public long GrainGroupVisitCount { get; init; }
+    [Id(3)] public long OwnershipProbeCount { get; init; }
+    [Id(4)] public long RecordProbeCount { get; init; }
+    [Id(5)] public long PredicateNodeProbeCount { get; init; }
+    [Id(6)] public long IndexEntryProbeCount { get; init; }
+    [Id(7)] public long CountIncrementCount { get; init; }
+    [Id(8)] public long ResultMaterializationCount { get; init; }
+
+    public long TotalOperationCount => checked(
+        ValueSeekCount + ValueVisitCount + GrainGroupVisitCount + OwnershipProbeCount
+        + RecordProbeCount + PredicateNodeProbeCount + IndexEntryProbeCount
+        + CountIncrementCount + ResultMaterializationCount);
+}
+
 /// <summary>
 /// Serializable logical-work vector for one bounded partition turn.
 /// </summary>
@@ -551,4 +747,5 @@ internal enum PartitionQueryOperation
     Range = 2,
     And = 3,
     Or = 4,
+    All = 5,
 }
