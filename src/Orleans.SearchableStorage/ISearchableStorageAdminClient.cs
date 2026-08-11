@@ -1,8 +1,9 @@
 namespace Orleans.SearchableStorage;
 
 /// <summary>
-/// Reads and administers the persisted routing layout for one searchable-storage provider,
-/// including explicit movement enablement, virtual-slot moves, rollback, and rebalancing.
+/// Reads and administers one searchable-storage provider, including managed index-schema status
+/// and rebuilds, persisted routing, movement enablement, virtual-slot moves, rollback, and
+/// rebalancing.
 /// </summary>
 public interface ISearchableStorageAdminClient
 {
@@ -13,6 +14,92 @@ public interface ISearchableStorageAdminClient
     /// <param name="cancellationToken">Cancels this caller's wait without canceling a shared layout read.</param>
     /// <returns>The persisted routing layout, or <see langword="null"/>.</returns>
     Task<SearchableStorageLayout?> GetLayoutAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the durable lifecycle state for one explicitly registered index schema.
+    /// </summary>
+    /// <typeparam name="TState">The registered Orleans persistent-state type.</typeparam>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <param name="cancellationToken">Cancels this caller's wait.</param>
+    /// <returns>The durable schema status.</returns>
+    Task<SearchableStorageIndexSchemaStatus> GetIndexSchemaAsync<TState>(
+        string stateName,
+        CancellationToken cancellationToken = default)
+    {
+        return GetIndexSchemaAsync<TState>(
+            stateName,
+            applicationSchemaVersion: 1,
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets the durable lifecycle state for an explicitly versioned index schema.
+    /// </summary>
+    /// <typeparam name="TState">The registered Orleans persistent-state type.</typeparam>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <param name="applicationSchemaVersion">
+    /// The positive application-owned version used during state registration.
+    /// </param>
+    /// <param name="cancellationToken">Cancels this caller's wait.</param>
+    /// <returns>The durable schema status.</returns>
+    Task<SearchableStorageIndexSchemaStatus> GetIndexSchemaAsync<TState>(
+        string stateName,
+        int applicationSchemaVersion,
+        CancellationToken cancellationToken = default)
+    {
+        return SchemaNotSupported<SearchableStorageIndexSchemaStatus>();
+    }
+
+    /// <summary>
+    /// Starts or resumes a quiesced, page-limited index rebuild and returns after it is active.
+    /// </summary>
+    /// <remarks>
+    /// The state type must be registered with <c>AddSearchableStorageState&lt;TState&gt;</c> on
+    /// every participating silo. Cancellation stops only this client loop; an in-flight Orleans
+    /// turn may still commit, and a later call resumes the durable cursor. Each scan request covers
+    /// at most 64 catalog records, but the complete helper loop and retained partition compaction
+    /// are not hard work, memory, or wall-clock bounds. Searchable writes and queries for the state
+    /// fail closed until completion.
+    /// </remarks>
+    /// <typeparam name="TState">The registered Orleans persistent-state type.</typeparam>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <param name="cancellationToken">Cancels the client loop between rebuild/protocol turns.</param>
+    /// <returns>The active schema status.</returns>
+    Task<SearchableStorageIndexSchemaStatus> RebuildIndexSchemaAsync<TState>(
+        string stateName,
+        CancellationToken cancellationToken = default)
+    {
+        return RebuildIndexSchemaAsync<TState>(
+            stateName,
+            applicationSchemaVersion: 1,
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Starts or resumes a rebuild for an explicitly versioned index schema.
+    /// </summary>
+    /// <remarks>
+    /// Follow the managed-schema runbook before calling: quiesce the required traffic and movement,
+    /// deploy the same state type and version registration to every participant, and run only one
+    /// schema rebuild at a time for the provider. Cancellation stops only this client loop; an
+    /// in-flight Orleans turn may still commit, and a later call resumes the same durable rebuild.
+    /// Each scan request covers at most 64 catalog records, but the complete helper loop and retained
+    /// partition compaction are not hard work, memory, or wall-clock bounds.
+    /// </remarks>
+    /// <typeparam name="TState">The registered Orleans persistent-state type.</typeparam>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <param name="applicationSchemaVersion">
+    /// The positive application-owned version used during state registration.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the client loop between rebuild/protocol turns.</param>
+    /// <returns>The active schema status.</returns>
+    Task<SearchableStorageIndexSchemaStatus> RebuildIndexSchemaAsync<TState>(
+        string stateName,
+        int applicationSchemaVersion,
+        CancellationToken cancellationToken = default)
+    {
+        return SchemaNotSupported<SearchableStorageIndexSchemaStatus>();
+    }
 
     /// <summary>
     /// Enables the live-movement protocol after searchable-storage traffic has been quiesced and
@@ -145,6 +232,82 @@ public interface ISearchableStorageAdminClient
             "This ISearchableStorageAdminClient implementation does not support live virtual-slot movement. "
             + "Use the keyed SearchableStorageAdminClient registered by AddSearchableGrainStorage."));
     }
+
+    private static Task<T> SchemaNotSupported<T>()
+    {
+        return Task.FromException<T>(new NotSupportedException(
+            "This ISearchableStorageAdminClient implementation does not support managed index "
+            + "schemas. Use the keyed SearchableStorageAdminClient registered by "
+            + "AddSearchableGrainStorage."));
+    }
+}
+
+/// <summary>Identifies the durable lifecycle phase of one managed index schema.</summary>
+public enum SearchableStorageIndexSchemaState
+{
+    /// <summary>No managed schema has been activated.</summary>
+    Uninitialized = 0,
+
+    /// <summary>A quiesced resumable rebuild is in progress.</summary>
+    Rebuilding = 1,
+
+    /// <summary>The registered schema fingerprint is active.</summary>
+    Active = 2,
+}
+
+/// <summary>Identifies the durable operation within an active index-schema rebuild.</summary>
+public enum SearchableStorageIndexSchemaRebuildPhase
+{
+    /// <summary>Current partition owners are durably enabling the managed-schema protocol.</summary>
+    EnablingOwners = 0,
+
+    /// <summary>Records are being scanned and reindexed in pages of at most 64 records.</summary>
+    ScanningRecords = 1,
+
+    /// <summary>The completed target fingerprint is being activated.</summary>
+    ActivatingGeneration = 2,
+}
+
+/// <summary>Reports durable progress without exposing partition record cursors.</summary>
+public sealed class SearchableStorageIndexSchemaStatus
+{
+    /// <summary>Gets the Orleans persistent-state name.</summary>
+    public required string StateName { get; init; }
+
+    /// <summary>Gets the durable lifecycle phase.</summary>
+    public required SearchableStorageIndexSchemaState State { get; init; }
+
+    /// <summary>Gets the stable rebuild identifier while rebuilding.</summary>
+    public Guid? RebuildId { get; init; }
+
+    /// <summary>
+    /// Gets the current durable rebuild operation, or <see langword="null"/> outside a rebuild.
+    /// </summary>
+    public SearchableStorageIndexSchemaRebuildPhase? RebuildPhase { get; init; }
+
+    /// <summary>
+    /// Gets the number of owners in the rebuild's durable layout checkpoint, or
+    /// <see langword="null"/> outside a rebuild.
+    /// </summary>
+    public int? TotalOwnerCount { get; init; }
+
+    /// <summary>
+    /// Gets the number of owners that durably enabled the schema protocol, or
+    /// <see langword="null"/> outside a rebuild.
+    /// </summary>
+    public int? SchemaEnabledOwnerCount { get; init; }
+
+    /// <summary>
+    /// Gets the number of owners whose record scan is durably complete, or
+    /// <see langword="null"/> outside a rebuild.
+    /// </summary>
+    public int? ScannedOwnerCount { get; init; }
+
+    /// <summary>Gets the number of records covered by committed rebuild pages.</summary>
+    public required long ProcessedRecordCount { get; init; }
+
+    /// <summary>Gets the active or target schema fingerprint as uppercase SHA-256 hex.</summary>
+    public string? Fingerprint { get; init; }
 }
 
 /// <summary>
@@ -236,6 +399,12 @@ public sealed class SearchableStorageLayout
     /// Gets the persisted live-movement protocol version, or zero before movement is enabled.
     /// </summary>
     public int MovementProtocolVersion { get; init; }
+
+    /// <summary>
+    /// Gets the provider-wide managed index-schema protocol version, or zero before first
+    /// adoption. Once enabled, every state using this provider must be explicitly registered.
+    /// </summary>
+    public int IndexSchemaProtocolVersion { get; init; }
 
     /// <summary>
     /// Gets the namespace's movement-enablement state.

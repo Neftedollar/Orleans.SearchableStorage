@@ -224,7 +224,7 @@ public sealed class QueryProtocolEncodingTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "fingerprint-provider",
             PartitionCount = owners.Distinct().Count(),
             VirtualSlotCount = owners.Length,

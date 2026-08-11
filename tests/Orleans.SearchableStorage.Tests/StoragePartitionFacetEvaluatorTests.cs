@@ -404,7 +404,7 @@ public sealed class StoragePartitionFacetEvaluatorTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "facet-evaluator",
             PartitionCount = owners.Distinct().Count(),
             VirtualSlotCount = owners.Length,

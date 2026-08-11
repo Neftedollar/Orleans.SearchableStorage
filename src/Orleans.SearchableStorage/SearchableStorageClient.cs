@@ -19,6 +19,9 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     private readonly SearchableStorageQueryConfiguration _queryConfiguration;
     private readonly ContinuationTokenCodec _tokenCodec;
     private readonly Action<Task> _observeDetachedFanout;
+    private readonly SearchableStateRegistry _stateRegistry;
+    private readonly Func<string, IStorageIndexSchemaGrain>? _getIndexSchema;
+    private readonly ActiveSchemaValidationCache _activeSchemas = new();
 
     /// <summary>
     /// Initializes a client for one searchable storage provider.
@@ -49,9 +52,54 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         string providerName,
         int partitionCount,
         SearchableStorageQueryOptions queryOptions)
+        : this(
+            grainFactory,
+            providerName,
+            partitionCount,
+            queryOptions,
+            SearchableStateRegistry.Empty)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a client with bounded-query options and explicitly declared managed schemas.
+    /// </summary>
+    /// <param name="grainFactory">The Orleans grain factory used to contact storage grains.</param>
+    /// <param name="providerName">The searchable storage-provider name.</param>
+    /// <param name="partitionCount">The partition count configured for that provider.</param>
+    /// <param name="queryOptions">The provider-scoped bounded-query and continuation settings.</param>
+    /// <param name="schemaRegistry">The state schemas declared by this client process.</param>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="grainFactory"/>, <paramref name="queryOptions"/>, or
+    /// <paramref name="schemaRegistry"/> is null.
+    /// </exception>
+    /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="partitionCount"/> is not positive.</exception>
+    public SearchableStorageClient(
+        IGrainFactory grainFactory,
+        string providerName,
+        int partitionCount,
+        SearchableStorageQueryOptions queryOptions,
+        SearchableStorageSchemaRegistry schemaRegistry)
+        : this(
+            grainFactory,
+            providerName,
+            partitionCount,
+            queryOptions,
+            CreateStateRegistry(providerName, schemaRegistry))
+    {
+    }
+
+    internal SearchableStorageClient(
+        IGrainFactory grainFactory,
+        string providerName,
+        int partitionCount,
+        SearchableStorageQueryOptions queryOptions,
+        SearchableStateRegistry stateRegistry)
     {
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentNullException.ThrowIfNull(queryOptions);
+        ArgumentNullException.ThrowIfNull(stateRegistry);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(partitionCount);
 
@@ -59,6 +107,9 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         _queryConfiguration = SearchableStorageQueryConfiguration.Create(queryOptions);
         _tokenCodec = new ContinuationTokenCodec(providerName, _queryConfiguration);
         _observeDetachedFanout = ObserveDetachedFanout;
+        _stateRegistry = stateRegistry;
+        _getIndexSchema = stateName => grainFactory.GetGrain<IStorageIndexSchemaGrain>(
+            StorageIndexSchema.CreateGrainKey(providerName, stateName));
         var layout = StorageLayout.CreateIdentity(providerName, partitionCount);
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
         _layoutCache = new StorageLayoutCache(() => layoutGrain.GetLayoutAsync(layout));
@@ -87,6 +138,8 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             queryOptions ?? new SearchableStorageQueryOptions());
         _tokenCodec = tokenCodec ?? new ContinuationTokenCodec(providerName, _queryConfiguration);
         _observeDetachedFanout = detachedFanoutObserver ?? ObserveDetachedFanout;
+        _stateRegistry = SearchableStateRegistry.Empty;
+        _getIndexSchema = null;
         var staticLayout = CreateStaticLayout(providerName, partitions.Count);
         _layoutCache = new StorageLayoutCache(
             async () => await validateLayout() ? staticLayout : null);
@@ -110,6 +163,8 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             queryOptions ?? new SearchableStorageQueryOptions());
         _tokenCodec = tokenCodec ?? new ContinuationTokenCodec(providerName, _queryConfiguration);
         _observeDetachedFanout = detachedFanoutObserver ?? ObserveDetachedFanout;
+        _stateRegistry = SearchableStateRegistry.Empty;
+        _getIndexSchema = null;
         _layoutCache = layoutCache;
         _getPartition = getPartition;
     }
@@ -129,7 +184,12 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         TValue value,
         CancellationToken cancellationToken = default)
     {
-        var index = IndexMetadataProvider.GetSelectedIndex(stateName, propertySelector);
+        cancellationToken.ThrowIfCancellationRequested();
+        var schema = GetRegisteredSchema<TState>(stateName);
+        var index = IndexMetadataProvider.GetSelectedIndex(
+            stateName,
+            propertySelector,
+            schema?.Fingerprint);
         var indexValue = CreateQueryValue(index, value, nameof(value));
 
         var query = new PartitionQueryPlan
@@ -140,6 +200,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             Value = indexValue,
         };
 
+        await EnsureSchemaActiveAsync<TState>(stateName, cancellationToken);
         return await ExecuteLegacyQueryAsync(stateName, query, cancellationToken);
     }
 
@@ -153,7 +214,12 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         bool includeUpperBound = true,
         CancellationToken cancellationToken = default)
     {
-        var index = IndexMetadataProvider.GetSelectedIndex(stateName, propertySelector);
+        cancellationToken.ThrowIfCancellationRequested();
+        var schema = GetRegisteredSchema<TState>(stateName);
+        var index = IndexMetadataProvider.GetSelectedIndex(
+            stateName,
+            propertySelector,
+            schema?.Fingerprint);
         if (index.Kind != SearchableIndexKind.Range)
         {
             throw new ArgumentException("Range queries require a property marked with SearchableIndexKind.Range.", nameof(propertySelector));
@@ -176,6 +242,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             IncludeUpperBound = includeUpperBound,
         };
 
+        await EnsureSchemaActiveAsync<TState>(stateName, cancellationToken);
         return await ExecuteLegacyQueryAsync(stateName, query, cancellationToken);
     }
 
@@ -191,8 +258,14 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var plan = QueryTranslator.Translate<TState>(stateName, expression);
+        var schema = GetRegisteredSchema<TState>(stateName);
+        var plan = QueryTranslator.Translate<TState>(stateName, expression, schema?.Fingerprint);
         var partitionPlan = PartitionQueryPlanFactory.Create(plan);
+        await EnsureSchemaActiveAsync<TState>(
+            stateName,
+            cancellationToken,
+            requireFreshUnregisteredCapability:
+                partitionPlan.Operation == PartitionQueryOperation.Empty);
         return await ExecuteLegacyQueryAsync(stateName, partitionPlan, cancellationToken);
     }
 
@@ -204,8 +277,15 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
-        var plan = QueryTranslator.Translate<TState>(stateName, expression);
+        var schema = GetRegisteredSchema<TState>(stateName);
+        var plan = QueryTranslator.Translate<TState>(stateName, expression, schema?.Fingerprint);
         var partitionPlan = PartitionQueryPlanFactory.Create(plan);
+        ValidatePublicPagePreconditions(request);
+        await EnsureSchemaActiveAsync<TState>(
+            stateName,
+            cancellationToken,
+            requireFreshUnregisteredCapability:
+                partitionPlan.Operation == PartitionQueryOperation.Empty);
         return await ExecutePublicPageAsync(
             stateName,
             partitionPlan,
@@ -232,6 +312,101 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             ?? throw new InvalidOperationException("A non-null query value unexpectedly converted to null.");
     }
 
+    private IndexSchemaDefinition? GetRegisteredSchema<TState>(string stateName)
+    {
+        return _stateRegistry.Find<TState>(_providerName, stateName)?.Schema;
+    }
+
+    private async Task EnsureSchemaActiveAsync<TState>(
+        string stateName,
+        CancellationToken cancellationToken,
+        bool requireFreshUnregisteredCapability = false)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var registration = _stateRegistry.Find<TState>(_providerName, stateName);
+        if (registration is null)
+        {
+            if (_stateRegistry.ContainsProvider(_providerName))
+            {
+                throw new SearchableStorageIndexSchemaException(
+                    $"Provider '{_providerName}' has managed schema declarations, but state "
+                    + $"'{stateName}' is not declared by this query client. Include every state "
+                    + $"used by the provider in its {nameof(SearchableStorageSchemaRegistry)}.");
+            }
+
+            // A schema-unaware request normally reaches a partition, whose durable provider gate
+            // rejects it after managed schemas are enabled. An empty plan is answered locally, so
+            // the client must probe the capability through a read initiated by this operation
+            // instead of trusting either the cache or another caller's earlier read.
+            var layout = requireFreshUnregisteredCapability
+                ? await _layoutCache.ReadFreshAsync(cancellationToken)
+                : await _layoutCache.GetAsync(cancellationToken);
+            var schemaProtocolPublished = layout?.IndexSchemaProtocolVersion
+                == StorageIndexSchema.ProtocolVersion;
+            var schemaEnablementActive = layout?.CopyIndexSchemaEnablement() is not null;
+            if (schemaProtocolPublished || schemaEnablementActive)
+            {
+                var capabilityState = schemaProtocolPublished
+                    ? "has managed index schemas enabled"
+                    : "is durably enabling managed index schemas";
+                throw new SearchableStorageIndexSchemaException(
+                    $"Provider '{_providerName}' {capabilityState} and requires explicit managed "
+                    + "schema binding, but state "
+                    + $"'{stateName}' is not declared by this query client. Supply a "
+                    + $"{nameof(SearchableStorageSchemaRegistry)} containing every state used by "
+                    + "the provider.");
+            }
+
+            return;
+        }
+
+        if (_activeSchemas.IsActive(registration))
+        {
+            return;
+        }
+
+        var control = _getIndexSchema
+            ?? throw new InvalidOperationException("The managed index-schema control is unavailable.");
+        var call = control(stateName).GetAsync(StorageIndexSchema.CreateRequest(registration));
+        StorageIndexSchemaSnapshot snapshot;
+        try
+        {
+            snapshot = await call.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _observeDetachedFanout(call);
+            throw;
+        }
+        if (snapshot.Rebuild is not null)
+        {
+            throw new SearchableStorageIndexSchemaException(
+                $"Index schema rebuild '{snapshot.Rebuild.RebuildId}' is still running for state "
+                + $"'{stateName}'. Keep searchable traffic quiesced until it completes.");
+        }
+
+        if (snapshot.ActiveFingerprint is null
+            || !IndexSchemaIdentity.FixedTimeEquals(
+                snapshot.ActiveFingerprint,
+                registration.Schema.Fingerprint))
+        {
+            throw new SearchableStorageIndexSchemaException(
+                $"The registered index schema for state '{stateName}' is not active. Quiesce "
+                + "searchable traffic and run RebuildIndexSchemaAsync<TState> first.");
+        }
+
+        _activeSchemas.MarkActive(registration);
+    }
+
+    private static SearchableStateRegistry CreateStateRegistry(
+        string providerName,
+        SearchableStorageSchemaRegistry schemaRegistry)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        ArgumentNullException.ThrowIfNull(schemaRegistry);
+        return schemaRegistry.CreateRegistry(providerName);
+    }
+
     private async Task<SearchableStorageQueryPage> ExecutePublicPageAsync(
         string stateName,
         PartitionQueryPlan query,
@@ -239,19 +414,6 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (request.PageSize > _queryConfiguration.PageSizeLimit)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(request),
-                request.PageSize,
-                $"PageSize must not exceed the configured limit of {_queryConfiguration.PageSizeLimit}.");
-        }
-
-        if (_queryConfiguration.CurrentKey is null)
-        {
-            throw new SearchableStorageQueryConfigurationException(
-                "A current continuation-protection key must be configured before public query paging can be used.");
-        }
 
         var queryFingerprint = QueryPlanFingerprint.Compute(stateName, query);
         var isContinuation = request.ContinuationToken is not null;
@@ -336,6 +498,24 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
                     ?? throw new InvalidOperationException(
                         "The storage layout disappeared while a routed query was refreshing.");
             }
+        }
+    }
+
+    private void ValidatePublicPagePreconditions(SearchableStorageQueryPageRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PageSize > _queryConfiguration.PageSizeLimit)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.PageSize,
+                $"PageSize must not exceed the configured limit of {_queryConfiguration.PageSizeLimit}.");
+        }
+
+        if (_queryConfiguration.CurrentKey is null)
+        {
+            throw new SearchableStorageQueryConfigurationException(
+                "A current continuation-protection key must be configured before public query paging can be used.");
         }
     }
 
@@ -499,6 +679,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var schema = _stateRegistry.Find(_providerName, stateName)?.Schema;
         var calls = new PartitionPageCall[owners.Length];
         for (var index = 0; index < owners.Length; index++)
         {
@@ -520,6 +701,10 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
                 LayoutFormatVersion = layout.FormatVersion,
                 LayoutFingerprint = [.. layoutFingerprint],
                 StateName = stateName,
+                IndexSchemaFingerprint = schema?.Fingerprint,
+                IndexSchemaProtocolVersion = schema is null
+                    ? 0
+                    : StorageIndexSchema.ProtocolVersion,
             };
             calls[index] = new PartitionPageCall(owner, StartPageQuery(owner, request));
         }
@@ -560,7 +745,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
             VirtualSlotCount = partitionCount,
@@ -651,7 +836,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         }
 
         if (response.Epoch != layout.Epoch
-            || response.LayoutFormatVersion != layout.FormatVersion
+            || !StorageLayout.AreRoutingFormatsCompatible(response.LayoutFormatVersion, layout.FormatVersion)
             || response.LayoutFingerprint is null
             || !StorageLayoutFingerprint.Equals(response.LayoutFingerprint, layoutFingerprint))
         {

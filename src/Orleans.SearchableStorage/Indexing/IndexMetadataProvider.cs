@@ -13,7 +13,20 @@ internal static class IndexMetadataProvider
 {
     public static IReadOnlyList<IndexEntry> Extract<TState>(string stateName, TState state)
     {
+        return Extract(stateName, state, schemaFingerprint: null);
+    }
+
+    public static IReadOnlyList<IndexEntry> Extract<TState>(
+        string stateName,
+        TState state,
+        byte[]? schemaFingerprint)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+
+        if (schemaFingerprint is not null)
+        {
+            IndexSchemaIdentity.ValidateIdentity(schemaFingerprint, nameof(schemaFingerprint));
+        }
 
         if (state is null)
         {
@@ -32,7 +45,9 @@ internal static class IndexMetadataProvider
 
             entries.Add(new IndexEntry
             {
-                Scope = index.GetScope(stateName),
+                Scope = schemaFingerprint is null
+                    ? index.GetScope(stateName)
+                    : IndexSchemaIdentity.BindScope(index.GetScope(stateName), schemaFingerprint),
                 Kind = index.Kind,
                 Value = value,
             });
@@ -41,9 +56,22 @@ internal static class IndexMetadataProvider
         return entries;
     }
 
+    public static IndexSchemaDefinition GetSchemaDefinition<TState>(
+        string stateName,
+        int applicationSchemaVersion = 1)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(applicationSchemaVersion);
+        return IndexSchemaIdentity.Create(
+            stateName,
+            applicationSchemaVersion,
+            GetTypeModel<TState>());
+    }
+
     public static SelectedIndex GetSelectedIndex<TState, TValue>(
         string stateName,
-        Expression<Func<TState, TValue>> expression)
+        Expression<Func<TState, TValue>> expression,
+        byte[]? schemaFingerprint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
         ArgumentNullException.ThrowIfNull(expression);
@@ -59,13 +87,14 @@ internal static class IndexMetadataProvider
             throw new ArgumentException("The index selector must select one state property.", nameof(expression));
         }
 
-        return GetSelectedIndex<TState>(stateName, property, nameof(expression));
+        return GetSelectedIndex<TState>(stateName, property, nameof(expression), schemaFingerprint);
     }
 
     public static SelectedIndex GetSelectedIndex<TState>(
         string stateName,
         PropertyInfo property,
-        string parameterName)
+        string parameterName,
+        byte[]? schemaFingerprint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
         ArgumentNullException.ThrowIfNull(property);
@@ -77,8 +106,15 @@ internal static class IndexMetadataProvider
                 $"Property '{property.Name}' is not marked with SearchableIndexAttribute.",
                 parameterName);
 
+        var scope = index.GetScope(stateName);
+        if (schemaFingerprint is not null)
+        {
+            IndexSchemaIdentity.ValidateIdentity(schemaFingerprint, nameof(schemaFingerprint));
+            scope = IndexSchemaIdentity.BindScope(scope, schemaFingerprint);
+        }
+
         return new SelectedIndex(
-            index.GetScope(stateName),
+            scope,
             index.Kind,
             index.Converter,
             property.Name);
@@ -130,15 +166,15 @@ internal static class IndexMetadataProvider
 
     private static SearchableTypeModel<TState> CreateTypeModel<TState>()
     {
+        var typeIdentity = CreateTypeIdentity(typeof(TState));
         var shape = ReflectionTypeShapeProvider.Default.GetTypeShape<TState>();
         if (shape is not IObjectTypeShape<TState> objectShape)
         {
             // Collection and scalar state types remain valid Orleans state. They cannot declare
             // searchable properties, so their correct type model is an empty one.
-            return new SearchableTypeModel<TState>([]);
+            return new SearchableTypeModel<TState>(typeIdentity, []);
         }
 
-        var typeIdentity = CreateTypeIdentity(typeof(TState));
         var indexes = new List<PropertyIndexMetadata<TState>>();
         var names = new HashSet<string>(StringComparer.Ordinal);
 
@@ -179,7 +215,7 @@ internal static class IndexMetadataProvider
             indexes.Add(index);
         }
 
-        return new SearchableTypeModel<TState>(indexes);
+        return new SearchableTypeModel<TState>(typeIdentity, indexes);
     }
 
     internal static string CreateScope(string typeIdentity, string stateName, string indexName)
@@ -259,7 +295,7 @@ internal static class IndexMetadataProvider
         builder.Append(FormatComponent(value));
     }
 
-    private static string FormatComponent(string value)
+    internal static string FormatComponent(string value)
     {
         return string.Concat(value.Length.ToString(CultureInfo.InvariantCulture), ":", value);
     }
@@ -301,19 +337,23 @@ internal static class IndexMetadataProvider
                 memberInfo,
                 context.Name,
                 context.Kind,
+                CreateTypeIdentity(propertyShape.PropertyType.Type),
                 propertyShape.GetGetter(),
                 converter);
         }
     }
 }
 
-internal sealed record SearchableTypeModel<TState>(IReadOnlyList<PropertyIndexMetadata<TState>> Indexes);
+internal sealed record SearchableTypeModel<TState>(
+    string TypeIdentity,
+    IReadOnlyList<PropertyIndexMetadata<TState>> Indexes);
 
 internal abstract class PropertyIndexMetadata<TState>(
     string typeIdentity,
     MemberInfo memberInfo,
     string name,
     SearchableIndexKind kind,
+    string valueTypeIdentity,
     IndexValueConverter converter)
 {
     private readonly ConcurrentDictionary<string, string> _scopes = new(StringComparer.Ordinal);
@@ -324,6 +364,8 @@ internal abstract class PropertyIndexMetadata<TState>(
     public string Name { get; } = name;
 
     public SearchableIndexKind Kind { get; } = kind;
+
+    public string ValueTypeIdentity { get; } = valueTypeIdentity;
 
     public IndexValueConverter Converter { get; } = converter;
 
@@ -350,9 +392,16 @@ internal sealed class PropertyIndexMetadata<TState, TValue>(
     MemberInfo memberInfo,
     string name,
     SearchableIndexKind kind,
+    string valueTypeIdentity,
     Getter<TState, TValue> getter,
     IndexValueConverter<TValue> converter)
-    : PropertyIndexMetadata<TState>(typeIdentity, memberInfo, name, kind, converter)
+    : PropertyIndexMetadata<TState>(
+        typeIdentity,
+        memberInfo,
+        name,
+        kind,
+        valueTypeIdentity,
+        converter)
 {
     public override IndexValue? Read(ref TState state)
     {

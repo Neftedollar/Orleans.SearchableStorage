@@ -4,11 +4,41 @@ namespace Orleans.SearchableStorage.Storage;
 
 internal static class StorageLayout
 {
-    public const int CurrentFormatVersion = 4;
-    public const int PreviousFormatVersion = 3;
+    public const int LegacyFormatVersion = 3;
+    public const int MovementFormatVersion = 4;
+    public const int IndexSchemaFormatVersion = 5;
     public const int CurrentMovementProtocolVersion = 1;
+    public const int CurrentIndexSchemaProtocolVersion = 1;
     public const int DefaultVirtualSlotTargetCount = 16_384;
     public const int MaximumVirtualSlotCount = 262_144;
+
+    /// <summary>
+    /// Version 4 is the movement-capable baseline. Version 5 has the same routing semantics and
+    /// adds the durable, fail-closed managed-schema capability fence.
+    /// </summary>
+    public static bool IsRoutingFormatVersion(int formatVersion)
+    {
+        return formatVersion is MovementFormatVersion or IndexSchemaFormatVersion;
+    }
+
+    public static bool AreRoutingFormatsCompatible(int left, int right)
+    {
+        return IsRoutingFormatVersion(left) && IsRoutingFormatVersion(right);
+    }
+
+    public static int GetRoutingFingerprintFormatVersion(int formatVersion)
+    {
+        if (!IsRoutingFormatVersion(formatVersion))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(formatVersion),
+                formatVersion,
+                "A routing-capable layout format version is required.");
+        }
+
+        // The v5 transition changes durable capability, not assignments or routing identity.
+        return MovementFormatVersion;
+    }
 
     public static StorageLayoutDescriptor CreateDescriptor(
         string providerName,
@@ -19,7 +49,7 @@ internal static class StorageLayout
     {
         return new StorageLayoutDescriptor
         {
-            FormatVersion = CurrentFormatVersion,
+            FormatVersion = MovementFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
             JournalSegmentCapacity = journalSegmentCapacity,
@@ -32,7 +62,7 @@ internal static class StorageLayout
     {
         return new StorageLayoutIdentity
         {
-            FormatVersion = CurrentFormatVersion,
+            FormatVersion = MovementFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
         };
@@ -212,6 +242,12 @@ internal sealed class StorageLayoutSnapshot
     [Id(9)]
     private StorageSlotMoveReceipt? LastMoveReceipt { get; set; }
 
+    [Id(10)]
+    public int IndexSchemaProtocolVersion { get; private set; }
+
+    [Id(11)]
+    private StorageIndexSchemaEnableIntent? IndexSchemaEnablement { get; set; }
+
     public SearchableStorageMovementState MovementState => MovementEnablement is not null
         ? SearchableStorageMovementState.Enabling
         : MovementProtocolVersion == StorageLayout.CurrentMovementProtocolVersion
@@ -262,6 +298,11 @@ internal sealed class StorageLayoutSnapshot
         return LastMoveReceipt?.Copy();
     }
 
+    public StorageIndexSchemaEnableIntent? CopyIndexSchemaEnablement()
+    {
+        return IndexSchemaEnablement?.Copy();
+    }
+
     internal static StorageLayoutSnapshot FromState(StorageLayoutState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -278,6 +319,8 @@ internal sealed class StorageLayoutSnapshot
             MovementEnablement = state.MovementEnablement?.Copy(),
             MoveIntent = state.MoveIntent?.Copy(),
             LastMoveReceipt = state.LastMoveReceipt?.Copy(),
+            IndexSchemaProtocolVersion = state.IndexSchemaProtocolVersion,
+            IndexSchemaEnablement = state.IndexSchemaEnablement?.Copy(),
         };
     }
 
@@ -337,6 +380,12 @@ internal sealed class StorageLayoutState
     [Id(12)]
     public StorageSlotMoveReceipt? LastMoveReceipt { get; set; }
 
+    [Id(13)]
+    public int IndexSchemaProtocolVersion { get; set; }
+
+    [Id(14)]
+    public StorageIndexSchemaEnableIntent? IndexSchemaEnablement { get; set; }
+
     public StorageLayoutState Copy()
     {
         return new StorageLayoutState
@@ -354,6 +403,40 @@ internal sealed class StorageLayoutState
             MovementEnablement = MovementEnablement?.Copy(),
             MoveIntent = MoveIntent?.Copy(),
             LastMoveReceipt = LastMoveReceipt?.Copy(),
+            IndexSchemaProtocolVersion = IndexSchemaProtocolVersion,
+            IndexSchemaEnablement = IndexSchemaEnablement?.Copy(),
+        };
+    }
+}
+
+/// <summary>
+/// Durably excludes movement while owners are enabled, records are scanned, and the provider
+/// capability is published. The following state-control activation remains covered by the
+/// documented traffic-quiescence precondition.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageIndexSchemaEnableIntent
+{
+    [Id(0)]
+    public Guid EnablementId { get; set; }
+
+    [Id(1)]
+    public int ProtocolVersion { get; set; }
+
+    [Id(2)]
+    public long LayoutEpoch { get; set; }
+
+    [Id(3)]
+    public byte[] LayoutFingerprint { get; set; } = [];
+
+    public StorageIndexSchemaEnableIntent Copy()
+    {
+        return new StorageIndexSchemaEnableIntent
+        {
+            EnablementId = EnablementId,
+            ProtocolVersion = ProtocolVersion,
+            LayoutEpoch = LayoutEpoch,
+            LayoutFingerprint = [.. LayoutFingerprint],
         };
     }
 }

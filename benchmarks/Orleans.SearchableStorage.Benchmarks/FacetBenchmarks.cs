@@ -41,7 +41,7 @@ public class FacetPartitionBenchmarks
         _routing = StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "facet-benchmark-provider",
             PartitionCount = 1,
             VirtualSlotCount = 1,

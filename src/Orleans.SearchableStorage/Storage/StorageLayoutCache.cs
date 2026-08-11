@@ -3,8 +3,9 @@ using System.Collections.Concurrent;
 namespace Orleans.SearchableStorage.Storage;
 
 /// <summary>
-/// Shares one layout read between concurrent callers without coupling the shared operation to
-/// any individual caller's cancellation token.
+/// Shares ordinary routing-layout reads between concurrent callers without coupling the shared
+/// operation to any caller's cancellation token. Capability checks can request an explicit
+/// caller-owned fresh read without replacing that routing cache.
 /// </summary>
 internal sealed class StorageLayoutCache
 {
@@ -50,6 +51,28 @@ internal sealed class StorageLayoutCache
         }
     }
 
+    /// <summary>
+    /// Reads a snapshot through a load started by this caller, without consulting or replacing the
+    /// shared routing cache. This is reserved for capability checks which must not inherit a read
+    /// initiated before the current operation.
+    /// </summary>
+    public async Task<StorageLayoutSnapshot?> ReadFreshAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var layoutTask = _loadLayout();
+
+        try
+        {
+            return await layoutTask.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _ = ObserveDetachedCompletionAsync(layoutTask);
+            throw;
+        }
+    }
+
     public void Invalidate(StorageLayoutSnapshot observedLayout)
     {
         ArgumentNullException.ThrowIfNull(observedLayout);
@@ -86,6 +109,19 @@ internal sealed class StorageLayoutCache
         catch
         {
             Reset(layoutTask);
+        }
+    }
+
+    private static async Task ObserveDetachedCompletionAsync(
+        Task<StorageLayoutSnapshot?> layoutTask)
+    {
+        try
+        {
+            _ = await layoutTask;
+        }
+        catch
+        {
+            // The caller stopped waiting, but the underlying Orleans RPC still needs observation.
         }
     }
 }

@@ -260,7 +260,7 @@ public sealed class StorageMovementProtocolTests
         StoragePartitionGrain.ValidateMoveIdentityBounds(identity);
 
         var manifest = CreateSourceManifest(identity);
-        StoragePartitionPersistence.ValidateManifest(manifest);
+        StoragePartitionPersistence.ValidateManifest(manifest, allowPreviousFormat: true);
 
         var advance = CreateAdvanceEntry(identity, frozenNextVersion: 1, nextVersionAfter: 1);
         StoragePersistenceStateValidation.ValidateJournalEntry(advance, nameof(advance));
@@ -272,7 +272,9 @@ public sealed class StorageMovementProtocolTests
 
         var invalidManifest = manifest.Copy();
         invalidManifest.MoveControl.TargetOwner = StorageLayout.MaximumVirtualSlotCount;
-        Action validateManifest = () => StoragePartitionPersistence.ValidateManifest(invalidManifest);
+        Action validateManifest = () => StoragePartitionPersistence.ValidateManifest(
+            invalidManifest,
+            allowPreviousFormat: true);
 
         var invalidJournal = CreateAdvanceEntry(
             invalidIdentity,
@@ -460,7 +462,7 @@ public sealed class StorageMovementProtocolTests
         return new StoragePartitionManifestState
         {
             Initialized = true,
-            PersistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion,
+            PersistenceFormatVersion = StoragePersistence.MovementPersistenceFormatVersion,
             JournalSegmentCapacity = 2,
             MaximumJournalReplayEntries = 4,
             NextVersion = 1,

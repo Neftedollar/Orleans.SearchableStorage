@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Orleans.Hosting;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
 using Orleans.Storage;
 
@@ -13,6 +14,101 @@ namespace Orleans.SearchableStorage;
 /// </summary>
 public static class SearchableStorageSiloBuilderExtensions
 {
+    /// <summary>
+    /// Registers the single CLR state type used by one searchable provider/state-name pair.
+    /// Explicit registration lets the storage validate index-schema drift and rebuild derived
+    /// indexes without guessing serialized payload types.
+    /// </summary>
+    /// <typeparam name="TState">The Orleans persistent-state type.</typeparam>
+    /// <param name="builder">The Orleans silo builder.</param>
+    /// <param name="providerName">The searchable storage-provider name.</param>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <returns>The supplied silo builder.</returns>
+    public static ISiloBuilder AddSearchableStorageState<TState>(
+        this ISiloBuilder builder,
+        string providerName,
+        string stateName)
+    {
+        return builder.AddSearchableStorageState<TState>(
+            providerName,
+            stateName,
+            applicationSchemaVersion: 1);
+    }
+
+    /// <summary>
+    /// Registers one CLR state type with an explicit application-controlled schema version.
+    /// </summary>
+    /// <typeparam name="TState">The Orleans persistent-state type.</typeparam>
+    /// <param name="builder">The Orleans silo builder.</param>
+    /// <param name="providerName">The searchable storage-provider name.</param>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <param name="applicationSchemaVersion">
+    /// A positive application-owned version included in the durable schema fingerprint.
+    /// </param>
+    /// <returns>The supplied silo builder.</returns>
+    public static ISiloBuilder AddSearchableStorageState<TState>(
+        this ISiloBuilder builder,
+        string providerName,
+        string stateName,
+        int applicationSchemaVersion)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        builder.Services.AddSearchableStorageState<TState>(
+            providerName,
+            stateName,
+            applicationSchemaVersion);
+        return builder;
+    }
+
+    /// <summary>
+    /// Registers the single CLR state type used by one searchable provider/state-name pair.
+    /// </summary>
+    /// <typeparam name="TState">The Orleans persistent-state type.</typeparam>
+    /// <param name="services">The silo service collection.</param>
+    /// <param name="providerName">The searchable storage-provider name.</param>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <returns>The supplied service collection.</returns>
+    public static IServiceCollection AddSearchableStorageState<TState>(
+        this IServiceCollection services,
+        string providerName,
+        string stateName)
+    {
+        return services.AddSearchableStorageState<TState>(
+            providerName,
+            stateName,
+            applicationSchemaVersion: 1);
+    }
+
+    /// <summary>
+    /// Registers one CLR state type with an explicit application-controlled schema version.
+    /// </summary>
+    /// <typeparam name="TState">The Orleans persistent-state type.</typeparam>
+    /// <param name="services">The silo service collection.</param>
+    /// <param name="providerName">The searchable storage-provider name.</param>
+    /// <param name="stateName">The Orleans persistent-state name.</param>
+    /// <param name="applicationSchemaVersion">
+    /// A positive application-owned version included in the durable schema fingerprint.
+    /// </param>
+    /// <returns>The supplied service collection.</returns>
+    public static IServiceCollection AddSearchableStorageState<TState>(
+        this IServiceCollection services,
+        string providerName,
+        string stateName,
+        int applicationSchemaVersion)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(applicationSchemaVersion);
+        services.AddSingleton<ISearchableStateRegistration>(
+            new SearchableStateRegistration<TState>(
+                providerName,
+                stateName,
+                applicationSchemaVersion));
+        services.TryAddSingleton<SearchableStateRegistry>();
+        return services;
+    }
+
     /// <summary>
     /// Adds a named searchable grain-storage provider.
     /// </summary>
@@ -99,6 +195,7 @@ public static class SearchableStorageSiloBuilderExtensions
             IPostConfigureOptions<SearchableStorageOptions>,
             DefaultStorageProviderSerializerOptionsConfigurator<SearchableStorageOptions>>();
         services.TryAddSingleton<StorageLayoutCacheRegistry>();
+        services.TryAddSingleton<SearchableStateRegistry>();
 
         services.AddKeyedSingleton<IGrainStorage>(
             providerName,
@@ -115,7 +212,8 @@ public static class SearchableStorageSiloBuilderExtensions
                     serviceProvider.GetRequiredService<IGrainFactory>(),
                     providerName,
                     configuredOptions.PartitionCount,
-                    configuredOptions.Query);
+                    configuredOptions.Query,
+                    serviceProvider.GetRequiredService<SearchableStateRegistry>());
             });
 
         services.AddKeyedSingleton<ISearchableStorageClient>(

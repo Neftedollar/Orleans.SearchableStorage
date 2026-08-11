@@ -11,6 +11,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 {
     private readonly ILogger<StoragePartitionGrain> _logger;
     private readonly StorageLayoutCacheRegistry _layoutCaches;
+    private readonly SearchableStateRegistry _stateRegistry;
     private readonly IPersistentState<StoragePartitionManifestState> _manifest;
     private StorageLayoutCache? _routingCache;
     private StoragePartitionView _view = new(
@@ -24,11 +25,17 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         [PersistentState("manifest", SearchableStorageConstants.PhysicalStorageProviderName)]
         IPersistentState<StoragePartitionManifestState> manifest,
         ILogger<StoragePartitionGrain> logger,
-        StorageLayoutCacheRegistry layoutCaches)
+        StorageLayoutCacheRegistry layoutCaches,
+        SearchableStateRegistry stateRegistry)
     {
+        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(layoutCaches);
+        ArgumentNullException.ThrowIfNull(stateRegistry);
         _manifest = manifest;
         _logger = logger;
         _layoutCaches = layoutCaches;
+        _stateRegistry = stateRegistry;
     }
 
     private StoragePartitionPersistence Persistence => _persistence
@@ -128,8 +135,31 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ArgumentNullException.ThrowIfNull(request.IndexEntries);
         StoragePartitionPersistence.ValidateSettings(request.Persistence);
         Persistence.EnsureSettingsMatch(request.Persistence);
-
+        ValidateManagedSchemaBinding(
+            request.StateName,
+            request.IndexSchemaFingerprint,
+            request.IndexSchemaProtocolVersion,
+            request.RecordKey);
+        if (request.IndexSchemaFingerprint is { } writeFingerprint
+            && request.IndexEntries.Any(
+                entry => !IndexSchemaIdentity.IsBoundScope(entry.Scope, writeFingerprint)))
+        {
+            throw new ArgumentException(
+                "A managed write contains an index scope from a different schema generation.",
+                nameof(request));
+        }
         _view.Records.TryGetValue(request.RecordKey, out var currentRecord);
+        if (request.IndexSchemaFingerprint is { } activeFingerprint
+            && currentRecord is not null
+            && (currentRecord.IndexSchemaFingerprint is null
+                || !IndexSchemaIdentity.FixedTimeEquals(
+                    currentRecord.IndexSchemaFingerprint,
+                    activeFingerprint)))
+        {
+            throw new InvalidOperationException(
+                "A managed write encountered a record outside the active schema generation.");
+        }
+
         EnsureETagMatches(request.RecordKey, currentRecord?.ETag, request.ExpectedETag, "write");
 
         var nextVersion = Persistence.NextVersion;
@@ -140,6 +170,9 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             Payload = request.Payload,
             ETag = etag,
             IndexEntries = request.IndexEntries,
+            IndexSchemaFingerprint = request.IndexSchemaFingerprint is null
+                ? null
+                : [.. request.IndexSchemaFingerprint],
         })!;
         StoragePartitionIndexes.ValidateRecord(storedRecord);
 
@@ -195,11 +228,26 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
         StoragePartitionPersistence.ValidateSettings(request.Persistence);
         Persistence.EnsureSettingsMatch(request.Persistence);
+        ValidateManagedSchemaBinding(
+            request.StateName,
+            request.IndexSchemaFingerprint,
+            request.IndexSchemaProtocolVersion,
+            request.RecordKey);
 
         if (!_view.Records.TryGetValue(request.RecordKey, out var currentRecord))
         {
             EnsureETagMatches(request.RecordKey, null, request.ExpectedETag, "clear");
             return;
+        }
+
+        if (request.IndexSchemaFingerprint is { } activeFingerprint
+            && (currentRecord.IndexSchemaFingerprint is null
+                || !IndexSchemaIdentity.FixedTimeEquals(
+                    currentRecord.IndexSchemaFingerprint,
+                    activeFingerprint)))
+        {
+            throw new InvalidOperationException(
+                "A managed clear encountered a record outside the active schema generation.");
         }
 
         EnsureETagMatches(request.RecordKey, currentRecord.ETag, request.ExpectedETag, "clear");
@@ -240,6 +288,215 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         await ClearCoreAsync(request.Request);
     }
 
+    public async Task<StorageIndexSchemaRebuildPageResult> RebuildIndexSchemaPageAsync(
+        StorageIndexSchemaRebuildPageRequest request)
+    {
+        EnsureUsable();
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.ProviderName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.StateName);
+        ValidateRebuildPageSize(request.PageSize);
+
+        if (!request.HasAfter && !request.After.Equals(default(GrainId)))
+        {
+            throw new ArgumentException(
+                "A schema rebuild request without a frontier contains a non-default GrainId.",
+                nameof(request));
+        }
+        IndexSchemaIdentity.ValidateIdentity(request.SchemaKey, nameof(request));
+        IndexSchemaIdentity.ValidateIdentity(request.TargetFingerprint, nameof(request));
+        StoragePartitionPersistence.ValidateSettings(request.Persistence);
+        Persistence.EnsureSettingsMatch(request.Persistence);
+        if (Persistence.IndexSchemaProtocolVersion != StorageIndexSchema.ProtocolVersion)
+        {
+            throw new InvalidOperationException(
+                "The partition index-schema protocol has not been durably enabled.");
+        }
+        if (Persistence.MoveControl.IsPresent)
+        {
+            throw new InvalidOperationException(
+                "Index-schema rebuild cannot touch a partition while a slot move is active.");
+        }
+        if (!string.Equals(request.ProviderName, _providerName, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The schema rebuild targets a different provider.", nameof(request));
+        }
+
+        var registration = _stateRegistry.Find(request.ProviderName, request.StateName)
+            ?? throw new InvalidOperationException(
+                $"No searchable state registration exists for provider '{request.ProviderName}' "
+                + $"and state '{request.StateName}'.");
+        if (!IndexSchemaIdentity.FixedTimeEquals(registration.Schema.SchemaKey, request.SchemaKey)
+            || !IndexSchemaIdentity.FixedTimeEquals(
+                registration.Schema.Fingerprint,
+                request.TargetFingerprint))
+        {
+            throw new InvalidOperationException(
+                "The registered schema declaration does not match the requested index schema "
+                + "(state type, index metadata, or application schema version).");
+        }
+
+        _ = await ValidateQueryRouteAsync(request.LayoutEpoch);
+        var catalog = _view.OrderedIndexes.GetStateCatalog(request.StateName);
+        var page = new List<GrainId>(request.PageSize);
+        bool exhausted;
+        using (var cursor = catalog.CreateCursorAfter(request.HasAfter, request.After))
+        {
+            while (page.Count < request.PageSize
+                   && cursor.TakeCurrentAndAdvance(out var grainId))
+            {
+                page.Add(grainId);
+            }
+
+            exhausted = !cursor.HasCurrent;
+        }
+
+        var hasAfter = request.HasAfter;
+        var after = request.After;
+        foreach (var grainId in page)
+        {
+            if (!catalog.TryGetRecordKeys(grainId, out var recordKeys)
+                || recordKeys.Count != 1)
+            {
+                throw new InvalidOperationException(
+                    "A managed state catalog must contain exactly one record per GrainId.");
+            }
+
+            var recordKey = recordKeys.Single();
+            var current = _view.Records[recordKey];
+            if (!IndexSchemaIdentity.FixedTimeEquals(
+                    current.IndexSchemaFingerprint ?? [],
+                    request.TargetFingerprint))
+            {
+                IReadOnlyList<IndexEntry> indexes;
+                try
+                {
+                    indexes = _stateRegistry.Extract(
+                        request.ProviderName,
+                        request.StateName,
+                        current.Payload,
+                        request.TargetFingerprint);
+                }
+                catch (Exception exception) when (IsSchemaMaterializationFailure(exception))
+                {
+                    var partitionKey = StorageLayout.CreatePartitionKey(
+                        _providerName,
+                        _partitionIndex);
+                    // Application serializers and indexed getters control exception messages and
+                    // can include the payload or raw index values in them. Do not propagate that
+                    // text (or retain the application exception as an inner exception) across the
+                    // Orleans boundary. The stable location and failure type are sufficient to
+                    // repair the responsible record while preserving data confidentiality.
+                    throw new InvalidOperationException(
+                        $"Index-schema rebuild could not materialize provider "
+                        + $"'{request.ProviderName}', state '{request.StateName}', GrainId "
+                        + $"'{current.GrainId}', record key '{recordKey}', physical owner "
+                        + $"{_partitionIndex} ('{partitionKey}'). Restore a payload-compatible "
+                        + "serializer and indexed state type, then resume the same rebuild. "
+                        + $"Underlying failure type: {exception.GetType().FullName}. "
+                        + "Application exception details are intentionally omitted.");
+                }
+                var replacement = new StoredRecord
+                {
+                    GrainId = current.GrainId,
+                    Payload = [.. current.Payload],
+                    ETag = current.ETag,
+                    IndexEntries = [.. indexes],
+                    IndexSchemaFingerprint = [.. request.TargetFingerprint],
+                };
+                StoragePartitionIndexes.ValidateRecord(replacement);
+                await PrepareForMutationAsync(request.Persistence);
+                var entry = new StorageJournalEntry
+                {
+                    Sequence = Persistence.NextSequence,
+                    WriterEpoch = Persistence.WriterEpoch,
+                    OperationId = Guid.NewGuid(),
+                    PreviousOperationId = Persistence.CommittedOperationId,
+                    Operation = StorageJournalOperation.Reindex,
+                    RecordKey = recordKey,
+                    ExpectedETag = current.ETag,
+                    Record = replacement,
+                    NextVersionAfter = Persistence.NextVersion,
+                };
+                await CommitAsync(entry);
+                ApplyCommittedUpsert(recordKey, replacement);
+            }
+
+            hasAfter = true;
+            after = grainId;
+        }
+
+        await Persistence.CompactIfRequiredAsync(
+            _view.Records,
+            request.Persistence.CompactionThreshold);
+        return new StorageIndexSchemaRebuildPageResult
+        {
+            Exhausted = exhausted,
+            HasAfter = hasAfter,
+            After = after,
+            ProcessedRecordCount = page.Count,
+        };
+    }
+
+    private static bool IsSchemaMaterializationFailure(Exception exception)
+    {
+        // These failures originate in application serialization or indexed property getters. A
+        // plain framework exception is deliberate: arbitrary application exception graphs do not
+        // necessarily cross an Orleans proxy, while operators still need enough context to repair
+        // the payload or deployment and resume the durable cursor. Fatal process failures retain
+        // their original behavior.
+        return exception is not OutOfMemoryException
+            and not StackOverflowException
+            and not AccessViolationException;
+    }
+
+    public async Task<StoragePartitionProtocolState> EnableIndexSchemaProtocolAsync(
+        StorageIndexSchemaPartitionProtocolRequest request)
+    {
+        EnsureUsable();
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.ProviderName);
+        if (request.ProtocolVersion != StorageIndexSchema.ProtocolVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.ProtocolVersion,
+                "Unknown index-schema protocol version.");
+        }
+
+        IndexSchemaIdentity.ValidateIdentity(request.LayoutFingerprint, nameof(request));
+        StoragePartitionPersistence.ValidateSettings(request.Persistence);
+        if (!string.Equals(request.ProviderName, _providerName, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The index-schema protocol request targets a different provider.",
+                nameof(request));
+        }
+
+        var routing = await ValidateQueryRouteAsync(request.LayoutEpoch);
+        var layoutFingerprint = StorageLayoutFingerprint.Compute(routing);
+        if (!IndexSchemaIdentity.FixedTimeEquals(
+                layoutFingerprint,
+                request.LayoutFingerprint))
+        {
+            throw new StorageRouteMismatchException(
+                request.LayoutEpoch,
+                routing.Epoch,
+                _partitionIndex);
+        }
+
+        if (routing.CopyMovementEnablement() is not null
+            || routing.CopyMoveIntent() is not null
+            || Persistence.MoveControl.IsPresent)
+        {
+            throw new InvalidOperationException(
+                "Index-schema enablement cannot run while virtual-slot movement is active.");
+        }
+
+        await Persistence.EnableIndexSchemaProtocolAsync(request.Persistence);
+        return Persistence.CreateProtocolState();
+    }
+
     public Task<GrainId[]> FindAsync(ExactIndexQuery query)
     {
         EnsureUsable();
@@ -255,6 +512,11 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ArgumentNullException.ThrowIfNull(query.Query);
 
         var snapshot = await ValidateQueryRouteAsync(query.Epoch);
+        ValidateManagedQueryBinding(
+            query.StateName,
+            query.IndexSchemaFingerprint,
+            query.IndexSchemaProtocolVersion,
+            query.Query.Scope);
         return ResolveGrainIds(FindRecordKeys(query.Query), snapshot);
     }
 
@@ -273,6 +535,11 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ArgumentNullException.ThrowIfNull(query.Query);
 
         var snapshot = await ValidateQueryRouteAsync(query.Epoch);
+        ValidateManagedQueryBinding(
+            query.StateName,
+            query.IndexSchemaFingerprint,
+            query.IndexSchemaProtocolVersion,
+            query.Query.Scope);
         return ResolveGrainIds(FindRangeRecordKeys(query.Query), snapshot);
     }
 
@@ -295,6 +562,11 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         QueryPlanValidator.Validate(query.Query);
 
         var snapshot = await ValidateQueryRouteAsync(query.Epoch);
+        ValidateManagedQueryBinding(
+            query.StateName,
+            query.IndexSchemaFingerprint,
+            query.IndexSchemaProtocolVersion,
+            query.Query);
         // Ownership filtering is part of the same non-reentrant call as plan evaluation, so the
         // result cannot mix two activation-local record views.
         return ResolveGrainIds(
@@ -319,7 +591,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
 
         var snapshot = await ValidateQueryRouteAsync(request.Epoch);
-        if (request.LayoutFormatVersion != snapshot.FormatVersion)
+        ValidateManagedQueryBinding(
+            request.StateName,
+            request.IndexSchemaFingerprint,
+            request.IndexSchemaProtocolVersion,
+            request.Query);
+        if (!StorageLayout.AreRoutingFormatsCompatible(request.LayoutFormatVersion, snapshot.FormatVersion))
         {
             throw new ArgumentException(
                 "The partition query layout format does not match the authoritative routing layout.",
@@ -352,6 +629,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ValidateDistinctFacetPageRequest(request);
         var requestFingerprint = ValidateFacetFingerprint(request.StateName, request.Query, request.FacetScope, request.FacetKind, request.RequestFingerprint, request);
         var snapshot = await ValidateQueryRouteAsync(request.Epoch);
+        ValidateManagedQueryBinding(
+            request.StateName,
+            request.IndexSchemaFingerprint,
+            request.IndexSchemaProtocolVersion,
+            request.Query,
+            request.FacetScope);
         ValidateFacetLayout(request.LayoutFormatVersion, request.LayoutFingerprint, snapshot, request);
         var layoutFingerprint = StorageLayoutFingerprint.Compute(snapshot);
         var dataVersion = ValidateFacetDataVersion(request.HasExpectedDataVersion, request.ExpectedDataVersion);
@@ -372,6 +655,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ValidateFacetCandidatePageRequest(request);
         var requestFingerprint = ValidateFacetFingerprint(request.StateName, request.Query, request.FacetScope, request.FacetKind, request.RequestFingerprint, request);
         var snapshot = await ValidateQueryRouteAsync(request.Epoch);
+        ValidateManagedQueryBinding(
+            request.StateName,
+            request.IndexSchemaFingerprint,
+            request.IndexSchemaProtocolVersion,
+            request.Query,
+            request.FacetScope);
         ValidateFacetLayout(request.LayoutFormatVersion, request.LayoutFingerprint, snapshot, request);
         var layoutFingerprint = StorageLayoutFingerprint.Compute(snapshot);
         var dataVersion = ValidateFacetDataVersion(request.HasExpectedDataVersion, request.ExpectedDataVersion);
@@ -392,6 +681,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ValidateFacetCountSliceRequest(request);
         var requestFingerprint = ValidateFacetFingerprint(request.StateName, request.Query, request.FacetScope, request.FacetKind, request.RequestFingerprint, request);
         var snapshot = await ValidateQueryRouteAsync(request.Epoch);
+        ValidateManagedQueryBinding(
+            request.StateName,
+            request.IndexSchemaFingerprint,
+            request.IndexSchemaProtocolVersion,
+            request.Query,
+            request.FacetScope);
         ValidateFacetLayout(request.LayoutFormatVersion, request.LayoutFingerprint, snapshot, request);
         var layoutFingerprint = StorageLayoutFingerprint.Compute(snapshot);
         var dataVersion = ValidateFacetDataVersion(request.HasExpectedDataVersion, request.ExpectedDataVersion);
@@ -426,7 +721,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             MaximumJournalReplayEntries = request.MaximumJournalReplayEntries,
             CompactionThreshold = request.MaximumJournalReplayEntries,
         };
-        await Persistence.EnableMovementProtocolAsync(settings, request.MinimumRoutingEpoch);
+        await Persistence.EnableMovementProtocolAsync(
+            settings,
+            request.MinimumRoutingEpoch,
+            request.IndexSchemaProtocolVersion);
         if (_view.SlotCatalog is null)
         {
             try
@@ -632,6 +930,13 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             throw new InvalidOperationException(
                 "An import page does not extend the target's durable movement cursor.");
         }
+
+
+        ValidateImportedSchemaBindings(
+            _providerName,
+            Persistence.IndexSchemaProtocolVersion,
+            _stateRegistry,
+            request.Page.Records);
 
         StorageMovePageOperations.ValidateImportAgainstCurrentView(
             _view,
@@ -971,6 +1276,14 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         StoragePersistence.ValidateOptions(
             request.JournalSegmentCapacity,
             request.MaximumJournalReplayEntries);
+        if (request.IndexSchemaProtocolVersion is not 0
+            and not StorageIndexSchema.ProtocolVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.IndexSchemaProtocolVersion,
+                "Unknown index-schema protocol version.");
+        }
     }
 
     private void ValidateMoveIdentity(
@@ -993,7 +1306,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
 
         var protocol = Persistence.CreateProtocolState();
-        if (protocol.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion
+        if (!StoragePersistence.SupportsMovement(protocol.PersistenceFormatVersion)
             || protocol.MovementProtocolVersion != StorageMoveProtocol.Version
             || !protocol.RoutedOperationsRequired
             || protocol.MinimumRoutingEpoch < move.SourceEpoch
@@ -1495,7 +1808,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 "Unknown partition query response family.");
         }
 
-        if (request.LayoutFormatVersion != StorageLayout.CurrentFormatVersion)
+        if (!StorageLayout.IsRoutingFormatVersion(request.LayoutFormatVersion))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(request),
@@ -1738,7 +2051,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         if (protocolVersion != QueryProtocol.PagingVersion
             || orderingVersion != QueryProtocol.FacetValueOrderingVersion
             || workPolicyVersion != QueryProtocol.FacetWorkPolicyVersion
-            || layoutFormatVersion != StorageLayout.CurrentFormatVersion)
+            || !StorageLayout.IsRoutingFormatVersion(layoutFormatVersion))
         {
             throw new ArgumentException("Facet request protocol metadata is incompatible.", nameof(request));
         }
@@ -1761,7 +2074,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         object request)
     {
         var actual = StorageLayoutFingerprint.Compute(snapshot);
-        if (requestedFormatVersion != snapshot.FormatVersion
+        if (!StorageLayout.AreRoutingFormatsCompatible(requestedFormatVersion, snapshot.FormatVersion)
             || !StorageLayoutFingerprint.Equals(actual, requestedFingerprint))
         {
             throw new ArgumentException(
@@ -1787,6 +2100,17 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
 
         return computed;
+    }
+
+    internal static void ValidateRebuildPageSize(int pageSize)
+    {
+        if (pageSize <= 0 || pageSize > StorageIndexSchema.RebuildPageSize)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pageSize),
+                pageSize,
+                $"A schema rebuild page size must be between 1 and {StorageIndexSchema.RebuildPageSize}.");
+        }
     }
 
     private long ValidateFacetDataVersion(bool hasExpected, long expected)
@@ -1970,7 +2294,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 
     private void ValidateRoutingSnapshot(StorageLayoutSnapshot snapshot)
     {
-        if (snapshot.FormatVersion != StorageLayout.CurrentFormatVersion
+        if (!StorageLayout.IsRoutingFormatVersion(snapshot.FormatVersion)
             || !string.Equals(snapshot.ProviderName, _providerName, StringComparison.Ordinal)
             || snapshot.InitialPartitionCount <= 0
             || snapshot.VirtualSlotCount <= 0
@@ -2048,6 +2372,172 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         {
             throw new InvalidOperationException(
                 "Legacy placement-based partition operations are disabled after live slot movement is enabled.");
+        }
+
+
+        if (Persistence.IndexSchemaProtocolVersion != 0)
+        {
+            throw new InvalidOperationException(
+                "Legacy schema-unbound partition operations are disabled after managed index schemas are enabled.");
+        }
+    }
+
+    internal static void ValidateImportedSchemaBindings(
+        string providerName,
+        int protocol,
+        SearchableStateRegistry stateRegistry,
+        IReadOnlyList<StorageMoveRecord> records)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        ArgumentNullException.ThrowIfNull(stateRegistry);
+        ArgumentNullException.ThrowIfNull(records);
+        foreach (var item in records)
+        {
+            var recordKey = StorageMoveRecordCodec.DecodeRecordKey(item);
+            var record = StorageMoveRecordCodec.Decode(item.Record);
+            var fingerprint = record.IndexSchemaFingerprint;
+            if (protocol == 0)
+            {
+                if (fingerprint is not null)
+                {
+                    throw new InvalidOperationException(
+                        "A movement target without the schema capability cannot import a managed record.");
+                }
+
+                continue;
+            }
+
+            var registration = protocol == StorageIndexSchema.ProtocolVersion
+                && fingerprint is not null
+                    ? stateRegistry.FindByFingerprint(providerName, fingerprint)
+                    : null;
+            if (registration is null)
+            {
+                throw new InvalidOperationException(
+                    "A managed movement target received a record without a matching local state registration.");
+            }
+
+            if (!recordKey.StartsWith(
+                    string.Concat(registration.StateName, "/"),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "A managed movement target received a record key bound to a different state registration.");
+            }
+
+            if (record.IndexEntries.Any(
+                    entry => !IndexSchemaIdentity.IsBoundScope(entry.Scope, fingerprint!)))
+            {
+                throw new InvalidOperationException(
+                    "A managed movement target received an index scope from a different schema generation.");
+            }
+        }
+    }
+
+    private void ValidateManagedSchemaBinding(
+        string? stateName,
+        byte[]? fingerprint,
+        int protocolVersion,
+        string? recordKey = null)
+    {
+        var durableProtocol = Persistence.IndexSchemaProtocolVersion;
+        if (durableProtocol == 0)
+        {
+            if (protocolVersion != 0 || fingerprint is not null)
+            {
+                throw new InvalidOperationException(
+                    "A managed schema request reached a partition before its capability was enabled.");
+            }
+
+            return;
+        }
+
+        if (durableProtocol != StorageIndexSchema.ProtocolVersion
+            || protocolVersion != durableProtocol
+            || string.IsNullOrWhiteSpace(stateName)
+            || fingerprint is null)
+        {
+            throw new InvalidOperationException(
+                "The partition requires an explicit managed schema binding for this state.");
+        }
+
+        IndexSchemaIdentity.ValidateIdentity(fingerprint, nameof(fingerprint));
+        var registration = _stateRegistry.Find(_providerName, stateName)
+            ?? throw new InvalidOperationException(
+                $"Searchable state '{stateName}' is not registered on this silo for provider '{_providerName}'.");
+        if (!IndexSchemaIdentity.FixedTimeEquals(
+                registration.Schema.Fingerprint,
+                fingerprint))
+        {
+            throw new InvalidOperationException(
+                $"Searchable state '{stateName}' does not match the request's managed schema generation.");
+        }
+
+        if (recordKey is not null
+            && !recordKey.StartsWith(string.Concat(stateName, "/"), StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The record key does not belong to the managed state name.",
+                nameof(recordKey));
+        }
+    }
+
+    private void ValidateManagedQueryBinding(
+        string? stateName,
+        byte[]? fingerprint,
+        int protocolVersion,
+        string scope)
+    {
+        ValidateManagedSchemaBinding(stateName, fingerprint, protocolVersion);
+        if (fingerprint is not null && !IndexSchemaIdentity.IsBoundScope(scope, fingerprint))
+        {
+            throw new ArgumentException(
+                "The query scope does not belong to its managed schema generation.",
+                nameof(scope));
+        }
+    }
+
+    private void ValidateManagedQueryBinding(
+        string? stateName,
+        byte[]? fingerprint,
+        int protocolVersion,
+        PartitionQueryPlan query,
+        string? additionalScope = null)
+    {
+        ValidateManagedSchemaBinding(stateName, fingerprint, protocolVersion);
+        if (fingerprint is null)
+        {
+            return;
+        }
+
+        ValidateManagedPlanScopes(query, fingerprint);
+        if (additionalScope is not null
+            && !IndexSchemaIdentity.IsBoundScope(additionalScope, fingerprint))
+        {
+            throw new ArgumentException(
+                "The facet scope does not belong to its managed schema generation.",
+                nameof(additionalScope));
+        }
+    }
+
+    private static void ValidateManagedPlanScopes(PartitionQueryPlan query, byte[] fingerprint)
+    {
+        if (query.Scope is not null
+            && !IndexSchemaIdentity.IsBoundScope(query.Scope, fingerprint))
+        {
+            throw new ArgumentException(
+                "The query plan contains a scope from a different schema generation.",
+                nameof(query));
+        }
+
+        if (query.Left is not null)
+        {
+            ValidateManagedPlanScopes(query.Left, fingerprint);
+        }
+
+        if (query.Right is not null)
+        {
+            ValidateManagedPlanScopes(query.Right, fingerprint);
         }
     }
 

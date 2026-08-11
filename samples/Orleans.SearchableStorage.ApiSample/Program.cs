@@ -26,7 +26,12 @@ builder.Host.UseOrleans(siloBuilder =>
                     "api-sample-ephemeral",
                     ephemeralContinuationKey);
         });
+    siloBuilder.AddSearchableStorageState<VacancyState>(
+        VacancyGrain.StorageProviderName,
+        VacancyGrain.StateName,
+        applicationSchemaVersion: 1);
 });
+builder.Services.AddHostedService<VacancyIndexSchemaBootstrapService>();
 
 var app = builder.Build();
 
@@ -42,6 +47,8 @@ app.MapGet("/vacancies/facets/cities", VacancySearchEndpoints.GetDistinctCitiesA
 app.MapGet("/vacancies/facets/cities/top", VacancySearchEndpoints.GetTopCitiesAsync);
 app.MapGet("/vacancies/facets/salaries/min-max", VacancySearchEndpoints.GetSalaryMinMaxAsync);
 app.MapGet("/storage/layout", GetStorageLayoutAsync);
+app.MapGet("/storage/index-schemas/vacancies", GetVacancyIndexSchemaAsync);
+app.MapPost("/storage/index-schemas/vacancies/rebuild", RebuildVacancyIndexSchemaAsync);
 app.MapPost("/storage/movement/enable", EnableStorageMovementAsync);
 app.MapGet("/storage/moves/active", GetActiveStorageMoveAsync);
 app.MapPost("/storage/moves/plan", PlanStorageMoveAsync);
@@ -102,6 +109,25 @@ static async Task<IResult> GetStorageLayoutAsync(
 {
     var layout = await storage.GetLayoutAsync(cancellationToken);
     return layout is null ? Results.NotFound() : Results.Ok(layout);
+}
+
+static async Task<IResult> GetVacancyIndexSchemaAsync(
+    [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageAdminClient storage,
+    CancellationToken cancellationToken)
+{
+    return Results.Ok(await storage.GetIndexSchemaAsync<VacancyState>(
+        VacancyGrain.StateName,
+        cancellationToken));
+}
+
+static Task<IResult> RebuildVacancyIndexSchemaAsync(
+    [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageAdminClient storage,
+    CancellationToken cancellationToken)
+{
+    return ExecuteAdminAsync(
+        () => storage.RebuildIndexSchemaAsync<VacancyState>(
+            VacancyGrain.StateName,
+            cancellationToken));
 }
 
 static async Task<IResult> EnableStorageMovementAsync(
@@ -253,6 +279,24 @@ internal sealed record SalaryFacetMinMaxResponse(int? Minimum, int? Maximum);
 
 internal sealed record ApiDescription(string Name, string Storage, IReadOnlyList<string> Endpoints);
 
+internal sealed class VacancyIndexSchemaBootstrapService(IServiceProvider services)
+    : IHostedService
+{
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        var storage = services.GetRequiredKeyedService<ISearchableStorageAdminClient>(
+            VacancyGrain.StorageProviderName);
+        _ = await storage.RebuildIndexSchemaAsync<VacancyState>(
+            VacancyGrain.StateName,
+            cancellationToken);
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+}
+
 internal static class SampleMetadata
 {
     public static ApiDescription Description { get; } = new(
@@ -269,6 +313,8 @@ internal static class SampleMetadata
             "GET /vacancies/facets/cities/top?topN={count}&accuracy={Exact|Approximate}",
             "GET /vacancies/facets/salaries/min-max?city={city}",
             "GET /storage/layout",
+            "GET /storage/index-schemas/vacancies",
+            "POST /storage/index-schemas/vacancies/rebuild",
             "POST /storage/movement/enable",
             "GET /storage/moves/active",
             "POST /storage/moves/plan",

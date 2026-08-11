@@ -16,4 +16,11 @@ internal sealed class StoredRecord
 
     [Id(3)]
     public required List<IndexEntry> IndexEntries { get; init; }
+
+    /// <summary>
+    /// Identifies the managed schema used to derive <see cref="IndexEntries"/>. Legacy records
+    /// leave this appended field absent until an explicit rebuild adopts them.
+    /// </summary>
+    [Id(4)]
+    public byte[]? IndexSchemaFingerprint { get; init; }
 }

@@ -203,7 +203,7 @@ public sealed class SearchableGrainStorageRoutingExecutionTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = ProviderName,
             PartitionCount = assignments.Distinct().Count(),
             VirtualSlotCount = assignments.Length,

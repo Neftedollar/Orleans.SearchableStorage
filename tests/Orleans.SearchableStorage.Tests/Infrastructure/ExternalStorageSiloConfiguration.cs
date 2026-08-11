@@ -25,6 +25,12 @@ internal static class ExternalStorageSiloConfiguration
         siloBuilder.AddSearchableGrainStorage(
             TestGrains.VacancyGrain.StorageProviderName,
             options => options.PartitionCount = BackendStorageTestConstants.PartitionCount);
+        siloBuilder.AddSearchableGrainStorage(
+            StorageIndexSchemaTestConstants.BackendContractProviderName,
+            options => options.PartitionCount = 1);
+        siloBuilder.AddSearchableStorageState<TestGrains.VacancyState>(
+            StorageIndexSchemaTestConstants.BackendContractProviderName,
+            StorageIndexSchemaTestConstants.BackendContractStateName);
     }
 
     public static void UseJsonSerializer<TOptions>(

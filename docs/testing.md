@@ -12,6 +12,8 @@ The reviewer must map changed behavior to tests instead of approving a raw test 
 - failures before persistence and ambiguous failures after commit;
 - activation loss, rehydration, and serializer compatibility;
 - layout-format migration independently from partition-persistence compatibility;
+- provider-wide managed-schema adoption, registration completeness, generation replacement,
+  continuation invalidation, durable cursor recovery, and control-document lost acknowledgements;
 - virtual-slot derivation, ownership, epoch mismatches, and whole-attempt retry behavior;
 - quiesced movement enablement, version high-watermarks, source visibility, bounded page replay,
   abort/forward recovery, and single authority after reactivation;
@@ -30,6 +32,27 @@ Missing coverage must be called out explicitly in the pull request with a reason
 
 Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, open and bounded range traversal, query expression translation, deferred captured values, reversed operands, compiler-generated integral, decimal, enum, and BCL-operator promotions, rejected semantic-changing conversions and custom comparison methods, fractional and adjacent floating-point bounds, NaN and infinity, out-of-domain numeric bounds, all equal-bound inclusivity combinations, bound combination, unsupported syntax, and query-plan simplification. Boundary tests use the production plan constants to cover accepted and rejected depth and node counts, conversion-chain limits, balanced and chained predicates, order-preserving AND/OR rebalancing, semantic and wire cycles or shared subtrees, hidden child graphs, and payload on the wrong wire node kind.
 
+Managed-schema tests freeze deterministic fingerprints, the application-owned version, codec
+identities, generation-bound scopes, duplicate registration rejection, direct-client registry
+snapshots, appended wire IDs, and `Reindex` replay without ETag or allocator movement. Real two-silo
+Memory tests seed 70 legacy records on one owner, stop after the true 64-record page, deactivate both
+partition and control, verify the persisted cursor/count, and resume through the public admin loop.
+Separate scenarios prove fresh-namespace bootstrap without a dummy read; provider-wide rejection of
+unregistered write, clear, one-shot query, page, facet, and schema-unaware direct-client paths;
+replacement of a physically active application-version-1 control and its old generation-bound
+scopes by registered version 2; automatic restart of that version-2 rebuild intent after a
+completed movement-enablement layout change; and invalidation of a
+pre-adoption continuation followed by successful use of an explicit external registry.
+Before-commit and committed-lost-ack faults target the control document at `Begin`, a
+non-final page cursor, the checkpoint after layout publication, and final activation. Each case
+deactivates the affected grains and converges through the public admin loop. This is protocol
+evidence, not permission to run the documented quiesced migration under live traffic.
+A real Orleans-proxy regression uses an indexed getter with a deterministic failure gate. It proves
+that the remote error retains provider/state/`GrainId`/owner and the underlying exception type while
+omitting the application-controlled message and raw indexed value, the durable rebuild id, cursor,
+and count do not advance, and removing the fault resumes that same rebuild through active query
+results.
+
 Client execution tests use a narrow internal constructor with controlled `IStoragePartitionGrain`
 implementations. This seam deterministically proves one complete request per distinct layout owner, sorted and
 deduplicated merge behavior, empty-plan short-circuiting after layout validation, rejection before
@@ -40,14 +63,15 @@ partition-grain execution.
 
 ### Virtual routing tests
 
-Focused layout tests freeze the separation between layout format 4 and partition persistence format
-4. They cover checked derivation of the per-layout virtual-slot count, the 262,144-slot cap, exact
+Focused layout tests freeze the separation between routing-equivalent layout formats 4/5 and
+partition persistence formats 3/4/5. They cover checked derivation of the per-layout virtual-slot
+count, the 262,144-slot cap, exact
 identity-placement equivalence for power-of-two and non-power-of-two initial partition counts, and
 defensive copying of persisted assignments. Fresh initialization and an exact version-3 adoption
 must each use one layout compare-and-swap. Migration rejects provider, initial partition count,
 journal-setting, or partially populated routing-field mismatches, and an ambiguous layout write
-poisons that activation. Existing version-4 layouts are validated from their persisted exact slot
-count rather than recomputed from a later target seed.
+poisons that activation. Existing version-4 and version-5 layouts are validated from their persisted
+exact slot count rather than recomputed from a later target seed.
 
 Layout-cache and routed-client tests cover shared concurrent loads, caller-local cancellation,
 faulted and absent-layout reloads, conditional invalidation, and one shared refresh for concurrent
@@ -63,8 +87,9 @@ cancellation. Movement cases cover resumable enablement, sole-intent conflicts, 
 transition or bounded page payload per advance, execute/abort loops, abort rejection after ownership
 commit, stable progress projection, and deterministic minimal-churn rebalance recomputation without
 a bulk persisted plan. The executable
-sample exercises the same surface through explicit HTTP endpoints; core storage has no automatic
-rebalance policy.
+sample bootstraps an empty in-memory managed generation before traffic, exposes status/rebuild HTTP
+endpoints, and verifies both active status and the published layout capability. It also exercises the
+movement surface through explicit HTTP endpoints; core storage has no automatic rebalance policy.
 
 Movement protocol tests inject deterministic failures before commit and after commit but before
 acknowledgement at enablement, freeze, target WAL high-watermark, every export/import page, ownership
@@ -166,6 +191,12 @@ Its nested-plan case resolves the keyed `ISearchableStorageQueryClient` and disp
 `PartitionQueryPlan` through real Orleans grains. Every supported physical provider must run the
 same contract.
 
+The inherited journal contract also seeds a real format-3 record, performs the provider-wide schema
+upgrade to format 5, verifies the preserved ETag and hash/range results, compacts and reactivates the
+partition and schema control, then exercises a managed update and clear. Memory, PostgreSQL, Redis,
+and Azure Blob/Azurite run that same state/serializer path; it demonstrates backend portability of
+the implemented protocol, not equivalent performance or disaster-recovery behavior.
+
 The shared contract also executes distinct, exact/approximate top-N, and min/max terminals through
 real generated Orleans dispatch before and after activation rehydration. It verifies that persisted
 records rebuild the activation-derived ordered hash-value projection without a persistence-format
@@ -240,8 +271,8 @@ External fixture lifecycle tests use a recording cluster abstraction to verify o
 The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
 
 CI writes four independently filtered TRX files using the `Backend` trait. The workflow stores the
-98-case shared contract count once, then derives the exact profile totals: memory has 99 cases
-(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 100 (shared
+99-case shared contract count once, then derives the exact profile totals: memory has 100 cases
+(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 101 (shared
 plus provider and cleanup assertions). The small `eng/validate-trx.sh` gate requires one `Counters`
 element, the exact total, executed and passed counts, zero failed and not-executed summary counts,
 no `NotExecuted` result, and no non-passed result element. Missing files, empty filters, partial

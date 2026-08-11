@@ -1,9 +1,10 @@
 using Orleans.SearchableStorage.Storage;
+using Orleans.SearchableStorage.Indexing;
 
 namespace Orleans.SearchableStorage;
 
 /// <summary>
-/// Reads and administers searchable-storage routing and live movement through Orleans grains.
+/// Reads and administers managed index schemas, routing, and live movement through Orleans grains.
 /// </summary>
 public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
 {
@@ -12,6 +13,8 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     private readonly StorageLayoutIdentity? _layoutIdentity;
     private readonly int _transferPageRecordLimit;
     private readonly int _transferPageByteTarget;
+    private readonly IGrainFactory? _grainFactory;
+    private readonly string? _providerName;
 
     /// <summary>
     /// Initializes a client for one searchable-storage provider.
@@ -56,6 +59,8 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
         var layoutIdentity = StorageLayout.CreateIdentity(providerName, partitionCount);
         _layoutGrain = layoutGrain;
+        _grainFactory = grainFactory;
+        _providerName = providerName;
         _layoutIdentity = layoutIdentity;
         _layoutCache = new StorageLayoutCache(
             () => layoutGrain.GetLayoutAsync(layoutIdentity));
@@ -107,6 +112,79 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
         var activeMove = CreateSnapshotProgress(layout);
 
         return CreatePublicLayout(layout, activeMove);
+    }
+
+    /// <inheritdoc />
+    public Task<SearchableStorageIndexSchemaStatus> GetIndexSchemaAsync<TState>(
+        string stateName,
+        CancellationToken cancellationToken = default)
+    {
+        return GetIndexSchemaAsync<TState>(
+            stateName,
+            applicationSchemaVersion: 1,
+            cancellationToken: cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<SearchableStorageIndexSchemaStatus> GetIndexSchemaAsync<TState>(
+        string stateName,
+        int applicationSchemaVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(applicationSchemaVersion);
+        cancellationToken.ThrowIfCancellationRequested();
+        var (grain, request) = GetSchemaControl<TState>(
+            stateName,
+            applicationSchemaVersion);
+        var snapshot = await WaitForCallAsync(grain.GetAsync(request), cancellationToken);
+        return CreatePublicSchemaStatus(snapshot, request.Fingerprint);
+    }
+
+    /// <inheritdoc />
+    public Task<SearchableStorageIndexSchemaStatus> RebuildIndexSchemaAsync<TState>(
+        string stateName,
+        CancellationToken cancellationToken = default)
+    {
+        return RebuildIndexSchemaAsync<TState>(
+            stateName,
+            applicationSchemaVersion: 1,
+            cancellationToken: cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<SearchableStorageIndexSchemaStatus> RebuildIndexSchemaAsync<TState>(
+        string stateName,
+        int applicationSchemaVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(applicationSchemaVersion);
+        cancellationToken.ThrowIfCancellationRequested();
+        var (grain, request) = GetSchemaControl<TState>(
+            stateName,
+            applicationSchemaVersion);
+        var snapshot = await WaitForCallAsync(grain.BeginRebuildAsync(request), cancellationToken);
+        while (snapshot.Rebuild is { } rebuild)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            snapshot = await WaitForCallAsync(
+                grain.AdvanceRebuildAsync(new StorageIndexSchemaCommand
+                {
+                    Schema = request,
+                    RebuildId = rebuild.RebuildId,
+                }),
+                cancellationToken);
+        }
+
+        var result = CreatePublicSchemaStatus(snapshot, request.Fingerprint);
+        if (result.State != SearchableStorageIndexSchemaState.Active)
+        {
+            throw new InvalidOperationException(
+                "The index schema rebuild ended without activating its target fingerprint.");
+        }
+
+        return result;
     }
 
     /// <inheritdoc />
@@ -316,6 +394,7 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
             VirtualSlotCount = layout.VirtualSlotCount,
             Partitions = partitions,
             MovementProtocolVersion = layout.MovementProtocolVersion,
+            IndexSchemaProtocolVersion = layout.IndexSchemaProtocolVersion,
             MovementState = layout.MovementState,
             ActiveMove = activeMove,
         };
@@ -459,6 +538,90 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
         return _layoutGrain
             ?? throw new InvalidOperationException(
                 "Movement operations require an Orleans-backed searchable-storage admin client.");
+    }
+
+    private (IStorageIndexSchemaGrain Grain, StorageIndexSchemaRequest Request)
+        GetSchemaControl<TState>(string stateName, int applicationSchemaVersion)
+    {
+        var grainFactory = _grainFactory
+            ?? throw new InvalidOperationException(
+                "Index-schema operations require an Orleans-backed searchable-storage admin client.");
+        var providerName = _providerName
+            ?? throw new InvalidOperationException("The searchable-storage provider is unavailable.");
+        var definition = IndexMetadataProvider.GetSchemaDefinition<TState>(
+            stateName,
+            applicationSchemaVersion);
+        var request = StorageIndexSchema.CreateRequest(providerName, definition);
+        var grain = grainFactory.GetGrain<IStorageIndexSchemaGrain>(
+            StorageIndexSchema.CreateGrainKey(providerName, stateName));
+        return (grain, request);
+    }
+
+    internal static SearchableStorageIndexSchemaStatus CreatePublicSchemaStatus(
+        StorageIndexSchemaSnapshot snapshot,
+        byte[] configuredFingerprint)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(configuredFingerprint);
+        if (snapshot.Rebuild is { } rebuild)
+        {
+            return new SearchableStorageIndexSchemaStatus
+            {
+                StateName = snapshot.StateName,
+                State = SearchableStorageIndexSchemaState.Rebuilding,
+                RebuildId = rebuild.RebuildId,
+                RebuildPhase = CreatePublicRebuildPhase(rebuild),
+                TotalOwnerCount = rebuild.OwnerCount,
+                SchemaEnabledOwnerCount = rebuild.NextProtocolOwnerIndex,
+                ScannedOwnerCount = rebuild.NextOwnerIndex,
+                ProcessedRecordCount = rebuild.ProcessedRecordCount,
+                Fingerprint = Convert.ToHexString(rebuild.TargetFingerprint),
+            };
+        }
+
+        if (snapshot.ActiveFingerprint is null)
+        {
+            return new SearchableStorageIndexSchemaStatus
+            {
+                StateName = snapshot.StateName,
+                State = SearchableStorageIndexSchemaState.Uninitialized,
+                ProcessedRecordCount = 0,
+            };
+        }
+
+        if (!IndexSchemaIdentity.FixedTimeEquals(
+                snapshot.ActiveFingerprint,
+                configuredFingerprint))
+        {
+            throw new SearchableStorageIndexSchemaException(
+                $"The active index schema for state '{snapshot.StateName}' does not match the "
+                + "registered schema declaration (state type, index metadata, or application "
+                + "schema version). Keep traffic quiesced and rebuild the registered schema.");
+        }
+
+        return new SearchableStorageIndexSchemaStatus
+        {
+            StateName = snapshot.StateName,
+            State = SearchableStorageIndexSchemaState.Active,
+            ProcessedRecordCount = snapshot.LastCompletedRecordCount,
+            Fingerprint = Convert.ToHexString(snapshot.ActiveFingerprint),
+        };
+    }
+
+    private static SearchableStorageIndexSchemaRebuildPhase CreatePublicRebuildPhase(
+        StorageIndexSchemaRebuildIntent rebuild)
+    {
+        if (rebuild.NextProtocolOwnerIndex < rebuild.OwnerCount)
+        {
+            return SearchableStorageIndexSchemaRebuildPhase.EnablingOwners;
+        }
+
+        if (rebuild.NextOwnerIndex < rebuild.OwnerCount)
+        {
+            return SearchableStorageIndexSchemaRebuildPhase.ScanningRecords;
+        }
+
+        return SearchableStorageIndexSchemaRebuildPhase.ActivatingGeneration;
     }
 
     private static StorageSlotMoveCommand CreateMoveCommand(Guid moveId)

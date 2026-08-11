@@ -3,6 +3,7 @@ using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
 using Orleans.SearchableStorage.Tests.Infrastructure;
 using Orleans.Serialization.Serializers;
@@ -74,7 +75,8 @@ public sealed class SearchableStorageOptionValidationTests
             "unaddressable-constructor",
             options,
             grainFactory,
-            activatorProvider);
+            activatorProvider,
+            SearchableStateRegistry.Empty);
 
         create.Should().Throw<ArgumentOutOfRangeException>()
             .WithParameterName("maxReplayEntries")
@@ -188,7 +190,7 @@ public sealed class StorageLayoutValidationTests : IClassFixture<MemoryStorageFi
             State = new StorageLayoutState
             {
                 Initialized = true,
-                FormatVersion = StorageLayout.PreviousFormatVersion,
+                FormatVersion = StorageLayout.LegacyFormatVersion,
                 ProviderName = providerName,
                 PartitionCount = 3,
                 JournalSegmentCapacity = 17,
@@ -219,8 +221,8 @@ public sealed class StorageLayoutValidationTests : IClassFixture<MemoryStorageFi
             await physical.ReadStateAsync("layout", layout.GetGrainId(), afterFailure);
             afterFailure.State.FormatVersion.Should().Be(
                 migratedAfterFailure
-                    ? StorageLayout.CurrentFormatVersion
-                    : StorageLayout.PreviousFormatVersion);
+                    ? StorageLayout.MovementFormatVersion
+                    : StorageLayout.LegacyFormatVersion);
             var etagAfterFailure = afterFailure.ETag;
             var callsAfterFailure = await WriteFaultInjectingGrainStorage.GetWriteCallCountAsync(
                 _fixture.Cluster.GrainFactory,
@@ -229,7 +231,7 @@ public sealed class StorageLayoutValidationTests : IClassFixture<MemoryStorageFi
             callsAfterFailure.Should().Be(2);
 
             var recovered = await layout.InitializeRoutingAsync(descriptor);
-            recovered.FormatVersion.Should().Be(StorageLayout.CurrentFormatVersion);
+            recovered.FormatVersion.Should().Be(StorageLayout.MovementFormatVersion);
             recovered.InitialPartitionCount.Should().Be(3);
             recovered.Epoch.Should().Be(1);
             recovered.CopySlotAssignments()

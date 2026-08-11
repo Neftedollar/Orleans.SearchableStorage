@@ -16,7 +16,7 @@ public sealed class StorageLayoutMovementTests
             State = new StorageLayoutState
             {
                 Initialized = true,
-                FormatVersion = StorageLayout.CurrentFormatVersion,
+                FormatVersion = StorageLayout.MovementFormatVersion,
                 ProviderName = providerName,
                 PartitionCount = 1,
                 JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,

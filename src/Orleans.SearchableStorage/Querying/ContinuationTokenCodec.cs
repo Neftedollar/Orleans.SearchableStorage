@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Querying;
 
@@ -456,7 +457,9 @@ internal sealed class ContinuationTokenCodec
             throw InvalidToken();
         }
 
-        if (payload.LayoutFormatVersion != expected.LayoutFormatVersion
+        if (!StorageLayout.AreRoutingFormatsCompatible(
+                payload.LayoutFormatVersion,
+                expected.LayoutFormatVersion)
             || payload.RoutingEpoch != expected.RoutingEpoch
             || !StorageLayoutFingerprint.Equals(
                 payload.LayoutFingerprintSpan,

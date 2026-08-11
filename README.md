@@ -13,9 +13,10 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - A fixed journal ring and a hard replay limit bound recovery work; a mutation is backpressured when compaction cannot make room.
 - Compaction publishes immutable whole-partition snapshots through two generation-fenced physical slots.
 - Mutations within a partition are serialized by one Orleans grain activation.
-- Layout format 4 maps a fixed per-namespace virtual-slot space to physical owners. Version-3 layouts
-  adopt the identity map without moving records; a separately enabled protocol can then move one
-  slot at a time under durable epoch and visibility fences.
+- Layout formats 4 and 5 map a fixed per-namespace virtual-slot space to physical owners. Version 5
+  keeps the same routing identity and adds the durable managed-schema fence. Version-3 layouts
+  first adopt the format-4 identity map without moving records; a separately enabled protocol can
+  then move one slot at a time under durable epoch and visibility fences.
 - Routed point operations carry their virtual slot and layout epoch. Each bounded query page fans out
   to every distinct current owner and returns a sorted, distinct `GrainId` prefix.
 - A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
@@ -27,6 +28,11 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - The keyed admin client explicitly enables movement, plans/advances/executes/aborts one durable
   slot move, and computes deterministic minimal-churn rebalance steps. Core storage never starts an
   automatic balancing policy.
+- A quiesced, resumable schema rebuild binds index scopes and records to a deterministic generation.
+  Its first use enables a provider-wide, one-way capability: thereafter every provider state must
+  be declared on every silo, every direct query client must declare each state it uses, and
+  current schema-unaware calls fail closed. Older binaries are excluded by the mandatory
+  homogeneous rollout because an entirely local contradiction issues no RPC to fence.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
 The journal removes partition-sized writes from the mutation path, but it does not make the current
@@ -66,6 +72,11 @@ siloBuilder.AddSearchableGrainStorage(
                 Convert.FromBase64String(
                     configuration["SearchableStorage:ContinuationKey"]!));
     });
+
+siloBuilder.AddSearchableStorageState<VacancyState>(
+    "Searchable",
+    "vacancy",
+    applicationSchemaVersion: 1);
 ```
 
 The continuation key is an application secret containing exactly 32 decoded bytes. Give the same
@@ -81,6 +92,27 @@ is capped at 262,144 slots. `PartitionCount` remains the immutable initial owner
 rebalance introduces higher owner indices. `JournalSegmentCapacity` and
 `MaximumJournalReplayEntries` still require migration to change. `CompactionThreshold` and movement
 page limits are operational settings within their documented bounds.
+
+Register every state name which uses the provider, even a state with no indexed properties. Before
+first adoption—or after changing an indexed property, its index name or kind, CLR domain, codec
+meaning, or the application-owned version—quiesce searchable traffic, deploy the same declarations
+everywhere, and
+run `ISearchableStorageAdminClient.RebuildIndexSchemaAsync<VacancyState>("vacancy", 1,
+cancellationToken)`. Registration is deliberately fail-closed, not a compatibility no-op: that
+state's writes, clears, and queries require its declared fingerprint to be active. The first rebuild
+can initialize a fresh layout; no dummy read is needed. It also durably enables persistence format 5
+across the current owners and scans records only for the requested state. It does not activate other
+registered states: rebuild and verify every registered state in the same first-adoption maintenance
+window before resuming provider traffic or movement. That provider-wide capability cannot be
+disabled. Older binaries and clients are unsupported and must be excluded by the homogeneous
+restart because a locally answered contradiction has no RPC to fence. Updated managed writes,
+clears, queries, pages, and facets remain blocked until their fingerprint is active. Point reads do
+not interpret indexes. Renaming the Orleans persistent state name is a data migration, not a schema
+rebuild: old records remain under the old catalog and record keys and cannot be discovered by
+rebuilding the new name.
+Page and distinct-facet continuations created under an older generation are invalid after the new
+fingerprint becomes active; restart those traversals from their first page.
+See the [managed index schema runbook](docs/index-schema-lifecycle.md) before adoption.
 
 The memory provider is only an example. PostgreSQL, Redis, Azure Blob Storage, or another Orleans persistence provider can be registered under `SearchableStorageConstants.PhysicalStorageProviderName` without changing application grains. See [physical backend configuration](docs/backends.md) for complete provider examples and operational prerequisites.
 
@@ -185,7 +217,8 @@ var layout = await admin.GetLayoutAsync(cancellationToken);
 
 The result reports the routing epoch, exact virtual-slot count, initial physical count, movement
 state, active move summary, and slot count per current owner. It is `null` until a storage operation
-initializes the provider namespace. Movement is explicit and resumable:
+or the first managed-schema rebuild initializes the provider namespace. Movement is explicit and
+resumable:
 
 ```csharp
 var enabled = await admin.EnableMovementAsync(cancellationToken);
@@ -256,28 +289,30 @@ continuation is returned.
 
 `SearchableStorageClient` can also be constructed from an `IGrainFactory`, provider name, and initial
 partition count. The overload accepting `SearchableStorageQueryOptions` supplies the same page
-limits and continuation key ring used by external Orleans clients. It reads the persisted virtual
-map before fan-out. An epoch or ownership mismatch
+limits and continuation key ring used by external Orleans clients. Once managed schemas are enabled,
+use the overload which also accepts a fully configured `SearchableStorageSchemaRegistry`; the client
+captures that registry at construction, and every queried state must match the silo registration.
+It reads the persisted virtual map before fan-out. An epoch or ownership mismatch
 discards a first-page attempt, refreshes the shared layout cache, and retries once. A resumed page
 is pinned to its authenticated layout and throws `SearchableStorageStaleContinuationTokenException`
 instead of moving the old frontier into a new epoch; results from different epochs are never merged.
 
 The bounded query and facet RPCs are additive but replace the built-in client's legacy unbounded
-query path.
-For this upgrade, quiesce searchable query traffic, deploy every partition-hosting silo and query
-client, configure the same provider key ring wherever public paging is used, and only then resume
-queries. Point reads, writes, and clears may continue because persistence and their routed protocol
-do not change. Mixed-version paging/facets and fallback to an old array-returning RPC are unsupported.
-Existing continuations cannot be reused as another response family.
+query path. For a query-protocol-only rollout, quiesce searchable query traffic, deploy every
+partition-hosting silo and query client, configure the same provider key ring wherever public paging
+is used, and only then resume queries. Point reads, writes, and clears may continue only when no
+layout, movement, or managed-schema migration is being performed. Mixed-version paging/facets and
+fallback to an old array-returning RPC are unsupported. Existing continuations cannot be reused as
+another response family.
 
 Separately, adopting a version-3 layout into format 4 is not an online mixed-version rollout.
 Quiesce searchable storage and query traffic, deploy this package to every silo and Orleans client,
 verify that no version-3 process
 remains, and keep traffic paused while one normal grain-state storage operation adopts each provider
 namespace. Verify that the admin read succeeds for every persisted layout and reports epoch 1; the
-admin path returns a snapshot only for format 4. At that point either resume traffic with movement
-still disabled, or, if movement is being enabled in the same maintenance window, keep traffic
-paused through the second gate. Query and admin reads
+admin path returns a snapshot only for routing-capable format 4 or 5. At that point either resume
+traffic with movement still disabled, or, if movement is being enabled in the same maintenance
+window, keep traffic paused through the second gate. Query and admin reads
 deliberately do not perform migration themselves. New routed methods are additive and legacy calls
 remain placement-compatible with the epoch-1 identity map on updated processes, but a new storage
 activation can otherwise reach an old silo which does not implement those methods. For the second
@@ -286,28 +321,38 @@ gate, quiesce traffic if it was resumed, deploy/restart the movement-capable pac
 Once enabled, old placement-only calls are rejected and rolling an older binary back into that
 namespace is unsupported.
 
+A managed-schema rebuild can perform that same version-3 layout adoption as its first quiesced
+step, so schema adoption does not require a preceding dummy state operation. Its owner sweep then
+upgrades supported partition-persistence format 3 or 4 directly to format 5.
+
 The provider name identifies a storage namespace. Using another name selects a separate, initially
 empty namespace, so renaming a provider requires an explicit migration. The initial
 `PartitionCount`, journal segment capacity, maximum replay entries, and layout/persistence formats
-are validated within that namespace and must not change without migration. Index names, kinds, and property types are also
-persisted schema: adding an index does not backfill existing records, and changing or renaming one
-requires an explicit rewrite or migration. Null property values are not indexed. Indexed `DateTime`
+are validated within that namespace and must not change without migration. Index names, kinds,
+property types, codec versions, and the application schema version are managed persisted schema.
+Adding or changing one does not become queryable until the registered generation is rebuilt and
+active. Once any state adopts managed schemas, every state using that provider must be registered
+on every participant. Null property values are not indexed. Indexed `DateTime`
 values must use `DateTimeKind.Utc`. Facet text values are limited to 16,384 bytes of valid strict
 UTF-8. The write path does not impose that newer wire constraint, so applications using string or
 `char` facets must validate it before writes and rewrite pre-existing overlong or unpaired-surrogate
 values; a facet which reaches one throws `SearchableStorageQueryLimitExceededException` without a
 partial result rather than truncating or skipping it.
 
-Layout format version 4 stores virtual routing independently from partition persistence format 4.
+Layout formats 4 and 5 store the same virtual routing identity independently from partition
+persistence formats 3, 4, and 5. Layout format 5 appends the provider schema capability and
+per-rebuild maintenance intent.
 A valid format-3 layout is upgraded in place with one layout compare-and-swap; the seeded identity
 map is mathematically equivalent to the old modulo placement for every supported initial partition
 count, including non-powers-of-two. No partition manifest, journal segment, snapshot, record, or index
 is rewritten by layout adoption. Partition persistence format 4 retains the small manifest, bounded
-journal ring, and two whole-partition snapshot slots, and appends movement capability/visibility
-fences plus replayable high-watermark/import/delete WAL operations. Existing format-3 manifests are
-upgraded only by the explicit owner sweep inside the quiesced movement-enablement gate; ordinary
-activation and mutation leave them at format 3. Older persistence formats still require an explicit
-migration or complete rewrite and are rejected rather than read as fresh state.
+journal ring, and two whole-partition snapshot slots while adding movement state and lossless
+snapshots. Format 5 adds the one-way managed-schema capability and per-record fingerprints. A
+quiesced schema-adoption sweep can upgrade a supported format-3 or format-4 owner directly to format
+5; a movement-only sweep upgrades format 3 to format 4. Formats 1 and 2 still require an explicit
+migration or complete rewrite and are rejected rather than read as fresh state. Backups and
+retention must include the per-state `index-schema` control documents as well as layout and
+partition data.
 
 Facet support does not change a durable record, journal, manifest, snapshot, layout, or write-path
 format. On activation, hash scopes now derive the same balanced, canonical value projection already
@@ -327,10 +372,13 @@ dotnet run --project samples/Orleans.SearchableStorage.ApiSample
 ```
 
 Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies,
-read one by id, execute the `IQueryable` layer, inspect/enable movement, manually plan or advance a
-move/rebalance, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md)
+read one by id, execute the `IQueryable` layer, inspect/resume the managed schema, inspect/enable
+movement, manually plan or advance a move/rebalance, and remove a record. The
+[sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md)
 follows each request from HTTP through the application grain, query plan, searchable provider,
-storage-partition grain, and physical provider.
+storage-partition grain, and physical provider. The sample registers `VacancyState` and bootstraps
+its managed format-5 generation before accepting traffic. That startup shortcut is valid only for
+its fresh, single-process, in-memory namespace; production adoption follows the quiesced runbook.
 
 The one-process topology and in-memory physical storage keep the sample easy to run; neither is a library requirement.
 

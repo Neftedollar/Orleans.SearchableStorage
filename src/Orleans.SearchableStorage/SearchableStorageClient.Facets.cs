@@ -30,6 +30,11 @@ public sealed partial class SearchableStorageClient
             stateName,
             queryExpression,
             propertySelector);
+        await EnsureSchemaActiveAsync<TState>(
+            stateName,
+            cancellationToken,
+            requireFreshUnregisteredCapability:
+                facet.Query.Operation == PartitionQueryOperation.Empty);
         var isContinuation = request.ContinuationToken is not null;
         if (facet.Query.Operation == PartitionQueryOperation.Empty)
         {
@@ -158,6 +163,11 @@ public sealed partial class SearchableStorageClient
             stateName,
             queryExpression,
             propertySelector);
+        await EnsureSchemaActiveAsync<TState>(
+            stateName,
+            cancellationToken,
+            requireFreshUnregisteredCapability:
+                facet.Query.Operation == PartitionQueryOperation.Empty);
         if (facet.Query.Operation == PartitionQueryOperation.Empty)
         {
             return new SearchableStorageFacetResult<TValue>(
@@ -197,6 +207,11 @@ public sealed partial class SearchableStorageClient
             stateName,
             queryExpression,
             propertySelector);
+        await EnsureSchemaActiveAsync<TState>(
+            stateName,
+            cancellationToken,
+            requireFreshUnregisteredCapability:
+                facet.Query.Operation == PartitionQueryOperation.Empty);
         if (facet.Query.Operation == PartitionQueryOperation.Empty)
         {
             return null;
@@ -282,7 +297,7 @@ public sealed partial class SearchableStorageClient
         }
     }
 
-    private static FacetPlan CreateFacetPlan<TState, TValue>(
+    private FacetPlan CreateFacetPlan<TState, TValue>(
         string stateName,
         Expression queryExpression,
         LambdaExpression propertySelector)
@@ -297,7 +312,11 @@ public sealed partial class SearchableStorageClient
                 nameof(propertySelector));
         }
 
-        var index = IndexMetadataProvider.GetSelectedIndex(stateName, typedSelector);
+        var schema = GetRegisteredSchema<TState>(stateName);
+        var index = IndexMetadataProvider.GetSelectedIndex(
+            stateName,
+            typedSelector,
+            schema?.Fingerprint);
         if (index.Converter.ValueType != typeof(TValue))
         {
             throw new ArgumentException(
@@ -307,7 +326,10 @@ public sealed partial class SearchableStorageClient
         }
 
         var plan = PartitionQueryPlanFactory.Create(
-            QueryTranslator.TranslateFacet<TState>(stateName, queryExpression));
+            QueryTranslator.TranslateFacet<TState>(
+                stateName,
+                queryExpression,
+                schema?.Fingerprint));
         return new FacetPlan(
             stateName,
             plan,
@@ -625,6 +647,7 @@ public sealed partial class SearchableStorageClient
             PartitionResponseItemLimit = Math.Min(policy.PartitionResponseItemLimit, allocation.ItemsPerOwner),
             PartitionResponseByteLimit = Math.Min(policy.PartitionResponseByteLimit, allocation.BytesPerOwner),
         };
+        var schema = _stateRegistry.Find(_providerName, facet.StateName)?.Schema;
         var calls = new OwnedFacetCall<PartitionDistinctFacetPageResult>[states.Length];
         for (var index = 0; index < states.Length; index++)
         {
@@ -649,6 +672,10 @@ public sealed partial class SearchableStorageClient
                 StateName = facet.StateName,
                 HasExpectedDataVersion = state.HasDataVersion,
                 ExpectedDataVersion = state.DataVersion,
+                IndexSchemaFingerprint = schema?.Fingerprint,
+                IndexSchemaProtocolVersion = schema is null
+                    ? 0
+                    : StorageIndexSchema.ProtocolVersion,
             };
             calls[index] = new OwnedFacetCall<PartitionDistinctFacetPageResult>(
                 state.Owner,
@@ -700,6 +727,7 @@ public sealed partial class SearchableStorageClient
             PartitionResponseItemLimit = Math.Min(policy.PartitionResponseItemLimit, allocation.ItemsPerOwner),
             PartitionResponseByteLimit = Math.Min(policy.PartitionResponseByteLimit, allocation.BytesPerOwner),
         };
+        var schema = _stateRegistry.Find(_providerName, facet.StateName)?.Schema;
         var calls = new OwnedFacetCall<PartitionFacetCandidatePageResult>[active.Length];
         for (var index = 0; index < active.Length; index++)
         {
@@ -724,6 +752,10 @@ public sealed partial class SearchableStorageClient
                 StateName = facet.StateName,
                 HasExpectedDataVersion = state.HasDataVersion,
                 ExpectedDataVersion = state.DataVersion,
+                IndexSchemaFingerprint = schema?.Fingerprint,
+                IndexSchemaProtocolVersion = schema is null
+                    ? 0
+                    : StorageIndexSchema.ProtocolVersion,
             };
             calls[index] = new OwnedFacetCall<PartitionFacetCandidatePageResult>(
                 state.Owner,
@@ -777,6 +809,7 @@ public sealed partial class SearchableStorageClient
             cancellationToken.ThrowIfCancellationRequested();
             var active = probes.Where(static probe => !probe.Exhausted).ToArray();
             var allocation = budget.AllocateTurn(active.Length, requiresItems: true, requiresBytes: false);
+            var schema = _stateRegistry.Find(_providerName, facet.StateName)?.Schema;
             var calls = new OwnedFacetCall<PartitionFacetCountSliceResult>[active.Length];
             for (var index = 0; index < active.Length; index++)
             {
@@ -801,6 +834,10 @@ public sealed partial class SearchableStorageClient
                     StateName = facet.StateName,
                     HasExpectedDataVersion = true,
                     ExpectedDataVersion = probe.Owner.DataVersion,
+                    IndexSchemaFingerprint = schema?.Fingerprint,
+                    IndexSchemaProtocolVersion = schema is null
+                        ? 0
+                        : StorageIndexSchema.ProtocolVersion,
                 };
                 calls[index] = new OwnedFacetCall<PartitionFacetCountSliceResult>(
                     probe.Owner.Owner,
@@ -1216,7 +1253,7 @@ public sealed partial class SearchableStorageClient
             || workPolicyVersion != QueryProtocol.FacetWorkPolicyVersion
             || family != expectedFamily
             || epoch != layout.Epoch
-            || layoutFormatVersion != layout.FormatVersion
+            || !StorageLayout.AreRoutingFormatsCompatible(layoutFormatVersion, layout.FormatVersion)
             || requestFingerprint is null
             || !QueryPlanFingerprint.Equals(requestFingerprint, facet.Fingerprint)
             || responseLayoutFingerprint is null

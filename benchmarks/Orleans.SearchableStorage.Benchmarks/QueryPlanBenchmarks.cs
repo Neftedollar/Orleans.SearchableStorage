@@ -285,7 +285,7 @@ public class QueryPlanEvaluationBenchmarks
         _routing = StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "benchmark-provider",
             PartitionCount = 1,
             VirtualSlotCount = 1,

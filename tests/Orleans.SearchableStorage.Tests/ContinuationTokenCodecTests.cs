@@ -5,6 +5,7 @@ using AwesomeAssertions;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
+using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
 
@@ -180,6 +181,32 @@ public sealed class ContinuationTokenCodecTests
         Action decode = () => _ = codec.Unprotect(token, movedLayout);
 
         decode.Should().Throw<SearchableStorageStaleContinuationTokenException>();
+    }
+
+    [Theory]
+    [InlineData(
+        StorageLayout.MovementFormatVersion,
+        StorageLayout.IndexSchemaFormatVersion)]
+    [InlineData(
+        StorageLayout.IndexSchemaFormatVersion,
+        StorageLayout.MovementFormatVersion)]
+    public void RoutingCompatibleSchemaFenceKeepsTokensBoundToTheirQuery(
+        int tokenLayoutFormatVersion,
+        int currentLayoutFormatVersion)
+    {
+        var codec = CreateCodec("current", CurrentMaterial);
+        var tokenBinding = CreateBinding(layoutFormatVersion: tokenLayoutFormatVersion);
+        var token = codec.Protect(new ContinuationTokenPayload(
+            tokenBinding,
+            GrainId.Create("paging", "after")));
+        var compatibleBinding = CreateBinding(layoutFormatVersion: currentLayoutFormatVersion);
+        var anotherSchemaQuery = CreateBinding(
+            layoutFormatVersion: currentLayoutFormatVersion,
+            queryFingerprint: SHA256.HashData("another schema-bound query"u8));
+
+        codec.Unprotect(token, compatibleBinding).After
+            .Should().Be(GrainId.Create("paging", "after"));
+        AssertInvalid(() => _ = codec.Unprotect(token, anotherSchemaQuery));
     }
 
     [Fact]
@@ -405,6 +432,7 @@ public sealed class ContinuationTokenCodecTests
         string providerName = ProviderName,
         PartitionQueryResponseFamily responseFamily = PartitionQueryResponseFamily.GrainIdPage,
         byte[]? queryFingerprint = null,
+        int layoutFormatVersion = StorageLayout.MovementFormatVersion,
         long routingEpoch = 17,
         byte[]? layoutFingerprint = null,
         QueryExecutionPolicy? policy = null)
@@ -416,7 +444,7 @@ public sealed class ContinuationTokenCodecTests
             responseFamily == PartitionQueryResponseFamily.DistinctFacetValuePage
                 ? QueryProtocol.FacetValueOrderingVersion
                 : QueryProtocol.OrderingVersion,
-            layoutFormatVersion: 4,
+            layoutFormatVersion,
             routingEpoch,
             layoutFingerprint ?? SHA256.HashData("layout fingerprint"u8),
             policy ?? new QueryExecutionPolicy(

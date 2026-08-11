@@ -17,6 +17,12 @@ internal interface IStorageLayoutGrain : IGrainWithStringKey
     [AlwaysInterleave]
     Task<StorageLayoutSnapshot?> GetCurrentLayoutAsync();
 
+    Task<StorageLayoutSnapshot> BeginIndexSchemaProtocolEnablementAsync(
+        StorageIndexSchemaLayoutProtocolRequest request);
+
+    Task<StorageLayoutSnapshot> EnableIndexSchemaProtocolAsync(
+        StorageIndexSchemaLayoutProtocolRequest request);
+
     Task<StorageLayoutSnapshot> BeginMovementEnablementAsync();
 
     Task<StorageLayoutSnapshot> AdvanceMovementEnablementAsync(Guid enablementId);

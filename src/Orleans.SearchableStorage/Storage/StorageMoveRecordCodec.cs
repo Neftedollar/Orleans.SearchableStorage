@@ -6,7 +6,7 @@ using Orleans.SearchableStorage.Querying;
 namespace Orleans.SearchableStorage.Storage;
 
 /// <summary>
-/// Lossless movement and persistence-v4 snapshot representation of a stored record. Orleans
+/// Lossless movement and persistence-v4/v5 snapshot representation of a stored record. Orleans
 /// encodes strings as UTF-8, which replaces unpaired UTF-16 surrogates. Movement pages and new v4
 /// snapshots therefore carry every persisted text field as explicit big-endian UTF-16 code units
 /// while leaving the legacy record, WAL-v3, and snapshot Id8 schemas unchanged.
@@ -19,6 +19,7 @@ internal sealed class StorageMoveStoredRecord
     [Id(2)] public required byte[] Payload { get; init; }
     [Id(3)] public required byte[] ETag { get; init; }
     [Id(4)] public required List<StorageMoveIndexEntry> IndexEntries { get; init; }
+    [Id(5)] public byte[]? IndexSchemaFingerprint { get; init; }
 }
 
 [GenerateSerializer]
@@ -144,6 +145,9 @@ internal static class StorageMoveRecordCodec
             Payload = [.. record.Payload],
             ETag = EncodeText(record.ETag),
             IndexEntries = record.IndexEntries.Select(Encode).ToList(),
+            IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
+                ? null
+                : [.. record.IndexSchemaFingerprint],
         };
     }
 
@@ -176,6 +180,9 @@ internal static class StorageMoveRecordCodec
             Payload = [.. record.Payload],
             ETag = DecodeText(record.ETag, nameof(record)),
             IndexEntries = record.IndexEntries.Select(Decode).ToList(),
+            IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
+                ? null
+                : [.. record.IndexSchemaFingerprint],
         };
         StoragePersistenceStateValidation.ValidateRecord(result, nameof(record));
         return result;
@@ -211,6 +218,9 @@ internal static class StorageMoveRecordCodec
             Payload = [.. record.Payload],
             ETag = [.. record.ETag],
             IndexEntries = record.IndexEntries.Select(Copy).ToList(),
+            IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
+                ? null
+                : [.. record.IndexSchemaFingerprint],
         };
     }
 
@@ -229,6 +239,9 @@ internal static class StorageMoveRecordCodec
             || !leftRecord.GrainKey.AsSpan().SequenceEqual(rightRecord.GrainKey)
             || !leftRecord.Payload.AsSpan().SequenceEqual(rightRecord.Payload)
             || !leftRecord.ETag.AsSpan().SequenceEqual(rightRecord.ETag)
+            || !NullableBytesEqual(
+                leftRecord.IndexSchemaFingerprint,
+                rightRecord.IndexSchemaFingerprint)
             || leftRecord.IndexEntries.Count != rightRecord.IndexEntries.Count)
         {
             return false;
@@ -277,6 +290,10 @@ internal static class StorageMoveRecordCodec
         ArgumentNullException.ThrowIfNull(record.Payload, parameterName);
         ArgumentNullException.ThrowIfNull(record.ETag, parameterName);
         ArgumentNullException.ThrowIfNull(record.IndexEntries, parameterName);
+        if (record.IndexSchemaFingerprint is { } fingerprint)
+        {
+            IndexSchemaIdentity.ValidateIdentity(fingerprint, parameterName);
+        }
         if (record.GrainType.Length is <= 0 or > GrainIdCanonicalOrder.MaximumTypeBytes
             || record.GrainKey.Length is <= 0 or > GrainIdCanonicalOrder.MaximumKeyBytes)
         {
@@ -288,6 +305,13 @@ internal static class StorageMoveRecordCodec
         {
             Validate(entry, parameterName);
         }
+    }
+
+    private static bool NullableBytesEqual(byte[]? left, byte[]? right)
+    {
+        return left is null || right is null
+            ? left is null && right is null
+            : left.AsSpan().SequenceEqual(right);
     }
 
     private static StorageMoveIndexEntry Encode(IndexEntry entry)

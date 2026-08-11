@@ -56,6 +56,12 @@ internal abstract class StoragePartitionGrainMovementTestDouble : IStoragePartit
     Task<PartitionFacetCountSliceResult> IStoragePartitionGrain.QueryFacetCountSliceRoutedAsync(
         RoutedPartitionFacetCountSliceRequest request) => throw UnexpectedNonMovementCall();
 
+    Task<StorageIndexSchemaRebuildPageResult> IStoragePartitionGrain.RebuildIndexSchemaPageAsync(
+        StorageIndexSchemaRebuildPageRequest request) => throw UnexpectedNonMovementCall();
+
+    Task<StoragePartitionProtocolState> IStoragePartitionGrain.EnableIndexSchemaProtocolAsync(
+        StorageIndexSchemaPartitionProtocolRequest request) => throw UnexpectedNonMovementCall();
+
     Task IStoragePartitionGrain.CompactAsync() => throw UnexpectedNonMovementCall();
 
     Task<StoragePartitionPersistenceInfo> IStoragePartitionGrain.GetPersistenceInfoAsync() =>
@@ -120,6 +126,12 @@ internal abstract class StorageLayoutGrainMovementTestDouble : IStorageLayoutGra
 
     Task<StorageLayoutSnapshot?> IStorageLayoutGrain.GetCurrentLayoutAsync() =>
         throw UnexpectedNonMovementCall();
+
+    Task<StorageLayoutSnapshot> IStorageLayoutGrain.BeginIndexSchemaProtocolEnablementAsync(
+        StorageIndexSchemaLayoutProtocolRequest request) => throw UnexpectedNonMovementCall();
+
+    Task<StorageLayoutSnapshot> IStorageLayoutGrain.EnableIndexSchemaProtocolAsync(
+        StorageIndexSchemaLayoutProtocolRequest request) => throw UnexpectedNonMovementCall();
 
     public Task<StorageLayoutSnapshot> BeginMovementEnablementAsync() =>
         throw UnexpectedMovementCall();

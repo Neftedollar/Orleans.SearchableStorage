@@ -37,6 +37,15 @@ internal sealed class StorageWriteRequest
 
     [Id(5)]
     public required StoragePersistenceSettings Persistence { get; init; }
+
+    [Id(6)]
+    public byte[]? IndexSchemaFingerprint { get; init; }
+
+    [Id(7)]
+    public string? StateName { get; init; }
+
+    [Id(8)]
+    public int IndexSchemaProtocolVersion { get; init; }
 }
 
 [GenerateSerializer]
@@ -50,6 +59,15 @@ internal sealed class StorageClearRequest
 
     [Id(2)]
     public required StoragePersistenceSettings Persistence { get; init; }
+
+    [Id(3)]
+    public string? StateName { get; init; }
+
+    [Id(4)]
+    public byte[]? IndexSchemaFingerprint { get; init; }
+
+    [Id(5)]
+    public int IndexSchemaProtocolVersion { get; init; }
 }
 
 [GenerateSerializer]
@@ -212,6 +230,10 @@ internal sealed class RoutedExactIndexQuery
 
     [Id(1)]
     public long Epoch { get; init; }
+
+    [Id(2)] public string? StateName { get; init; }
+    [Id(3)] public byte[]? IndexSchemaFingerprint { get; init; }
+    [Id(4)] public int IndexSchemaProtocolVersion { get; init; }
 }
 
 /// <summary>
@@ -225,6 +247,10 @@ internal sealed class RoutedRangeIndexQuery
 
     [Id(1)]
     public long Epoch { get; init; }
+
+    [Id(2)] public string? StateName { get; init; }
+    [Id(3)] public byte[]? IndexSchemaFingerprint { get; init; }
+    [Id(4)] public int IndexSchemaProtocolVersion { get; init; }
 }
 
 /// <summary>
@@ -276,6 +302,10 @@ internal sealed class RoutedPartitionQuery
 
     [Id(1)]
     public long Epoch { get; init; }
+
+    [Id(2)] public string? StateName { get; init; }
+    [Id(3)] public byte[]? IndexSchemaFingerprint { get; init; }
+    [Id(4)] public int IndexSchemaProtocolVersion { get; init; }
 }
 
 /// <summary>
@@ -328,6 +358,9 @@ internal sealed class RoutedPartitionQueryPageRequest
 
     [Id(14)]
     public required string StateName { get; init; }
+
+    [Id(15)] public byte[]? IndexSchemaFingerprint { get; init; }
+    [Id(16)] public int IndexSchemaProtocolVersion { get; init; }
 }
 
 /// <summary>
@@ -404,6 +437,8 @@ internal sealed class RoutedPartitionDistinctFacetPageRequest
     [Id(15)] public required string StateName { get; init; }
     [Id(16)] public bool HasExpectedDataVersion { get; init; }
     [Id(17)] public long ExpectedDataVersion { get; init; }
+    [Id(18)] public byte[]? IndexSchemaFingerprint { get; init; }
+    [Id(19)] public int IndexSchemaProtocolVersion { get; init; }
 }
 
 /// <summary>Returns one bounded canonical value-order candidate page.</summary>
@@ -449,6 +484,8 @@ internal sealed class RoutedPartitionFacetCandidatePageRequest
     [Id(15)] public required string StateName { get; init; }
     [Id(16)] public bool HasExpectedDataVersion { get; init; }
     [Id(17)] public long ExpectedDataVersion { get; init; }
+    [Id(18)] public byte[]? IndexSchemaFingerprint { get; init; }
+    [Id(19)] public int IndexSchemaProtocolVersion { get; init; }
 }
 
 /// <summary>One metadata-only partition-local facet candidate.</summary>
@@ -504,6 +541,8 @@ internal sealed class RoutedPartitionFacetCountSliceRequest
     [Id(15)] public required string StateName { get; init; }
     [Id(16)] public bool HasExpectedDataVersion { get; init; }
     [Id(17)] public long ExpectedDataVersion { get; init; }
+    [Id(18)] public byte[]? IndexSchemaFingerprint { get; init; }
+    [Id(19)] public int IndexSchemaProtocolVersion { get; init; }
 }
 
 /// <summary>Returns one resumable exact-count delta.</summary>

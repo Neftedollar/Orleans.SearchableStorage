@@ -437,6 +437,65 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
             .WithMessage("*layout fingerprint does not match*");
     }
 
+    [Fact]
+    public async Task SchemaAwareLayoutV5IsAcceptedByPartitionPageAndFacetProtocols()
+    {
+        const string stateName = "routing-format-v5-state";
+        var context = await CreateContextAsync(partitionCount: 1);
+        var layoutGrain = _fixture.Cluster.GrainFactory.GetGrain<IStorageLayoutGrain>(
+            context.ProviderName);
+        var enablementId = Guid.NewGuid();
+        var request = new StorageIndexSchemaLayoutProtocolRequest
+        {
+            ProtocolVersion = StorageIndexSchema.ProtocolVersion,
+            LayoutEpoch = context.Layout.Epoch,
+            LayoutFingerprint = StorageLayoutFingerprint.Compute(context.Layout),
+            EnablementId = enablementId,
+        };
+        await layoutGrain.BeginIndexSchemaProtocolEnablementAsync(request);
+        var layout = await layoutGrain.EnableIndexSchemaProtocolAsync(request);
+        layout.FormatVersion.Should().Be(StorageLayout.IndexSchemaFormatVersion);
+        layout.IndexSchemaProtocolVersion.Should().Be(StorageIndexSchema.ProtocolVersion);
+
+        var partition = GetPartition(context.ProviderName, partitionIndex: 0);
+        var plan = ExactCityPlan("missing");
+        // A same-epoch capability fence can leave a bounded client cache on routing-v4 while the
+        // partition has already observed routing-v5. Both formats describe the same routing
+        // identity and their canonical fingerprints are deliberately equal.
+        var page = await partition.QueryPageRoutedAsync(
+            CreatePageRequest(context.Layout, stateName, plan));
+        page.Items.Should().BeEmpty();
+        page.LayoutFormatVersion.Should().Be(StorageLayout.IndexSchemaFormatVersion);
+
+        const string facetScope = "state/city";
+        var facetFingerprint = FacetQueryFingerprint.Compute(
+            stateName,
+            plan,
+            facetScope,
+            SearchableIndexKind.Hash);
+        var facet = await partition.QueryDistinctFacetPageRoutedAsync(
+            new RoutedPartitionDistinctFacetPageRequest
+            {
+                Query = plan,
+                FacetScope = facetScope,
+                FacetKind = SearchableIndexKind.Hash,
+                Epoch = layout.Epoch,
+                WorkBudget = 1_000,
+                ItemLimit = 10,
+                ByteLimit = 100_000,
+                ProtocolVersion = QueryProtocol.PagingVersion,
+                OrderingVersion = QueryProtocol.FacetValueOrderingVersion,
+                WorkPolicyVersion = QueryProtocol.FacetWorkPolicyVersion,
+                ResponseFamily = PartitionQueryResponseFamily.DistinctFacetValuePage,
+                RequestFingerprint = facetFingerprint,
+                LayoutFormatVersion = context.Layout.FormatVersion,
+                LayoutFingerprint = StorageLayoutFingerprint.Compute(context.Layout),
+                StateName = stateName,
+            });
+        facet.Items.Should().BeEmpty();
+        facet.LayoutFormatVersion.Should().Be(StorageLayout.IndexSchemaFormatVersion);
+    }
+
     [Theory]
     [InlineData("provider", "provider:00000003", 3)]
     [InlineData("provider:with:colons", "provider:with:colons:00000042", 42)]

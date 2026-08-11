@@ -25,6 +25,8 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 | `GET` | `/vacancies/facets/cities/top?topN=1&accuracy=Approximate&minimumSalary=7` | Stop after one bounded candidate turn and expose its omitted-count certificate. |
 | `GET` | `/vacancies/facets/salaries/min-max?city=Helsinki` | Compute exact filtered salary extrema. |
 | `GET` | `/storage/layout` | Read the persisted virtual-routing summary. |
+| `GET` | `/storage/index-schemas/vacancies` | Read the durable vacancy index generation and rebuild status. |
+| `POST` | `/storage/index-schemas/vacancies/rebuild` | Idempotently run or resume the page-limited vacancy index rebuild. |
 | `POST` | `/storage/movement/enable` | Explicitly run/resume the quiesced movement-capability gate. |
 | `GET` | `/storage/moves/active` | Read the sole active move, or `204` when none exists. |
 | `POST` | `/storage/moves/plan` | Persist one explicit `{ slot, targetPartitionIndex }` move. |
@@ -38,11 +40,13 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 
 1. The HTTP endpoint calls `IVacancyGrain` using the route id as its grain key.
 2. `VacancyGrain` writes normal `IPersistentState<VacancyState>` state through the `Searchable` provider.
-3. The provider serializes the state and uses its cached PolyType model to read the
-   `[SearchableIndex]` values.
-4. The provider initializes or loads layout format 4, derives the record's virtual slot from its
+3. The provider serializes the state and uses its registered, generation-bound PolyType model to
+   read the `[SearchableIndex]` values.
+4. The provider loads the routing-compatible layout format 5 created by the startup schema gate,
+   derives the record's virtual slot from its
    Orleans grain hash, and sends the slot and routing epoch to the assigned physical partition.
-5. The partition validates the grain, slot, epoch, and current owner before it reads record state or
+5. The format-5 partition validates the schema generation, grain, slot, epoch, and current owner
+   before it reads record state or
    applies ETag logic. It then writes one bounded journal segment and advances a small manifest. The manifest
    write is the commit point for the record and every derived index entry.
 6. The activation updates only the affected in-memory hash and range buckets. Automatic compaction
@@ -68,18 +72,43 @@ requested after 64. Segment capacity and the replay limit are durable layout set
 either requires migration. The compaction threshold is operational and can be tuned between runs.
 
 The sample starts with eight physical partitions and a virtual-slot target of 64. Initialization
-persists exactly 64 slots because the target is already a multiple of eight. Layout format 4 assigns
-those slots with the zero-movement identity rule `slot % 8`, so every initial owner has eight slots
-at epoch 1. `VirtualSlotTargetCount` is only a seed for a new or version-3 layout: the exact `V` is
-persisted per provider namespace and is not recomputed from a later default. The explicit movement-
-enablement owner sweep upgrades partition manifests to persistence format 4 while retaining the
-bounded journal ring and two whole-partition snapshot slots; ordinary activation does not.
+persists exactly 64 slots because the target is already a multiple of eight. The routing-compatible
+format-5 layout retains the identity rule `slot % 8`, so every initial owner has eight slots at epoch
+1. `VirtualSlotTargetCount` is only a seed for a new or version-3 layout: the exact `V` is persisted
+per provider namespace and is not recomputed from a later default. Schema adoption upgrades every
+partition manifest to persistence format 5 while retaining the bounded journal ring and two
+whole-partition snapshot slots. Later movement enablement preserves format 5 rather than downgrading
+it to movement-only format 4.
 
-`GET /storage/layout` uses the keyed `ISearchableStorageAdminClient`. It is read-only and returns
-`404 Not Found` before a storage operation initializes the namespace. After the first vacancy write,
-it returns the epoch, initial partition count, exact virtual-slot count, and the slot count for each
-current owner. It also reports movement protocol/state and an active move summary. The public
-response deliberately does not expose the mutable assignment array or record-key cursors.
+## Managed schema bootstrap
+
+`Program.cs` explicitly registers the `VacancyState` type and application schema version. A small
+hosted service completes `RebuildIndexSchemaAsync<VacancyState>` before ASP.NET Core accepts traffic.
+That startup shortcut is safe here only because the sample always starts as one fresh process over
+empty in-memory persistence. It makes every subsequent write and query carry the same durable schema
+fingerprint and demonstrates the normal steady-state API without a manual race at startup.
+
+The GET schema endpoint exposes the active fingerprint and the last completed record count. During
+an interrupted rebuild it also reports the durable operation and enabled/scanned owner counts, so
+empty-state progress remains visible without exposing record cursors. The POST endpoint is an
+idempotent operator surface: it returns the same active generation when nothing changed and resumes
+the durable cursor after interruption. Each scan page covers at most 64 catalog records, but a page
+can trigger whole-partition compaction and is not a strict work or wall-time bound. A production
+deployment must not copy the automatic startup shortcut onto existing data. Quiesce the complete
+provider before any participant is
+updated, back up the control/data state after traffic is paused, then deploy and restart every silo
+and Orleans client with identical registrations. Verify that no old participant remains, then
+complete every registered rebuild and verification step in the
+[managed index-schema runbook](../../docs/index-schema-lifecycle.md). Format 5 is a one-way
+capability gate for the current protocol, and updated schema-unbound calls fail closed. Older
+binaries are excluded by the mandatory homogeneous restart: a binary which answers a contradictory
+query entirely in-process issues no RPC which a server-side fence could reject.
+
+`GET /storage/layout` uses the keyed `ISearchableStorageAdminClient`. The startup schema bootstrap
+initializes the namespace before HTTP traffic, so this sample returns the epoch, initial partition
+count, exact virtual-slot count, schema protocol, and slot count for each current owner immediately.
+It also reports movement protocol/state and an active move summary. The public response deliberately
+does not expose the mutable assignment array or record-key cursors.
 
 ## Manual movement walkthrough
 
@@ -91,8 +120,8 @@ limits, and provider-scoped serialization—or avoid exposing them over HTTP at 
 Movement enablement is not a normal online request. Before calling it in production, quiesce every
 searchable read/write/query, deploy and restart all silos and Orleans clients on the same
 movement-capable package, and verify that no old process remains. The one-process sample satisfies
-that topology precondition after a fresh start; `requests.http` still initializes the namespace and
-invokes enablement as an explicit step.
+that topology precondition after a fresh start; the hosted schema bootstrap initializes the
+namespace, while `requests.http` seeds sample vacancies and invokes enablement explicitly.
 
 `POST /storage/moves/plan` persists the provider's sole intent. Save its `moveId`. The `advance`
 route performs exactly one phase or page, making it useful for an operator-controlled loop. The
@@ -167,7 +196,8 @@ contains complete examples. The sample deliberately keeps backend infrastructure
 walkthrough; the same journal, recovery, compaction, and query behavior is exercised separately by
 the shared provider contract. Co-hosting HTTP and Orleans is only a sample convenience; the query
 client can also use an Orleans client from another process when configured with the same provider
-name, initial partition count, bounded-query limits, and continuation key ring.
+name, initial partition count, bounded-query limits, continuation key ring, and an equivalent
+`SearchableStorageSchemaRegistry` declaration.
 
 `Program.cs` generates a fresh cryptographic 32-byte development key when the process starts, so the
 walkthrough runs without secret setup and tokens intentionally become invalid after a restart.
@@ -175,12 +205,17 @@ Production processes must instead load the same stable 32-byte provider-scoped s
 configuration. Rotation distributes the new key as decrypt-only first, switches every participant
 to it as current, and removes the old key only after outstanding tokens may be invalidated safely.
 
-The v3-to-v4 layout transition is not an online mixed-version rollout: pause searchable storage and
-query traffic, update every silo and Orleans client, verify that no version-3 process remains, and
-keep traffic paused while one normal grain-state storage operation adopts each provider namespace.
-Query and admin reads do not perform adoption. Keep traffic paused through movement enablement, then
-require `movementState=Enabled` and `movementProtocolVersion=1` before resuming. Updated legacy calls
-remain placement-compatible only before enablement; placement-only entry points reject calls once
-ownership can move.
+Neither layout adoption nor managed-schema adoption is an online mixed-version rollout. For existing
+production data, pause the complete provider, update and restart every silo and Orleans client, and
+verify that no old process remains. If the persisted layout is version 3, the first schema rebuild
+adopts it to routing format 4 as its initial idempotent step. Its owner sweep then upgrades supported
+partition-persistence format 3 or 4 directly to format 5; a separate format-4 partition sweep is not
+required. Run every registered
+state's schema rebuild: the first establishes the provider-wide format-5 gate, while later states
+remain unavailable until their own generation is active.
+Keep traffic paused until every registered state reports `Active`. If movement is also being enabled,
+keep it paused through that gate as well and require both schema protocol 1 and movement protocol 1
+before resuming. Format-5 partitions reject schema-unbound or old-binary RPC traffic instead of
+mixing index generations.
 
 The sample state needs no PolyType-specific annotations. Orleans.SearchableStorage uses PolyType's runtime reflection provider internally; Native AOT and trimming are outside the supported deployment model.

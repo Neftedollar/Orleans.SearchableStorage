@@ -507,7 +507,7 @@ public sealed class StorageLayoutOrchestrationRecoveryTests
         return new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = MovementHarness.ProviderName,
             PartitionCount = 2,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
@@ -664,7 +664,7 @@ public sealed class StorageLayoutOrchestrationRecoveryTests
             return new StorageLayoutState
             {
                 Initialized = true,
-                FormatVersion = StorageLayout.CurrentFormatVersion,
+                FormatVersion = StorageLayout.MovementFormatVersion,
                 ProviderName = ProviderName,
                 PartitionCount = 2,
                 JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
@@ -823,6 +823,7 @@ public sealed class StorageLayoutOrchestrationRecoveryTests
         private readonly int _owner;
         private int _persistenceFormatVersion;
         private int _movementProtocolVersion;
+        private int _indexSchemaProtocolVersion;
         private bool _routedOperationsRequired;
         private long _minimumRoutingEpoch = 1;
         private long _nextVersion = 10;
@@ -851,7 +852,7 @@ public sealed class StorageLayoutOrchestrationRecoveryTests
 
         public void SeedProtocol(long minimumRoutingEpoch)
         {
-            _persistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion;
+            _persistenceFormatVersion = StoragePersistence.MovementPersistenceFormatVersion;
             _movementProtocolVersion = StorageLayout.CurrentMovementProtocolVersion;
             _routedOperationsRequired = true;
             _minimumRoutingEpoch = minimumRoutingEpoch;
@@ -871,7 +872,11 @@ public sealed class StorageLayoutOrchestrationRecoveryTests
                 ParticipantOperation.EnableProtocol,
                 () =>
                 {
-                    _persistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion;
+                    _indexSchemaProtocolVersion = request.IndexSchemaProtocolVersion;
+                    _persistenceFormatVersion = _indexSchemaProtocolVersion
+                        == StorageIndexSchema.ProtocolVersion
+                            ? StoragePersistence.CurrentPersistenceFormatVersion
+                            : StoragePersistence.MovementPersistenceFormatVersion;
                     _movementProtocolVersion = request.ProtocolVersion;
                     _routedOperationsRequired = true;
                     _minimumRoutingEpoch = request.MinimumRoutingEpoch;
@@ -1072,6 +1077,7 @@ public sealed class StorageLayoutOrchestrationRecoveryTests
                 MinimumRoutingEpoch = _minimumRoutingEpoch,
                 NextVersion = _nextVersion,
                 MoveControl = Control.Copy(),
+                IndexSchemaProtocolVersion = _indexSchemaProtocolVersion,
             };
         }
 

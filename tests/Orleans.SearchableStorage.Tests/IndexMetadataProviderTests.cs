@@ -223,6 +223,99 @@ public sealed class IndexMetadataProviderTests
             .WithMessage("*readable instance property*");
     }
 
+    [Fact]
+    public void ManagedSchemaIdentityIsDeterministicAndScopesAreGenerationBound()
+    {
+        var first = IndexMetadataProvider.GetSchemaDefinition<NullableNumberState>("state");
+        var second = IndexMetadataProvider.GetSchemaDefinition<NullableNumberState>("state");
+        var legacy = IndexMetadataProvider.Extract(
+            "state",
+            new NullableNumberState { Optional = 42 }).Single();
+        var managed = IndexMetadataProvider.Extract(
+            "state",
+            new NullableNumberState { Optional = 42 },
+            first.Fingerprint).Single();
+
+        first.SchemaKey.Should().Equal(second.SchemaKey);
+        first.Fingerprint.Should().Equal(second.Fingerprint);
+        first.Fingerprint.Should().HaveCount(IndexSchemaDefinition.FingerprintLength);
+        first.Indexes.Should().ContainSingle();
+        first.Indexes[0].CodecId.Should().Be(IndexKeyCodecId.SignedInteger);
+        managed.Scope.Should().StartWith(legacy.Scope);
+        managed.Scope.Should().NotBe(legacy.Scope);
+    }
+
+    [Fact]
+    public void ManagedSchemaIdentityCanonicalizesIndexModelOrder()
+    {
+        var model = IndexMetadataProvider.GetTypeModel<ReverseDeclaredSchemaState>();
+        var reversedModel = model with
+        {
+            Indexes = model.Indexes.Reverse().ToArray(),
+        };
+
+        var first = IndexSchemaIdentity.Create("state", applicationSchemaVersion: 1, model);
+        var reversed = IndexSchemaIdentity.Create(
+            "state",
+            applicationSchemaVersion: 1,
+            reversedModel);
+
+        first.Fingerprint.Should().Equal(reversed.Fingerprint);
+        first.Indexes.Select(static index => index.Name).Should().Equal("alpha", "zeta");
+        reversed.Indexes.Select(static index => index.Name).Should().Equal("alpha", "zeta");
+    }
+
+    [Fact]
+    public void ManagedIndexCodecIdentifiersAndVersionRemainFrozen()
+    {
+        Enum.GetValues<IndexKeyCodecId>().Should().Equal(
+            IndexKeyCodecId.String,
+            IndexKeyCodecId.SignedInteger,
+            IndexKeyCodecId.UnsignedInteger,
+            IndexKeyCodecId.Decimal,
+            IndexKeyCodecId.FloatingPoint,
+            IndexKeyCodecId.Timestamp,
+            IndexKeyCodecId.Guid,
+            IndexKeyCodecId.Boolean);
+        ((int)IndexKeyCodecId.String).Should().Be(1);
+        ((int)IndexKeyCodecId.SignedInteger).Should().Be(2);
+        ((int)IndexKeyCodecId.UnsignedInteger).Should().Be(3);
+        ((int)IndexKeyCodecId.Decimal).Should().Be(4);
+        ((int)IndexKeyCodecId.FloatingPoint).Should().Be(5);
+        ((int)IndexKeyCodecId.Timestamp).Should().Be(6);
+        ((int)IndexKeyCodecId.Guid).Should().Be(7);
+        ((int)IndexKeyCodecId.Boolean).Should().Be(8);
+        IndexValueConverter.CodecVersion.Should().Be(1);
+    }
+
+    [Fact]
+    public void SchemaFingerprintChangesWithStateNameTypeAndIndexDeclaration()
+    {
+        var baseline = IndexMetadataProvider.GetSchemaDefinition<NullableNumberState>("state");
+        var renamedState = IndexMetadataProvider.GetSchemaDefinition<NullableNumberState>("other");
+        var differentType = IndexMetadataProvider.GetSchemaDefinition<AlternateNumberState>("state");
+        var differentKind = IndexMetadataProvider.GetSchemaDefinition<HashNumberState>("state");
+
+        baseline.Fingerprint.Should().NotEqual(renamedState.Fingerprint);
+        baseline.Fingerprint.Should().NotEqual(differentType.Fingerprint);
+        baseline.Fingerprint.Should().NotEqual(differentKind.Fingerprint);
+    }
+
+    [Fact]
+    public void RegistryRejectsTwoClrTypesForOneProviderStatePair()
+    {
+        var registrations = new ISearchableStateRegistration[]
+        {
+            new SearchableStateRegistration<NullableNumberState>("provider", "state"),
+            new SearchableStateRegistration<HashNumberState>("provider", "state"),
+        };
+
+        var action = () => new SearchableStateRegistry(registrations, options: null);
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*registered*more than once*");
+    }
+
     private sealed class DelimiterState
     {
         [SearchableIndex(SearchableIndexKind.Hash, Name = "b\u001fc")]
@@ -247,6 +340,27 @@ public sealed class IndexMetadataProviderTests
     private sealed class NullableNumberState
     {
         [SearchableIndex(SearchableIndexKind.Range)]
+        public int? Optional { get; init; }
+    }
+
+    private sealed class ReverseDeclaredSchemaState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash, Name = "zeta")]
+        public string First { get; init; } = string.Empty;
+
+        [SearchableIndex(SearchableIndexKind.Range, Name = "alpha")]
+        public int Second { get; init; }
+    }
+
+    private sealed class AlternateNumberState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public int? Optional { get; init; }
+    }
+
+    private sealed class HashNumberState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
         public int? Optional { get; init; }
     }
 

@@ -7,12 +7,40 @@ namespace Orleans.SearchableStorage.Storage;
 /// </summary>
 internal static class StoragePersistence
 {
-    public const int CurrentPersistenceFormatVersion = 4;
-    public const int PreviousPersistenceFormatVersion = 3;
+    public const int LegacyPersistenceFormatVersion = 3;
+    public const int MovementPersistenceFormatVersion = 4;
+    public const int CurrentPersistenceFormatVersion = 5;
+
+    // Kept as an explicit alias because the version-3 format is still the format used by a
+    // newly-created partition until an operator enables a newer capability.
+    public const int PreviousPersistenceFormatVersion = LegacyPersistenceFormatVersion;
     public const int DefaultJournalSegmentCapacity = 64;
     public const int DefaultMaximumJournalReplayEntries = 4_096;
     public const int DefaultCompactionThreshold = 1_024;
     public const int SnapshotSlotCount = 2;
+
+    public static bool IsSupportedFormat(int formatVersion)
+    {
+        return formatVersion is LegacyPersistenceFormatVersion
+            or MovementPersistenceFormatVersion
+            or CurrentPersistenceFormatVersion;
+    }
+
+    public static bool SupportsMovement(int formatVersion)
+    {
+        return formatVersion is MovementPersistenceFormatVersion
+            or CurrentPersistenceFormatVersion;
+    }
+
+    public static bool SupportsIndexSchemas(int formatVersion)
+    {
+        return formatVersion == CurrentPersistenceFormatVersion;
+    }
+
+    public static bool UsesLosslessSnapshots(int formatVersion)
+    {
+        return SupportsMovement(formatVersion);
+    }
 
     public static int GetJournalSlotCount(int maxReplayEntries, int segmentCapacity)
     {

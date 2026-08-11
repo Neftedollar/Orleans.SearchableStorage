@@ -188,7 +188,7 @@ public sealed class SearchableStorageAdminMovementCancellationTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = ControlledLayoutGrain.ProviderName,
             PartitionCount = 2,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
