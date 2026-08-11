@@ -20,6 +20,18 @@ internal static class QueryTranslator
         return plan;
     }
 
+    public static QueryPlan TranslateFacet<TState>(string stateName, Expression expression)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        ArgumentNullException.ThrowIfNull(expression);
+
+        var budget = new TranslationBudget();
+        var plan = TranslateQueryExpression<TState>(stateName, expression, budget, depth: 1)
+            ?? AllQueryPlan.Instance;
+        QueryPlanValidator.Validate(plan);
+        return plan;
+    }
+
     private static QueryPlan? TranslateQueryExpression<TState>(
         string stateName,
         Expression expression,

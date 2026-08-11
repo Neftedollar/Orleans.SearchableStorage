@@ -301,6 +301,67 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             layoutFingerprint);
     }
 
+    public async Task<PartitionDistinctFacetPageResult> QueryDistinctFacetPageRoutedAsync(
+        RoutedPartitionDistinctFacetPageRequest request)
+    {
+        EnsureUsable();
+        ValidateDistinctFacetPageRequest(request);
+        var requestFingerprint = ValidateFacetFingerprint(request.StateName, request.Query, request.FacetScope, request.FacetKind, request.RequestFingerprint, request);
+        var snapshot = await ValidateQueryRouteAsync(request.Epoch);
+        ValidateFacetLayout(request.LayoutFormatVersion, request.LayoutFingerprint, snapshot, request);
+        var layoutFingerprint = StorageLayoutFingerprint.Compute(snapshot);
+        var dataVersion = ValidateFacetDataVersion(request.HasExpectedDataVersion, request.ExpectedDataVersion);
+        var result = StoragePartitionFacetEvaluator.EvaluateDistinctPageValidated(
+            request,
+            _view,
+            snapshot,
+            requestFingerprint,
+            layoutFingerprint);
+        result.DataVersion = dataVersion;
+        return result;
+    }
+
+    public async Task<PartitionFacetCandidatePageResult> QueryFacetCandidatesRoutedAsync(
+        RoutedPartitionFacetCandidatePageRequest request)
+    {
+        EnsureUsable();
+        ValidateFacetCandidatePageRequest(request);
+        var requestFingerprint = ValidateFacetFingerprint(request.StateName, request.Query, request.FacetScope, request.FacetKind, request.RequestFingerprint, request);
+        var snapshot = await ValidateQueryRouteAsync(request.Epoch);
+        ValidateFacetLayout(request.LayoutFormatVersion, request.LayoutFingerprint, snapshot, request);
+        var layoutFingerprint = StorageLayoutFingerprint.Compute(snapshot);
+        var dataVersion = ValidateFacetDataVersion(request.HasExpectedDataVersion, request.ExpectedDataVersion);
+        var result = StoragePartitionFacetEvaluator.EvaluateCandidatePageValidated(
+            request,
+            _view,
+            snapshot,
+            requestFingerprint,
+            layoutFingerprint);
+        result.DataVersion = dataVersion;
+        return result;
+    }
+
+    public async Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
+        RoutedPartitionFacetCountSliceRequest request)
+    {
+        EnsureUsable();
+        ValidateFacetCountSliceRequest(request);
+        var requestFingerprint = ValidateFacetFingerprint(request.StateName, request.Query, request.FacetScope, request.FacetKind, request.RequestFingerprint, request);
+        var snapshot = await ValidateQueryRouteAsync(request.Epoch);
+        ValidateFacetLayout(request.LayoutFormatVersion, request.LayoutFingerprint, snapshot, request);
+        var layoutFingerprint = StorageLayoutFingerprint.Compute(snapshot);
+        var dataVersion = ValidateFacetDataVersion(request.HasExpectedDataVersion, request.ExpectedDataVersion);
+        var result = StoragePartitionFacetEvaluator.EvaluateCountSliceValidated(
+            request,
+            _view,
+            snapshot,
+            _partitionIndex,
+            requestFingerprint,
+            layoutFingerprint);
+        result.DataVersion = dataVersion;
+        return result;
+    }
+
     public async Task CompactAsync()
     {
         EnsureUsable();
@@ -467,6 +528,268 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 request.ByteLimit,
                 $"A partition byte limit must be between 1 and {SearchableStorageQueryOptions.MaximumPartitionResponseBytes}.");
         }
+    }
+
+    private static void ValidateDistinctFacetPageRequest(
+        RoutedPartitionDistinctFacetPageRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ValidateFacetRequestCommon(
+            request.Query,
+            request.StateName,
+            request.FacetScope,
+            request.FacetKind,
+            request.RequestFingerprint,
+            request.LayoutFingerprint,
+            request.ProtocolVersion,
+            request.OrderingVersion,
+            request.WorkPolicyVersion,
+            request.LayoutFormatVersion,
+            request.WorkBudget,
+            request.ByteLimit,
+            request);
+        if (request.ResponseFamily != PartitionQueryResponseFamily.DistinctFacetValuePage)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request), request.ResponseFamily, "Unknown distinct facet response family.");
+        }
+
+        ValidateFacetItemLimit(request.ItemLimit, request);
+        ValidateFacetIndexValue(request.After, request);
+        ValidateExpectedDataVersion(
+            request.HasExpectedDataVersion,
+            request.ExpectedDataVersion,
+            request);
+    }
+
+    private static void ValidateFacetCandidatePageRequest(
+        RoutedPartitionFacetCandidatePageRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ValidateFacetRequestCommon(
+            request.Query,
+            request.StateName,
+            request.FacetScope,
+            request.FacetKind,
+            request.RequestFingerprint,
+            request.LayoutFingerprint,
+            request.ProtocolVersion,
+            request.OrderingVersion,
+            request.WorkPolicyVersion,
+            request.LayoutFormatVersion,
+            request.WorkBudget,
+            request.ByteLimit,
+            request);
+        if (request.ResponseFamily != PartitionQueryResponseFamily.FacetValueCountCandidates)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request), request.ResponseFamily, "Unknown facet candidate response family.");
+        }
+
+        ValidateFacetItemLimit(request.ItemLimit, request);
+        ValidateFacetIndexValue(request.AfterValue, request);
+        if (request.AfterValue is not null && !request.HasExpectedDataVersion)
+        {
+            throw new ArgumentException(
+                "A resumed facet candidate page must be pinned to an expected data version.",
+                nameof(request));
+        }
+
+        ValidateExpectedDataVersion(
+            request.HasExpectedDataVersion,
+            request.ExpectedDataVersion,
+            request);
+    }
+
+    private static void ValidateFacetCountSliceRequest(
+        RoutedPartitionFacetCountSliceRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Value);
+        ValidateFacetRequestCommon(
+            request.Query,
+            request.StateName,
+            request.FacetScope,
+            request.FacetKind,
+            request.RequestFingerprint,
+            request.LayoutFingerprint,
+            request.ProtocolVersion,
+            request.OrderingVersion,
+            request.WorkPolicyVersion,
+            request.LayoutFormatVersion,
+            request.WorkBudget,
+            byteLimit: 1,
+            request);
+        if (request.ResponseFamily != PartitionQueryResponseFamily.FacetValueCountProbe)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request), request.ResponseFamily, "Unknown facet count-slice response family.");
+        }
+
+        if (!request.HasExpectedDataVersion)
+        {
+            throw new ArgumentException(
+                "A facet count slice must be pinned to an expected data version.",
+                nameof(request));
+        }
+
+        if (request.HasAfter == request.After.IsDefault)
+        {
+            throw new ArgumentException(
+                "HasAfter must be true exactly when a GrainId frontier is supplied.",
+                nameof(request));
+        }
+
+        if (request.HasAfter)
+        {
+            GrainIdCanonicalOrder.Validate(request.After, nameof(request));
+        }
+
+        ValidateFacetIndexValue(request.Value, request);
+
+        ValidateExpectedDataVersion(
+            request.HasExpectedDataVersion,
+            request.ExpectedDataVersion,
+            request);
+    }
+
+    private static void ValidateFacetItemLimit(int itemLimit, object request)
+    {
+        if (itemLimit <= 0
+            || itemLimit > SearchableStorageQueryOptions.MaximumPartitionResponseItems)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), itemLimit, "Invalid facet item limit.");
+        }
+    }
+
+    internal static void ValidateFacetIndexValue(IndexValue? value, object request)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        try
+        {
+            IndexValueCanonicalEncoding.Validate(value, nameof(value));
+            _ = IndexValueCanonicalEncoding.GetEncodedLength(value);
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or CanonicalEncodingLimitExceededException
+            or InvalidOperationException
+            or OverflowException)
+        {
+            throw new ArgumentException(
+                "The facet request contains an invalid canonical index value.",
+                nameof(request));
+        }
+    }
+
+    private static void ValidateExpectedDataVersion(
+        bool hasExpected,
+        long expected,
+        object request)
+    {
+        if (expected < 0 || (!hasExpected && expected != 0))
+        {
+            throw new ArgumentException("The expected facet data version is invalid.", nameof(request));
+        }
+    }
+
+    private static void ValidateFacetRequestCommon(
+        PartitionQueryPlan query,
+        string stateName,
+        string facetScope,
+        SearchableIndexKind facetKind,
+        byte[] requestFingerprint,
+        byte[] layoutFingerprint,
+        int protocolVersion,
+        int orderingVersion,
+        int workPolicyVersion,
+        int layoutFormatVersion,
+        long workBudget,
+        int byteLimit,
+        object request)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(facetScope);
+        ArgumentNullException.ThrowIfNull(requestFingerprint);
+        ArgumentNullException.ThrowIfNull(layoutFingerprint);
+        QueryPlanValidator.Validate(query);
+        if (facetKind is not SearchableIndexKind.Hash and not SearchableIndexKind.Range)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), facetKind, "Unknown facet index kind.");
+        }
+
+        if (requestFingerprint.Length != 32 || layoutFingerprint.Length != 32)
+        {
+            throw new ArgumentException("Facet fingerprints must contain exactly 32 bytes.", nameof(request));
+        }
+
+        if (protocolVersion != QueryProtocol.PagingVersion
+            || orderingVersion != QueryProtocol.FacetValueOrderingVersion
+            || workPolicyVersion != QueryProtocol.FacetWorkPolicyVersion
+            || layoutFormatVersion != StorageLayout.CurrentFormatVersion)
+        {
+            throw new ArgumentException("Facet request protocol metadata is incompatible.", nameof(request));
+        }
+
+        if (workBudget <= 0 || workBudget > SearchableStorageQueryOptions.MaximumPartitionWorkBudget)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), workBudget, "Invalid facet work budget.");
+        }
+
+        if (byteLimit <= 0 || byteLimit > SearchableStorageQueryOptions.MaximumPartitionResponseBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), byteLimit, "Invalid facet byte limit.");
+        }
+    }
+
+    private static void ValidateFacetLayout(
+        int requestedFormatVersion,
+        byte[] requestedFingerprint,
+        StorageLayoutSnapshot snapshot,
+        object request)
+    {
+        var actual = StorageLayoutFingerprint.Compute(snapshot);
+        if (requestedFormatVersion != snapshot.FormatVersion
+            || !StorageLayoutFingerprint.Equals(actual, requestedFingerprint))
+        {
+            throw new ArgumentException(
+                "The partition facet layout binding does not match authoritative routing.",
+                nameof(request));
+        }
+    }
+
+    private static byte[] ValidateFacetFingerprint(
+        string stateName,
+        PartitionQueryPlan query,
+        string facetScope,
+        SearchableIndexKind facetKind,
+        byte[] supplied,
+        object request)
+    {
+        var computed = FacetQueryFingerprint.Compute(stateName, query, facetScope, facetKind);
+        if (!QueryPlanFingerprint.Equals(computed, supplied))
+        {
+            throw new ArgumentException(
+                "The partition facet fingerprint does not match its query and selected index.",
+                nameof(request));
+        }
+
+        return computed;
+    }
+
+    private long ValidateFacetDataVersion(bool hasExpected, long expected)
+    {
+        var current = Persistence.CommittedSequence;
+        if (hasExpected && current != expected)
+        {
+            throw new StorageFacetDataChangedException(expected, current);
+        }
+
+        return current;
     }
 
     private async Task CommitAsync(StorageJournalEntry entry)

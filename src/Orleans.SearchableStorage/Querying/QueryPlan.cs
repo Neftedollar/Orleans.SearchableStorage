@@ -4,6 +4,11 @@ namespace Orleans.SearchableStorage.Querying;
 
 internal abstract record QueryPlan;
 
+internal sealed record AllQueryPlan : QueryPlan
+{
+    public static AllQueryPlan Instance { get; } = new();
+}
+
 internal sealed record EmptyQueryPlan : QueryPlan
 {
     public static EmptyQueryPlan Instance { get; } = new();

@@ -113,7 +113,7 @@ public sealed class SearchableStorageQueryOptions
     public const int DefaultContinuationTokenBytes = 2_048;
 
     /// <summary>The hard encoded continuation-token length ceiling.</summary>
-    public const int MaximumContinuationTokenBytes = 16 * 1_024;
+    public const int MaximumContinuationTokenBytes = 32 * 1_024;
 
     /// <summary>The default aggregate logical-work ceiling for an all-results compatibility query.</summary>
     public const long DefaultLegacyAggregateWork = 4_194_304;
@@ -138,6 +138,36 @@ public sealed class SearchableStorageQueryOptions
 
     /// <summary>The hard round ceiling for an all-results compatibility query.</summary>
     public const int MaximumLegacyRounds = 1_024;
+
+    /// <summary>The default maximum top-N facet size.</summary>
+    public const int DefaultFacetTopN = 128;
+
+    /// <summary>The hard maximum top-N facet size.</summary>
+    public const int MaximumFacetTopN = 1_024;
+
+    /// <summary>The default aggregate logical-work ceiling for one terminal facet.</summary>
+    public const long DefaultFacetAggregateWork = 4_194_304;
+
+    /// <summary>The hard aggregate logical-work ceiling for one terminal facet.</summary>
+    public const long MaximumFacetAggregateWork = 67_108_864;
+
+    /// <summary>The default candidate/probe turn ceiling for one terminal facet.</summary>
+    public const int DefaultFacetRounds = 2_048;
+
+    /// <summary>The hard candidate/probe turn ceiling for one terminal facet.</summary>
+    public const int MaximumFacetRounds = 32_768;
+
+    /// <summary>The default aggregate candidate-item ceiling for one terminal facet.</summary>
+    public const int DefaultFacetAggregateItems = 8_192;
+
+    /// <summary>The hard aggregate candidate-item ceiling for one terminal facet.</summary>
+    public const int MaximumFacetAggregateItems = 65_536;
+
+    /// <summary>The default aggregate encoded candidate-byte ceiling for one terminal facet.</summary>
+    public const int DefaultFacetAggregateBytes = 8 * 1_024 * 1_024;
+
+    /// <summary>The hard aggregate encoded candidate-byte ceiling for one terminal facet.</summary>
+    public const int MaximumFacetAggregateBytes = 64 * 1_024 * 1_024;
 
     /// <summary>Gets or sets the provider's accepted public page-size ceiling.</summary>
     public int PageSizeLimit { get; set; } = MaximumPageSize;
@@ -174,6 +204,21 @@ public sealed class SearchableStorageQueryOptions
 
     /// <summary>Gets or sets the round ceiling for an all-results compatibility query.</summary>
     public int LegacyRoundLimit { get; set; } = DefaultLegacyRounds;
+
+    /// <summary>Gets or sets the maximum accepted top-N value-count request.</summary>
+    public int FacetTopNLimit { get; set; } = DefaultFacetTopN;
+
+    /// <summary>Gets or sets the aggregate logical-work ceiling for one terminal facet.</summary>
+    public long FacetAggregateWorkLimit { get; set; } = DefaultFacetAggregateWork;
+
+    /// <summary>Gets or sets the candidate/probe turn ceiling for one terminal facet.</summary>
+    public int FacetRoundLimit { get; set; } = DefaultFacetRounds;
+
+    /// <summary>Gets or sets the aggregate candidate-item ceiling for one terminal facet.</summary>
+    public int FacetAggregateItemLimit { get; set; } = DefaultFacetAggregateItems;
+
+    /// <summary>Gets or sets the aggregate encoded candidate-byte ceiling for one terminal facet.</summary>
+    public int FacetAggregateByteLimit { get; set; } = DefaultFacetAggregateBytes;
 
     /// <summary>Gets the provider-scoped continuation-protection key ring.</summary>
     public SearchableStorageContinuationProtectionOptions ContinuationProtection { get; } = new();

@@ -64,6 +64,11 @@ internal sealed class SearchableStorageQueryConfiguration
         LegacyResultItemLimit = options.LegacyResultItemLimit;
         LegacyResultByteLimit = options.LegacyResultByteLimit;
         LegacyRoundLimit = options.LegacyRoundLimit;
+        FacetTopNLimit = options.FacetTopNLimit;
+        FacetAggregateWorkLimit = options.FacetAggregateWorkLimit;
+        FacetRoundLimit = options.FacetRoundLimit;
+        FacetAggregateItemLimit = options.FacetAggregateItemLimit;
+        FacetAggregateByteLimit = options.FacetAggregateByteLimit;
 
         var protection = options.ContinuationProtection;
         CurrentKey = protection.CurrentKey is null
@@ -98,6 +103,16 @@ internal sealed class SearchableStorageQueryConfiguration
     public int LegacyResultByteLimit { get; }
 
     public int LegacyRoundLimit { get; }
+
+    public int FacetTopNLimit { get; }
+
+    public long FacetAggregateWorkLimit { get; }
+
+    public int FacetRoundLimit { get; }
+
+    public int FacetAggregateItemLimit { get; }
+
+    public int FacetAggregateByteLimit { get; }
 
     public ContinuationProtectionKey? CurrentKey { get; }
 
@@ -224,6 +239,31 @@ internal sealed class SearchableStorageQueryOptionsValidator
             nameof(options.LegacyRoundLimit),
             options.LegacyRoundLimit,
             SearchableStorageQueryOptions.MaximumLegacyRounds);
+        AddRangeFailure(
+            failures,
+            nameof(options.FacetTopNLimit),
+            options.FacetTopNLimit,
+            SearchableStorageQueryOptions.MaximumFacetTopN);
+        AddRangeFailure(
+            failures,
+            nameof(options.FacetAggregateWorkLimit),
+            options.FacetAggregateWorkLimit,
+            SearchableStorageQueryOptions.MaximumFacetAggregateWork);
+        AddRangeFailure(
+            failures,
+            nameof(options.FacetRoundLimit),
+            options.FacetRoundLimit,
+            SearchableStorageQueryOptions.MaximumFacetRounds);
+        AddRangeFailure(
+            failures,
+            nameof(options.FacetAggregateItemLimit),
+            options.FacetAggregateItemLimit,
+            SearchableStorageQueryOptions.MaximumFacetAggregateItems);
+        AddRangeFailure(
+            failures,
+            nameof(options.FacetAggregateByteLimit),
+            options.FacetAggregateByteLimit,
+            SearchableStorageQueryOptions.MaximumFacetAggregateBytes);
 
         if (options.PageByteLimit > options.CoordinatorBufferedByteLimit)
         {

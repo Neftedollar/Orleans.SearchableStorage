@@ -24,6 +24,11 @@ public sealed class SearchableStorageQueryOptionsTests
         options.LegacyResultItemLimit.Should().Be(SearchableStorageQueryOptions.DefaultLegacyResultItems);
         options.LegacyResultByteLimit.Should().Be(SearchableStorageQueryOptions.DefaultLegacyResultBytes);
         options.LegacyRoundLimit.Should().Be(SearchableStorageQueryOptions.DefaultLegacyRounds);
+        options.FacetTopNLimit.Should().Be(SearchableStorageQueryOptions.DefaultFacetTopN);
+        options.FacetAggregateWorkLimit.Should().Be(SearchableStorageQueryOptions.DefaultFacetAggregateWork);
+        options.FacetRoundLimit.Should().Be(SearchableStorageQueryOptions.DefaultFacetRounds);
+        options.FacetAggregateItemLimit.Should().Be(SearchableStorageQueryOptions.DefaultFacetAggregateItems);
+        options.FacetAggregateByteLimit.Should().Be(SearchableStorageQueryOptions.DefaultFacetAggregateBytes);
         SearchableStorageQueryOptions.DefaultLegacyResultItems.Should().Be(
             SearchableStorageQueryOptions.DefaultPageSize
             * SearchableStorageQueryOptions.DefaultLegacyRounds);
@@ -61,6 +66,11 @@ public sealed class SearchableStorageQueryOptionsTests
         var options = new SearchableStorageQueryOptions
         {
             PartitionWorkBudget = 1234,
+            FacetTopNLimit = 17,
+            FacetAggregateWorkLimit = 18,
+            FacetRoundLimit = 19,
+            FacetAggregateItemLimit = 20,
+            FacetAggregateByteLimit = 21,
         };
         options.ContinuationProtection.CurrentKey = new SearchableStorageContinuationKey(
             "current",
@@ -73,12 +83,22 @@ public sealed class SearchableStorageQueryOptionsTests
         var snapshot = SearchableStorageQueryConfiguration.Create(options);
 
         options.PartitionWorkBudget = 4321;
+        options.FacetTopNLimit = 27;
+        options.FacetAggregateWorkLimit = 28;
+        options.FacetRoundLimit = 29;
+        options.FacetAggregateItemLimit = 30;
+        options.FacetAggregateByteLimit = 31;
         options.ContinuationProtection.CurrentKey = new SearchableStorageContinuationKey(
             "replacement",
             new byte[32]);
         options.ContinuationProtection.DecryptionKeys.Clear();
 
         snapshot.PartitionWorkBudget.Should().Be(1234);
+        snapshot.FacetTopNLimit.Should().Be(17);
+        snapshot.FacetAggregateWorkLimit.Should().Be(18);
+        snapshot.FacetRoundLimit.Should().Be(19);
+        snapshot.FacetAggregateItemLimit.Should().Be(20);
+        snapshot.FacetAggregateByteLimit.Should().Be(21);
         snapshot.CurrentKey!.KeyId.Should().Be("current");
         snapshot.CurrentKey.CopyKeyMaterial().Should().Equal(expectedCurrent);
         snapshot.DecryptionKeys.Should().ContainSingle()
@@ -120,6 +140,45 @@ public sealed class SearchableStorageQueryOptionsTests
 
         capture.Should().Throw<SearchableStorageQueryConfigurationException>()
             .WithMessage("*PageSizeLimit*");
+    }
+
+    [Fact]
+    public void ConfigurationRejectsEveryFacetLimitOutsideItsHardBoundary()
+    {
+        var invalid = new (string Name, Action<SearchableStorageQueryOptions> Set)[]
+        {
+            (nameof(SearchableStorageQueryOptions.FacetTopNLimit),
+                options => options.FacetTopNLimit = 0),
+            (nameof(SearchableStorageQueryOptions.FacetTopNLimit),
+                options => options.FacetTopNLimit = SearchableStorageQueryOptions.MaximumFacetTopN + 1),
+            (nameof(SearchableStorageQueryOptions.FacetAggregateWorkLimit),
+                options => options.FacetAggregateWorkLimit = 0),
+            (nameof(SearchableStorageQueryOptions.FacetAggregateWorkLimit),
+                options => options.FacetAggregateWorkLimit = SearchableStorageQueryOptions.MaximumFacetAggregateWork + 1),
+            (nameof(SearchableStorageQueryOptions.FacetRoundLimit),
+                options => options.FacetRoundLimit = 0),
+            (nameof(SearchableStorageQueryOptions.FacetRoundLimit),
+                options => options.FacetRoundLimit = SearchableStorageQueryOptions.MaximumFacetRounds + 1),
+            (nameof(SearchableStorageQueryOptions.FacetAggregateItemLimit),
+                options => options.FacetAggregateItemLimit = 0),
+            (nameof(SearchableStorageQueryOptions.FacetAggregateItemLimit),
+                options => options.FacetAggregateItemLimit = SearchableStorageQueryOptions.MaximumFacetAggregateItems + 1),
+            (nameof(SearchableStorageQueryOptions.FacetAggregateByteLimit),
+                options => options.FacetAggregateByteLimit = 0),
+            (nameof(SearchableStorageQueryOptions.FacetAggregateByteLimit),
+                options => options.FacetAggregateByteLimit = SearchableStorageQueryOptions.MaximumFacetAggregateBytes + 1),
+        };
+
+        foreach (var (name, set) in invalid)
+        {
+            var options = new SearchableStorageQueryOptions();
+            set(options);
+
+            Action capture = () => _ = SearchableStorageQueryConfiguration.Create(options);
+
+            capture.Should().Throw<SearchableStorageQueryConfigurationException>()
+                .WithMessage($"*{name}*");
+        }
     }
 
     [Fact]
@@ -277,6 +336,15 @@ public sealed class SearchableStorageQueryOptionsTests
                 LayoutFingerprint = [.. request.LayoutFingerprint],
             });
         }
+
+        public Task<PartitionDistinctFacetPageResult> QueryDistinctFacetPageRoutedAsync(
+            RoutedPartitionDistinctFacetPageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCandidatePageResult> QueryFacetCandidatesRoutedAsync(
+            RoutedPartitionFacetCandidatePageRequest request) => throw new NotSupportedException();
+
+        public Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
+            RoutedPartitionFacetCountSliceRequest request) => throw new NotSupportedException();
 
         public Task<StorageReadResult> ReadAsync(string recordKey) => throw new NotSupportedException();
 

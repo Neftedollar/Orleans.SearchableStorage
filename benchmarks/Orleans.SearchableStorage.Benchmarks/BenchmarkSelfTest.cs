@@ -25,6 +25,7 @@ internal static class BenchmarkSelfTest
         ValidateIndexMutation();
         ValidateRangeQuery();
         ValidateQueryPlanning();
+        ValidateFacetEvaluation();
         ValidateQuerySerialization();
         ValidateJournalSerialization();
         ValidateJournalAppend();
@@ -38,6 +39,8 @@ internal static class BenchmarkSelfTest
         string[] expectedBenchmarks =
         [
             $"{prefix}ExactRangeLookupBenchmarks.ExactRangeValueLookup",
+            $"{prefix}FacetPartitionBenchmarks.EvaluateCandidateMetadataPage",
+            $"{prefix}FacetPartitionBenchmarks.EvaluateResumableFilteredCount",
             $"{prefix}DerivedIndexBuildBenchmarks.BuildDerivedIndexes",
             $"{prefix}IndexMutationBenchmarks.DeleteAndRestoreIndexedRecord",
             $"{prefix}IndexMutationBenchmarks.ReplaceIndexedRecord",
@@ -70,6 +73,10 @@ internal static class BenchmarkSelfTest
         var expectedParameters = new Dictionary<string, int[]>(StringComparer.Ordinal)
         {
             [$"{prefix}ExactRangeLookupBenchmarks.BucketCount"] = [4_096, 65_536],
+            [$"{prefix}FacetPartitionBenchmarks.RecordCount"] = [4_096, 65_536],
+            [$"{prefix}FacetPartitionBenchmarks.Cardinality"] = [0, 1],
+            [$"{prefix}FacetPartitionBenchmarks.Distribution"] = [0, 1],
+            [$"{prefix}FacetPartitionBenchmarks.Predicate"] = [0, 1],
             [$"{prefix}DerivedIndexBuildBenchmarks.RecordCount"] = [4_096, 65_536],
             [$"{prefix}DerivedIndexBuildBenchmarks.Representation"] = [0, 1],
             [$"{prefix}DerivedIndexBuildBenchmarks.Distribution"] = [0, 1],
@@ -269,6 +276,51 @@ internal static class BenchmarkSelfTest
         {
             benchmark.GlobalCleanup();
         }
+    }
+
+    private static void ValidateFacetEvaluation()
+    {
+        foreach (var cardinality in Enum.GetValues<FacetValueCardinality>())
+        {
+            foreach (var distribution in Enum.GetValues<FacetValueDistribution>())
+            {
+                foreach (var predicate in Enum.GetValues<FacetPredicate>())
+                {
+                    var benchmark = new FacetPartitionBenchmarks
+                    {
+                        RecordCount = 4_096,
+                        Cardinality = cardinality,
+                        Distribution = distribution,
+                        Predicate = predicate,
+                    };
+                    benchmark.GlobalSetup();
+                    benchmark.ValidateFixture();
+                    Ensure(
+                        benchmark.EvaluateCandidateMetadataPage() > 0,
+                        $"facet candidate page ({cardinality}/{distribution}/{predicate})");
+                    Ensure(
+                        benchmark.EvaluateResumableFilteredCount() > 0,
+                        $"resumable facet count ({cardinality}/{distribution}/{predicate})");
+                }
+            }
+        }
+
+        var exactVector = new FacetPartitionBenchmarks
+        {
+            RecordCount = 4_096,
+            Cardinality = FacetValueCardinality.Low8,
+            Distribution = FacetValueDistribution.Uniform,
+            Predicate = FacetPredicate.SelectiveRange,
+        };
+        exactVector.GlobalSetup();
+        Ensure(
+            exactVector.Diagnostics.CandidateWork
+                == new FacetBenchmarkWorkVector(1, 8, 0, 0, 0, 0, 0, 0, 8)
+            && exactVector.Diagnostics.CountWork
+                == new FacetBenchmarkWorkVector(32, 0, 512, 512, 512, 512, 1_024, 256, 0)
+            && exactVector.Diagnostics.ExactCount == 256
+            && exactVector.Diagnostics.CountRounds == 32,
+            "exact facet candidate/count work-vector oracle");
     }
 
     private static void ValidateJournalSerialization()

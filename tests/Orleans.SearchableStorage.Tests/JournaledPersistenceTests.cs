@@ -20,6 +20,76 @@ public abstract class JournaledPersistenceContractTests<TFixture>
     }
 
     [SkippableFact]
+    public async Task FacetsRebuildFromDurableRecordsAfterPartitionReactivation()
+    {
+        var providerName = CreateProviderName();
+        var storage = CreateStorage(
+            providerName,
+            segmentCapacity: 4,
+            maximumReplayEntries: 16,
+            compactionThreshold: 16);
+        var firstId = CreateGrainId();
+        var secondId = CreateGrainId();
+        var thirdId = CreateGrainId();
+        await storage.WriteStateAsync(
+            VacancyGrain.StateName,
+            firstId,
+            CreateState("alpha", 5));
+        await storage.WriteStateAsync(
+            VacancyGrain.StateName,
+            secondId,
+            CreateState("alpha", 20));
+        await storage.WriteStateAsync(
+            VacancyGrain.StateName,
+            thirdId,
+            CreateState("beta", 10));
+        var partition = GetPartition(providerName);
+        await Fixture.Cluster.DeactivateAsync(partition);
+        var journal = GetJournalSegment(
+            providerName,
+            absoluteSegmentIndex: 0,
+            segmentCapacity: 4,
+            maximumReplayEntries: 16);
+        var snapshot0 = GetSnapshot(providerName, slot: 0);
+        var snapshot1 = GetSnapshot(providerName, slot: 1);
+        var writesBefore = new[]
+        {
+            await GetWriteCallCountAsync(partition.GetGrainId(), "manifest"),
+            await GetWriteCallCountAsync(journal.GetGrainId(), "journal"),
+            await GetWriteCallCountAsync(snapshot0.GetGrainId(), "snapshot"),
+            await GetWriteCallCountAsync(snapshot1.GetGrainId(), "snapshot"),
+        };
+        var query = CreateClient(providerName).Query<VacancyState>(VacancyGrain.StateName);
+
+        var distinct = await query.ToDistinctFacetValuePageAsync(
+            state => state.City,
+            new SearchableStorageFacetPageRequest(10));
+        var counts = await query.ToFacetValueCountsAsync(
+            state => state.City,
+            new SearchableStorageFacetRequest(2, SearchableStorageFacetAccuracy.Exact));
+        var minMax = await query.ToFacetMinMaxAsync(state => state.Salary);
+
+        distinct.Items.Should().Equal("alpha", "beta");
+        distinct.ContinuationToken.Should().BeNull();
+        counts.Items.Select(static item => (item.Value, item.Count)).Should().Equal(
+            ("alpha", 2L),
+            ("beta", 1L));
+        minMax.Should().NotBeNull();
+        minMax!.Minimum.Should().Be(5);
+        minMax.Maximum.Should().Be(20);
+        var writesAfter = new[]
+        {
+            await GetWriteCallCountAsync(partition.GetGrainId(), "manifest"),
+            await GetWriteCallCountAsync(journal.GetGrainId(), "journal"),
+            await GetWriteCallCountAsync(snapshot0.GetGrainId(), "snapshot"),
+            await GetWriteCallCountAsync(snapshot1.GetGrainId(), "snapshot"),
+        };
+        writesAfter.Should().Equal(
+            writesBefore,
+            "facet reads and activation-derived ordered-view rebuilds must not write durable state");
+    }
+
+    [SkippableFact]
     public async Task CommittedJournalReplaysRecordsClearsAndIndexesAfterReactivation()
     {
         var providerName = CreateProviderName();
@@ -1043,7 +1113,15 @@ public abstract class JournaledPersistenceContractTests<TFixture>
 
     private SearchableStorageClient CreateClient(string providerName)
     {
-        return new SearchableStorageClient(Fixture.Cluster.GrainFactory, providerName, partitionCount: 1);
+        var options = new SearchableStorageQueryOptions();
+        options.ContinuationProtection.CurrentKey = new SearchableStorageContinuationKey(
+            "journal-facet-tests",
+            new byte[32]);
+        return new SearchableStorageClient(
+            Fixture.Cluster.GrainFactory,
+            providerName,
+            partitionCount: 1,
+            options);
     }
 
     private IStoragePartitionGrain GetPartition(string providerName)

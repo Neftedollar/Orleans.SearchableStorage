@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AwesomeAssertions;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
@@ -31,6 +32,89 @@ public sealed class QueryApiContractTests
         results.Should().BeEmpty();
         provider.Expression.Should().BeSameAs(query.Expression);
         provider.CancellationToken.Should().Be(cancellation.Token);
+    }
+
+    [Fact]
+    public async Task ExistingExternalProviderNeedsNoFacetInterfaceAndFacetTerminalFailsClearly()
+    {
+        var provider = new ExternalQueryProvider<QueryState>();
+        var query = new ExternalQuery<QueryState>(provider);
+
+        Func<Task> execute = async () => await query.ToFacetValueCountsAsync(
+            state => state.Value,
+            new SearchableStorageFacetRequest(1, SearchableStorageFacetAccuracy.Exact));
+
+        await execute.Should().ThrowAsync<NotSupportedException>()
+            .WithMessage("*facet-enabled*");
+    }
+
+    [Fact]
+    public async Task OptInFacetProviderReceivesExactExpressionSelectorRequestAndCancellation()
+    {
+        var provider = new ExternalFacetQueryProvider<QueryState>();
+        var query = new ExternalQuery<QueryState>(provider)
+            .Where(state => state.Value == 7);
+        Expression<Func<QueryState, int>> selector = state => state.Value;
+        var request = new SearchableStorageFacetRequest(
+            3,
+            SearchableStorageFacetAccuracy.Approximate);
+        using var cancellation = new CancellationTokenSource();
+
+        var result = await query.ToFacetValueCountsAsync(
+            selector,
+            request,
+            cancellation.Token);
+
+        result.Items.Should().BeEmpty();
+        provider.FacetExpression.Should().BeSameAs(query.Expression);
+        provider.FacetSelector.Should().BeSameAs(selector);
+        provider.FacetRequest.Should().BeSameAs(request);
+        provider.FacetCancellationToken.Should().Be(cancellation.Token);
+    }
+
+    [Fact]
+    public void FacetDtosValidateDomainsAndDefensivelyCopyCollections()
+    {
+        Action zeroTopN = () => _ = new SearchableStorageFacetRequest(
+            0,
+            SearchableStorageFacetAccuracy.Exact);
+        Action unknownAccuracy = () => _ = new SearchableStorageFacetRequest(
+            1,
+            (SearchableStorageFacetAccuracy)42);
+        Action zeroPage = () => _ = new SearchableStorageFacetPageRequest(0);
+        Action blankToken = () => _ = new SearchableStorageFacetPageRequest(1, " ");
+        Action zeroCount = () => _ = new SearchableStorageFacetValueCount<int>(1, 0);
+        Action nullValue = () => _ = new SearchableStorageFacetValueCount<string>(null!, 1);
+        Action nullResultItem = () => _ = new SearchableStorageFacetResult<int>(
+            [null!],
+            isExact: false,
+            maximumOmittedCount: 0);
+        Action negativeBound = () => _ = new SearchableStorageFacetResult<int>(
+            [],
+            isExact: false,
+            maximumOmittedCount: -1);
+
+        zeroTopN.Should().Throw<ArgumentOutOfRangeException>();
+        unknownAccuracy.Should().Throw<ArgumentOutOfRangeException>();
+        zeroPage.Should().Throw<ArgumentOutOfRangeException>();
+        blankToken.Should().Throw<ArgumentException>();
+        zeroCount.Should().Throw<ArgumentOutOfRangeException>();
+        nullValue.Should().Throw<ArgumentNullException>();
+        nullResultItem.Should().Throw<ArgumentException>();
+        negativeBound.Should().Throw<ArgumentOutOfRangeException>();
+
+        var counts = new List<SearchableStorageFacetValueCount<int>>
+        {
+            new(7, 2),
+        };
+        var result = new SearchableStorageFacetResult<int>(counts, true, 0);
+        counts.Clear();
+        result.Items.Should().ContainSingle().Which.Value.Should().Be(7);
+
+        var values = new List<string> { "a" };
+        var page = new SearchableStorageDistinctFacetPage<string>(values, continuationToken: null);
+        values[0] = "changed";
+        page.Items.Should().Equal("a");
     }
 
     [Fact]
@@ -89,6 +173,7 @@ public sealed class QueryApiContractTests
         ((int)PartitionQueryOperation.Range).Should().Be(2);
         ((int)PartitionQueryOperation.And).Should().Be(3);
         ((int)PartitionQueryOperation.Or).Should().Be(4);
+        ((int)PartitionQueryOperation.All).Should().Be(5);
     }
 
     [Fact]
@@ -174,6 +259,134 @@ public sealed class QueryApiContractTests
             (nameof(StorageRouteMismatchException.RequestedPartition), 2),
             (nameof(StorageRouteMismatchException.Slot), 3),
             (nameof(StorageRouteMismatchException.CurrentOwner), 4));
+        AssertFieldIds<RoutedPartitionDistinctFacetPageRequest>(
+            (nameof(RoutedPartitionDistinctFacetPageRequest.Query), 0),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.FacetScope), 1),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.FacetKind), 2),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.Epoch), 3),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.After), 4),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.WorkBudget), 5),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.ItemLimit), 6),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.ByteLimit), 7),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.ProtocolVersion), 8),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.OrderingVersion), 9),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.WorkPolicyVersion), 10),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.ResponseFamily), 11),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.RequestFingerprint), 12),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.LayoutFormatVersion), 13),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.LayoutFingerprint), 14),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.StateName), 15),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.HasExpectedDataVersion), 16),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.ExpectedDataVersion), 17));
+        AssertFieldIds<PartitionDistinctFacetPageResult>(
+            (nameof(PartitionDistinctFacetPageResult.Items), 0),
+            (nameof(PartitionDistinctFacetPageResult.Frontier), 1),
+            (nameof(PartitionDistinctFacetPageResult.Exhausted), 2),
+            (nameof(PartitionDistinctFacetPageResult.StopReason), 3),
+            (nameof(PartitionDistinctFacetPageResult.Work), 4),
+            (nameof(PartitionDistinctFacetPageResult.ItemByteCount), 5),
+            (nameof(PartitionDistinctFacetPageResult.ProtocolVersion), 6),
+            (nameof(PartitionDistinctFacetPageResult.OrderingVersion), 7),
+            (nameof(PartitionDistinctFacetPageResult.WorkPolicyVersion), 8),
+            (nameof(PartitionDistinctFacetPageResult.ResponseFamily), 9),
+            (nameof(PartitionDistinctFacetPageResult.Epoch), 10),
+            (nameof(PartitionDistinctFacetPageResult.RequestFingerprint), 11),
+            (nameof(PartitionDistinctFacetPageResult.LayoutFormatVersion), 12),
+            (nameof(PartitionDistinctFacetPageResult.LayoutFingerprint), 13),
+            (nameof(PartitionDistinctFacetPageResult.DataVersion), 14));
+        AssertFieldIds<RoutedPartitionFacetCandidatePageRequest>(
+            (nameof(RoutedPartitionFacetCandidatePageRequest.Query), 0),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.FacetScope), 1),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.FacetKind), 2),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.Epoch), 3),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.AfterValue), 4),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.WorkBudget), 5),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.ItemLimit), 6),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.ByteLimit), 7),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.ProtocolVersion), 8),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.OrderingVersion), 9),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.WorkPolicyVersion), 10),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.ResponseFamily), 11),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.RequestFingerprint), 12),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.LayoutFormatVersion), 13),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.LayoutFingerprint), 14),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.StateName), 15),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.HasExpectedDataVersion), 16),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.ExpectedDataVersion), 17));
+        AssertFieldIds<PartitionFacetCandidate>(
+            (nameof(PartitionFacetCandidate.Value), 0),
+            (nameof(PartitionFacetCandidate.RawCount), 1));
+        AssertFieldIds<PartitionFacetCandidatePageResult>(
+            (nameof(PartitionFacetCandidatePageResult.Items), 0),
+            (nameof(PartitionFacetCandidatePageResult.FrontierValue), 1),
+            (nameof(PartitionFacetCandidatePageResult.Exhausted), 2),
+            (nameof(PartitionFacetCandidatePageResult.PageRawCount), 3),
+            (nameof(PartitionFacetCandidatePageResult.TotalRawCount), 4),
+            (nameof(PartitionFacetCandidatePageResult.StopReason), 5),
+            (nameof(PartitionFacetCandidatePageResult.Work), 6),
+            (nameof(PartitionFacetCandidatePageResult.ItemByteCount), 7),
+            (nameof(PartitionFacetCandidatePageResult.ProtocolVersion), 8),
+            (nameof(PartitionFacetCandidatePageResult.OrderingVersion), 9),
+            (nameof(PartitionFacetCandidatePageResult.WorkPolicyVersion), 10),
+            (nameof(PartitionFacetCandidatePageResult.ResponseFamily), 11),
+            (nameof(PartitionFacetCandidatePageResult.Epoch), 12),
+            (nameof(PartitionFacetCandidatePageResult.RequestFingerprint), 13),
+            (nameof(PartitionFacetCandidatePageResult.LayoutFormatVersion), 14),
+            (nameof(PartitionFacetCandidatePageResult.LayoutFingerprint), 15),
+            (nameof(PartitionFacetCandidatePageResult.DataVersion), 16));
+        AssertFieldIds<RoutedPartitionFacetCountSliceRequest>(
+            (nameof(RoutedPartitionFacetCountSliceRequest.Query), 0),
+            (nameof(RoutedPartitionFacetCountSliceRequest.FacetScope), 1),
+            (nameof(RoutedPartitionFacetCountSliceRequest.FacetKind), 2),
+            (nameof(RoutedPartitionFacetCountSliceRequest.Value), 3),
+            (nameof(RoutedPartitionFacetCountSliceRequest.Epoch), 4),
+            (nameof(RoutedPartitionFacetCountSliceRequest.HasAfter), 5),
+            (nameof(RoutedPartitionFacetCountSliceRequest.After), 6),
+            (nameof(RoutedPartitionFacetCountSliceRequest.WorkBudget), 7),
+            (nameof(RoutedPartitionFacetCountSliceRequest.ProtocolVersion), 8),
+            (nameof(RoutedPartitionFacetCountSliceRequest.OrderingVersion), 9),
+            (nameof(RoutedPartitionFacetCountSliceRequest.WorkPolicyVersion), 10),
+            (nameof(RoutedPartitionFacetCountSliceRequest.ResponseFamily), 11),
+            (nameof(RoutedPartitionFacetCountSliceRequest.RequestFingerprint), 12),
+            (nameof(RoutedPartitionFacetCountSliceRequest.LayoutFormatVersion), 13),
+            (nameof(RoutedPartitionFacetCountSliceRequest.LayoutFingerprint), 14),
+            (nameof(RoutedPartitionFacetCountSliceRequest.StateName), 15),
+            (nameof(RoutedPartitionFacetCountSliceRequest.HasExpectedDataVersion), 16),
+            (nameof(RoutedPartitionFacetCountSliceRequest.ExpectedDataVersion), 17));
+        AssertFieldIds<PartitionFacetCountSliceResult>(
+            (nameof(PartitionFacetCountSliceResult.CountDelta), 0),
+            (nameof(PartitionFacetCountSliceResult.HasFrontier), 1),
+            (nameof(PartitionFacetCountSliceResult.Frontier), 2),
+            (nameof(PartitionFacetCountSliceResult.Exhausted), 3),
+            (nameof(PartitionFacetCountSliceResult.StopReason), 4),
+            (nameof(PartitionFacetCountSliceResult.Work), 5),
+            (nameof(PartitionFacetCountSliceResult.ProtocolVersion), 6),
+            (nameof(PartitionFacetCountSliceResult.OrderingVersion), 7),
+            (nameof(PartitionFacetCountSliceResult.WorkPolicyVersion), 8),
+            (nameof(PartitionFacetCountSliceResult.ResponseFamily), 9),
+            (nameof(PartitionFacetCountSliceResult.Epoch), 10),
+            (nameof(PartitionFacetCountSliceResult.RequestFingerprint), 11),
+            (nameof(PartitionFacetCountSliceResult.LayoutFormatVersion), 12),
+            (nameof(PartitionFacetCountSliceResult.LayoutFingerprint), 13),
+            (nameof(PartitionFacetCountSliceResult.DataVersion), 14));
+        AssertFieldIds<PartitionFacetWork>(
+            (nameof(PartitionFacetWork.ValueSeekCount), 0),
+            (nameof(PartitionFacetWork.ValueVisitCount), 1),
+            (nameof(PartitionFacetWork.GrainGroupVisitCount), 2),
+            (nameof(PartitionFacetWork.OwnershipProbeCount), 3),
+            (nameof(PartitionFacetWork.RecordProbeCount), 4),
+            (nameof(PartitionFacetWork.PredicateNodeProbeCount), 5),
+            (nameof(PartitionFacetWork.IndexEntryProbeCount), 6),
+            (nameof(PartitionFacetWork.CountIncrementCount), 7),
+            (nameof(PartitionFacetWork.ResultMaterializationCount), 8));
+        AssertFieldIds<StorageFacetDataChangedException>(
+            (nameof(StorageFacetDataChangedException.ExpectedVersion), 0),
+            (nameof(StorageFacetDataChangedException.CurrentVersion), 1));
+
+        ((int)PartitionQueryResponseFamily.GrainIdPage).Should().Be(1);
+        ((int)PartitionQueryResponseFamily.DistinctFacetValuePage).Should().Be(2);
+        ((int)PartitionQueryResponseFamily.FacetValueCountCandidates).Should().Be(3);
+        ((int)PartitionQueryResponseFamily.FacetValueCountProbe).Should().Be(4);
 
         ((int)PartitionQueryPageStopReason.Exhausted).Should().Be(0);
         ((int)PartitionQueryPageStopReason.WorkBudget).Should().Be(1);
@@ -221,6 +434,16 @@ public sealed class QueryApiContractTests
         }
     }
 
+    private static uint[] GetFieldIds<T>()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        return typeof(T).GetProperties(flags)
+            .Select(static property => property.GetCustomAttribute<IdAttribute>())
+            .Where(static attribute => attribute is not null)
+            .Select(static attribute => attribute!.Id)
+            .ToArray();
+    }
+
     private sealed class QueryState
     {
         public int Value { get; init; }
@@ -250,7 +473,7 @@ public sealed class QueryApiContractTests
         }
     }
 
-    private sealed class ExternalQueryProvider<TState> : IQueryProvider, ISearchableStorageAsyncQueryProvider
+    private class ExternalQueryProvider<TState> : IQueryProvider, ISearchableStorageAsyncQueryProvider
     {
         public Expression? Expression { get; private set; }
 
@@ -288,6 +511,45 @@ public sealed class QueryApiContractTests
             Expression = expression;
             CancellationToken = cancellationToken;
             return Task.FromResult<IReadOnlyList<GrainId>>([]);
+        }
+    }
+
+    private sealed class ExternalFacetQueryProvider<TState>
+        : ExternalQueryProvider<TState>, ISearchableStorageFacetQueryProvider
+    {
+        public Expression? FacetExpression { get; private set; }
+        public LambdaExpression? FacetSelector { get; private set; }
+        public SearchableStorageFacetRequest? FacetRequest { get; private set; }
+        public CancellationToken FacetCancellationToken { get; private set; }
+
+        public Task<SearchableStorageDistinctFacetPage<TValue>> ExecuteDistinctFacetValuePageAsync<TValue>(
+            Expression queryExpression,
+            LambdaExpression propertySelector,
+            SearchableStorageFacetPageRequest request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new SearchableStorageDistinctFacetPage<TValue>([], null));
+        }
+
+        public Task<SearchableStorageFacetResult<TValue>> ExecuteFacetValueCountsAsync<TValue>(
+            Expression queryExpression,
+            LambdaExpression propertySelector,
+            SearchableStorageFacetRequest request,
+            CancellationToken cancellationToken)
+        {
+            FacetExpression = queryExpression;
+            FacetSelector = propertySelector;
+            FacetRequest = request;
+            FacetCancellationToken = cancellationToken;
+            return Task.FromResult(new SearchableStorageFacetResult<TValue>([], true, 0));
+        }
+
+        public Task<SearchableStorageFacetMinMax<TValue>?> ExecuteFacetMinMaxAsync<TValue>(
+            Expression queryExpression,
+            LambdaExpression propertySelector,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<SearchableStorageFacetMinMax<TValue>?>(null);
         }
     }
 

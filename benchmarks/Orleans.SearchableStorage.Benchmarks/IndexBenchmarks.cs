@@ -131,6 +131,17 @@ public class IndexMutationBenchmarks
         if (Representation == DerivedIndexRepresentation.BoundedOrderedView)
         {
             var catalog = _view.OrderedIndexes.GetStateCatalog(BenchmarkData.StateName);
+            if (_view.OrderedIndexes.GetFacetRecordCount(
+                    BenchmarkData.CityScope,
+                    SearchableIndexKind.Hash) != records.Count
+                || _view.OrderedIndexes.GetFacetRecordCount(
+                    BenchmarkData.SalaryScope,
+                    SearchableIndexKind.Range) != records.Count)
+            {
+                throw new InvalidOperationException(
+                    "The indexed mutation fixture did not maintain exact facet scope totals.");
+            }
+
             if (!catalog.TryGetRecordKeys(record.GrainId, out var orderedRecordKeys))
             {
                 throw new InvalidOperationException(
@@ -310,6 +321,12 @@ public class DerivedIndexBuildBenchmarks
                 SearchableIndexKind.Range,
                 expectedSalary);
             if (catalog.CopyGrainIds().Length != RecordCount
+                || view.OrderedIndexes.GetFacetRecordCount(
+                    BenchmarkData.CityScope,
+                    SearchableIndexKind.Hash) != RecordCount
+                || view.OrderedIndexes.GetFacetRecordCount(
+                    BenchmarkData.SalaryScope,
+                    SearchableIndexKind.Range) != RecordCount
                 || !PostingContains(catalog, targetGrainId, targetKey)
                 || !PostingContains(orderedCity, targetGrainId, targetKey)
                 || !PostingContains(orderedSalary, targetGrainId, targetKey))

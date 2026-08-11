@@ -68,6 +68,31 @@ Accept: application/json
 GET {{host}}/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false
 Accept: application/json
 
+### First value-ordered distinct-city facet page. Follow its token even if a page is short or empty.
+
+GET {{host}}/vacancies/facets/cities?pageSize=1
+Accept: application/json
+
+### Resume the distinct facet (replace the placeholder with the opaque token above)
+
+GET {{host}}/vacancies/facets/cities?pageSize=1&continuation={{facetContinuationToken}}
+Accept: application/json
+
+### Proven exact global top two city counts. Counts are filtered by the salary predicate.
+
+GET {{host}}/vacancies/facets/cities/top?topN=2&accuracy=Exact&minimumSalary=7
+Accept: application/json
+
+### One-turn bounded approximation. Inspect both isExact and maximumOmittedCount.
+
+GET {{host}}/vacancies/facets/cities/top?topN=1&accuracy=Approximate&minimumSalary=7
+Accept: application/json
+
+### Exact salary extrema for vacancies which currently match the Helsinki predicate
+
+GET {{host}}/vacancies/facets/salaries/min-max?city=Helsinki
+Accept: application/json
+
 ### Remove one vacancy and its index entries
 
 DELETE {{host}}/vacancies/helsinki-6

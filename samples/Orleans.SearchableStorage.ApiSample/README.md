@@ -20,6 +20,10 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 | `GET` | `/vacancies/search/by-city?city=Helsinki` | Use the hash index for exact lookup. |
 | `GET` | `/vacancies/search/by-city/page?city=Helsinki&pageSize=1&continuation=...` | Traverse bounded exact-query pages. |
 | `GET` | `/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false` | Use the range index with explicit bounds. |
+| `GET` | `/vacancies/facets/cities?pageSize=1&continuation=...` | Traverse distinct indexed cities in canonical value order. |
+| `GET` | `/vacancies/facets/cities/top?topN=2&accuracy=Exact&minimumSalary=7` | Compute filtered exact top-N city counts. |
+| `GET` | `/vacancies/facets/cities/top?topN=1&accuracy=Approximate&minimumSalary=7` | Stop after one bounded candidate turn and expose its omitted-count certificate. |
+| `GET` | `/vacancies/facets/salaries/min-max?city=Helsinki` | Compute exact filtered salary extrema. |
 | `GET` | `/storage/layout` | Read the persisted virtual-routing summary. |
 
 ## What happens on a write
@@ -44,6 +48,11 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 9. The client merges a globally safe canonical prefix and protects the next boundary in an
    AES-256-GCM continuation. A routing mismatch discards the complete first-page attempt and retries
    once; a resumed page is tied to its original epoch and becomes stale instead of being upgraded.
+10. Facet terminals nominate only indexed values. Candidate pages carry bucket metadata, a checked
+    page raw-count sum, and the pinned owner scope total; the coordinator derives the remaining bound.
+    Exact-count probes then evaluate the complete predicate in bounded, resumable `GrainId` slices.
+    Each owner is pinned to one activation data version for the complete attempt, so an intervening
+    mutation restarts the attempt once or fails without a partial aggregate.
 
 The sample uses deliberately visible persistence settings in `Program.cs`: journal segments contain
 at most 16 mutations, activation replay is capped at 256 committed mutations, and compaction is
@@ -78,6 +87,24 @@ writes and an unchanged layout, concatenating every page is exactly the same sor
 as full evaluation. Concurrent writes can be observed on later pages and do not create a distributed
 snapshot.
 
+The three facet endpoints deliberately cover distinct values, value counts, and extrema without
+loading vacancy state into the API process. Facet selectors must name one indexed property; nulls are
+not indexed. Distinct cities use canonical indexed-value order and an opaque token bound to the
+predicate, selected index, layout, response family, and effective limits. As with id paging, a
+non-terminal distinct page can be short or empty and is weakly consistent across calls rather than a
+cross-partition snapshot.
+
+The top-cities endpoint accepts `accuracy=Exact` or `accuracy=Approximate` and always returns exact
+counts for the values it includes. Exact mode keeps requesting value-ordered candidate pages and
+bounded count probes until every owner is exhausted or the Nth count is strictly greater than the
+sum of the owners' conservative unseen bounds. Approximate mode stops after the first candidate
+turn. It can omit a true winner, so consumers must inspect both `isExact` and
+`maximumOmittedCount`; the latter is an inclusive upper bound for every omitted value's count. The
+optional `minimumSalary` is compiled into the normal indexed predicate before city counts are
+computed. The min/max endpoint similarly filters by city and returns exact salary extrema; an empty
+match set is represented by both values being null. Terminal exact work is all-or-throw under the
+configured aggregate work, item, byte, and round ceilings.
+
 ASP.NET Core passes request cancellation to every search handler, and each handler forwards it to
 its asynchronous terminal.
 
@@ -91,11 +118,11 @@ the shared provider contract. Co-hosting HTTP and Orleans is only a sample conve
 client can also use an Orleans client from another process when configured with the same provider
 name, initial partition count, bounded-query limits, and continuation key ring.
 
-`Program.cs` uses an all-zero development-only key so the walkthrough runs without secret setup.
-Never copy that material to a deployment. Production processes must load the same 32-byte
-provider-scoped secret from protected configuration. Rotation distributes the new key as decrypt-only
-first, switches every participant to it as current, and removes the old key only after outstanding
-tokens may be invalidated safely.
+`Program.cs` generates a fresh cryptographic 32-byte development key when the process starts, so the
+walkthrough runs without secret setup and tokens intentionally become invalid after a restart.
+Production processes must instead load the same stable 32-byte provider-scoped secret from protected
+configuration. Rotation distributes the new key as decrypt-only first, switches every participant
+to it as current, and removes the old key only after outstanding tokens may be invalidated safely.
 
 This release does not expose `MoveSlot` or change physical ownership. The v3-to-v4 transition is not
 an online mixed-version rollout: pause searchable storage and query traffic, update every silo and

@@ -62,6 +62,8 @@ public sealed class StoragePartitionOrderedIndexesTests
         posting.CopyGrainIds().Should().ContainSingle().Which.Should().Be(grainId);
         catalog.TryGetRecordKeys(grainId, out var recordKeys).Should().BeTrue();
         recordKeys.Should().Equal(canonicalKey, duplicateKey);
+        indexes.GetFacetRecordCount(CityScope, SearchableIndexKind.Hash).Should().Be(2);
+        indexes.GetFacetRecordCount(SalaryScope, SearchableIndexKind.Range).Should().Be(2);
     }
 
     [Fact]
@@ -99,6 +101,8 @@ public sealed class StoragePartitionOrderedIndexesTests
             SearchableIndexKind.Range,
             IndexValue.Create(20)).CopyGrainIds()
             .Should().ContainSingle().Which.Should().Be(grainId);
+        view.OrderedIndexes.GetFacetRecordCount(CityScope, SearchableIndexKind.Hash).Should().Be(1);
+        view.OrderedIndexes.GetFacetRecordCount(SalaryScope, SearchableIndexKind.Range).Should().Be(1);
 
         view.ApplyDelete(recordKey);
 
@@ -112,6 +116,8 @@ public sealed class StoragePartitionOrderedIndexesTests
             SalaryScope,
             SearchableIndexKind.Range,
             IndexValue.Create(20)).CopyGrainIds().Should().BeEmpty();
+        view.OrderedIndexes.GetFacetRecordCount(CityScope, SearchableIndexKind.Hash).Should().Be(0);
+        view.OrderedIndexes.GetFacetRecordCount(SalaryScope, SearchableIndexKind.Range).Should().Be(0);
     }
 
     [Fact]
@@ -238,6 +244,14 @@ public sealed class StoragePartitionOrderedIndexesTests
         var rebuilt = StoragePartitionOrderedIndexes.Build(view.Records);
         view.OrderedIndexes.GetStateCatalog(StateName).CopyGrainIds()
             .Should().Equal(rebuilt.GetStateCatalog(StateName).CopyGrainIds());
+        view.OrderedIndexes.GetFacetRecordCount(CityScope, SearchableIndexKind.Hash)
+            .Should().Be(rebuilt.GetFacetRecordCount(CityScope, SearchableIndexKind.Hash));
+        view.OrderedIndexes.GetFacetRecordCount(SalaryScope, SearchableIndexKind.Range)
+            .Should().Be(rebuilt.GetFacetRecordCount(SalaryScope, SearchableIndexKind.Range));
+        ReadFacetBuckets(view.OrderedIndexes, CityScope, SearchableIndexKind.Hash)
+            .Should().Equal(ReadFacetBuckets(rebuilt, CityScope, SearchableIndexKind.Hash));
+        ReadFacetBuckets(view.OrderedIndexes, SalaryScope, SearchableIndexKind.Range)
+            .Should().Equal(ReadFacetBuckets(rebuilt, SalaryScope, SearchableIndexKind.Range));
 
         foreach (var city in cities)
         {
@@ -275,6 +289,22 @@ public sealed class StoragePartitionOrderedIndexesTests
         {
             cursor.TakeCurrentAndAdvance(out var grainId).Should().BeTrue();
             result.Add(grainId);
+        }
+
+        return [.. result];
+    }
+
+    private static (IndexValue Value, int RawCount)[] ReadFacetBuckets(
+        StoragePartitionOrderedIndexes indexes,
+        string scope,
+        SearchableIndexKind kind)
+    {
+        using var cursor = indexes.CreateFacetValueCursor(scope, kind, after: null);
+        var result = new List<(IndexValue, int)>();
+        while (cursor.HasCurrent)
+        {
+            cursor.TakeCurrentAndAdvance(out var bucket).Should().BeTrue();
+            result.Add((bucket.Value, bucket.Posting.RecordCount));
         }
 
         return [.. result];

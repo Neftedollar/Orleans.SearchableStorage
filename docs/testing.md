@@ -14,6 +14,8 @@ The reviewer must map changed behavior to tests instead of approving a raw test 
 - layout-format migration independently from partition-persistence compatibility;
 - virtual-slot derivation, ownership, epoch mismatches, and whole-attempt retry behavior;
 - deterministic execution across more than one storage partition;
+- facet value ordering, exactness/approximation certificates, owner-version pinning, and aggregate
+  limit behavior;
 - cancellation and retry behavior where applicable;
 - user-facing samples at their executable boundary;
 - every physical backend claimed as supported.
@@ -72,6 +74,15 @@ frontiers, and ordered-catalog fallback. The PR13 materializing evaluator remain
 baseline; the ordered implementation matrix adds activation-build, mutation, retained-memory,
 latency, allocation, paging-progress, and work-vector evidence.
 
+Facet tests separately cover indexed-selector validation, null exclusion, and materialization of
+every supported CLR shape; canonical distinct-value pages and family-bound tokens; exact filtered
+counts and count/value tie order; exact and approximate top-N cutoff proofs and inclusive omitted-
+count bounds; empty and non-empty extrema; per-owner data-version pinning, one restart, and a second-
+change failure; every partition and aggregate work/item/byte/round boundary; deterministic fan-out,
+late failures, cancellation, and no partial result. Candidate-page work vectors must prove zero
+posting/group/record/predicate work, while count slices prove progressing canonical `GrainId`
+frontiers and charge the complete filtered predicate.
+
 Scheduled concurrency cases must prove the documented weak behavior when a record begins or stops
 matching on either side of the global frontier; they must not assert snapshot isolation. Token tests
 must cover missing/inconsistent key rings, unknown or duplicate key ids, rotation, nonce uniqueness,
@@ -101,7 +112,7 @@ self-checksums, and unsafe histogram paths. Secret tests cover connection string
 userinfo, JSON credentials, and HTTP bearer authorization values.
 
 The pull-request smoke reflects the built microbenchmark assembly and requires exactly the reviewed
-16 `[Benchmark]` identities and every exact `[Params]` vector. It validates the actual
+18 `[Benchmark]` identities and every exact `[Params]` vector. It validates the actual
 BenchmarkDotNet job, GC, diagnoser, p95 column, exporters, and artifact-retention config rather than
 trusting duplicated provenance text, then invokes every production-backed fixture with semantic
 oracles for query-plan construction/evaluation, wire and journal serialization, journal append and
@@ -110,6 +121,11 @@ searchable open-loop, and plain closed-loop point-operation paths and asserts ea
 effective mode. It also emits and validates the 62-entry quick ordered-work matrix, four retained-
 managed-memory cells, all nine work components, both range execution strategies, and clean
 `DeterministicEvidence` provenance; these JSON files are correctness evidence, not a timing gate.
+The production facet evaluator adds two BenchmarkDotNet identities across 4,096/65,536 records,
+8/1,024 distinct values, uniform/skewed distributions, and all/selective predicates. Setup uses an
+independent value/count oracle and freezes the exact candidate and resumable-count work vectors; a
+focused CI vector requires `(seek=1, visit=8, materialize=8)` for metadata nomination and zero hidden
+posting scans, then 32 filtered slices with the exact probe vector.
 A pinned Crank Controller `--debug` expansion gate checks both distributed-client
 coordinates, exact source revision/environment/arguments, and artifact download paths without
 executing an agent. These are correctness gates with no wall-clock threshold. Dedicated nightly and
@@ -132,6 +148,11 @@ Its nested-plan case resolves the keyed `ISearchableStorageQueryClient` and disp
 `PartitionQueryPlan` through real Orleans grains. Every supported physical provider must run the
 same contract.
 
+The shared contract also executes distinct, exact/approximate top-N, and min/max terminals through
+real generated Orleans dispatch before and after activation rehydration. It verifies that persisted
+records rebuild the activation-derived ordered hash-value projection without a persistence-format
+migration. The existing layout-adoption case remains the explicit physical-write-counter oracle.
+
 The generic write-ahead log (WAL) contract is inherited by the memory, PostgreSQL, Redis, and Azure Blob fixtures. It verifies committed replay after reactivation, bounded segment rollover, the steady-state journal-plus-manifest write shape, snapshot publication and two-slot reuse, retirement fencing, hard replay-limit backpressure, and recovery at each injected before-commit or lost-acknowledgement boundary. The same cases also prove that records and exact/range indexes are immediately usable after recovery without a test-only deactivation step.
 
 Lower-level tests isolate the durable protocol from provider setup. They cover journal and snapshot idempotency, writer-epoch and generation fencing, ring reuse, immutable-state copying and equality, slot arithmetic and addressability limits, layout initialization after an ambiguous write, malformed manifest/snapshot/journal rejection, and coordinator poisoning after an ambiguous manifest write. These tests complement the provider matrix; they do not replace it.
@@ -144,7 +165,10 @@ round trips cover non-terminal responses and exceptions with non-zero work compo
 envelope, mismatch exception, layout descriptor, identity, snapshot, and durable layout-state field
 ID, including the original `PartitionCount` property identity. Compile-time test implementations
 keep the old direct-client interface independent from the opt-in query and paging interfaces and
-exercise external public async terminal providers.
+exercise external public async, paging, and facet terminal providers. Facet serializer coverage
+freezes all four response-family values, the distinct/candidate/count request and result IDs, their
+data-version fields, candidate page/total raw counts, the nine-component facet work vector, and the
+concurrent-change exception.
 
 The memory, PostgreSQL, Redis, and Azure Blob fixtures inherit this same contract class; backend tests do not copy or weaken its assertions.
 
@@ -163,8 +187,8 @@ External fixture lifecycle tests use a recording cluster abstraction to verify o
 The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
 
 CI writes four independently filtered TRX files using the `Backend` trait. The workflow stores the
-93-case shared contract count once, then derives the exact profile totals: memory has 94 cases
-(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 95 (shared
+97-case shared contract count once, then derives the exact profile totals: memory has 98 cases
+(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 99 (shared
 plus provider and cleanup assertions). The small `eng/validate-trx.sh` gate requires one `Counters`
 element, the exact total, executed and passed counts, zero failed and not-executed summary counts,
 no `NotExecuted` result, and no non-passed result element. Missing files, empty filters, partial
@@ -180,9 +204,11 @@ derivation. For local execution and connection-string overrides, see
 The API sample is tested through HTTP using ASP.NET Core `WebApplicationFactory`. These tests ensure
 the documented host starts, keyed Orleans services resolve, writes reach the searchable provider,
 the focused `IQueryable` API returns both compatibility results and resumable pages, concatenated
-pages preserve canonical order, the layout endpoint reports the persisted epoch-1 identity map, and
-deletes remove both state and index entries. A keyed blocking query client verifies that HTTP request
-cancellation reaches every search endpoint and its async terminal while it is in flight.
+pages preserve canonical order, facet endpoints expose distinct continuation, `IsExact`,
+`MaximumOmittedCount`, filtered exact counts and extrema, the layout endpoint reports the persisted
+epoch-1 identity map, and deletes remove both state and index entries. A keyed blocking query client
+verifies that HTTP request cancellation reaches every search and facet endpoint and its async
+terminal while it is in flight.
 
 ## Coverage artifacts
 

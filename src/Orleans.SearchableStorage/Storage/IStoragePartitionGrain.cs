@@ -30,6 +30,15 @@ internal interface IStoragePartitionGrain : IGrainWithStringKey
 
     Task<PartitionQueryPageResult> QueryPageRoutedAsync(RoutedPartitionQueryPageRequest request);
 
+    Task<PartitionDistinctFacetPageResult> QueryDistinctFacetPageRoutedAsync(
+        RoutedPartitionDistinctFacetPageRequest request);
+
+    Task<PartitionFacetCandidatePageResult> QueryFacetCandidatesRoutedAsync(
+        RoutedPartitionFacetCandidatePageRequest request);
+
+    Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
+        RoutedPartitionFacetCountSliceRequest request);
+
     Task CompactAsync();
 
     Task<StoragePartitionPersistenceInfo> GetPersistenceInfoAsync();

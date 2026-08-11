@@ -16,6 +16,10 @@ internal static class PartitionQueryPlanFactory
     {
         return plan switch
         {
+            AllQueryPlan => new PartitionQueryPlan
+            {
+                Operation = PartitionQueryOperation.All,
+            },
             EmptyQueryPlan => new PartitionQueryPlan
             {
                 Operation = PartitionQueryOperation.Empty,

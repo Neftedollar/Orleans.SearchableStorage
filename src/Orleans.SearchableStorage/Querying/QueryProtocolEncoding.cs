@@ -14,11 +14,16 @@ internal static class QueryProtocol
     public const int OrderingVersion = 1;
     public const int WorkPolicyVersion = 1;
     public const int ContinuationPayloadVersion = 1;
+    public const int FacetValueOrderingVersion = 1;
+    public const int FacetWorkPolicyVersion = 1;
 }
 
 internal enum PartitionQueryResponseFamily
 {
     GrainIdPage = 1,
+    DistinctFacetValuePage = 2,
+    FacetValueCountCandidates = 3,
+    FacetValueCountProbe = 4,
 }
 
 internal static class GrainIdCanonicalOrder
@@ -147,12 +152,13 @@ internal static class QueryPlanFingerprint
         writer.WriteInt32((int)plan.Operation);
         switch (plan.Operation)
         {
+            case PartitionQueryOperation.All:
             case PartitionQueryOperation.Empty:
                 return;
             case PartitionQueryOperation.Exact:
                 writer.WriteString(plan.Scope!, MaximumPlanTextBytes);
                 writer.WriteInt32((int)plan.IndexKind);
-                WriteIndexValue(writer, plan.Value!);
+                IndexValueCanonicalEncoding.Write(writer, plan.Value!);
                 return;
             case PartitionQueryOperation.Range:
                 writer.WriteString(plan.Scope!, MaximumPlanTextBytes);
@@ -176,17 +182,36 @@ internal static class QueryPlanFingerprint
         writer.WriteBoolean(value is not null);
         if (value is not null)
         {
-            WriteIndexValue(writer, value);
+            IndexValueCanonicalEncoding.Write(writer, value);
         }
     }
+}
 
-    private static void WriteIndexValue(CanonicalBinaryWriter writer, IndexValue value)
+/// <summary>
+/// Canonical, versioned representation shared by query fingerprints, facet payloads, and cursors.
+/// </summary>
+internal static class IndexValueCanonicalEncoding
+{
+    internal const int MaximumTextBytes = QueryPlanFingerprint.MaximumPlanTextBytes;
+
+    public static int GetEncodedLength(IndexValue value)
     {
+        ArgumentNullException.ThrowIfNull(value);
+        using var writer = new CanonicalBinaryWriter();
+        Write(writer, value);
+        return writer.WrittenSpan.Length;
+    }
+
+    public static void Write(CanonicalBinaryWriter writer, IndexValue value)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+        Validate(value, nameof(value));
         writer.WriteInt32((int)value.Kind);
         switch (value.Kind)
         {
             case IndexValueKind.String:
-                writer.WriteString(value.Text!, MaximumPlanTextBytes);
+                writer.WriteString(value.Text!, MaximumTextBytes);
                 break;
             case IndexValueKind.SignedInteger:
                 writer.WriteInt64(value.SignedInteger);
@@ -223,6 +248,95 @@ internal static class QueryPlanFingerprint
             default:
                 throw new ArgumentOutOfRangeException(nameof(value), value.Kind, "Unknown index value kind.");
         }
+    }
+
+    public static IndexValue Read(ref CanonicalBinaryReader reader)
+    {
+        var kind = (IndexValueKind)reader.ReadInt32();
+        var value = kind switch
+        {
+            IndexValueKind.String => new IndexValue
+            {
+                Kind = kind,
+                Text = reader.ReadString(MaximumTextBytes, requireNonEmpty: false),
+            },
+            IndexValueKind.SignedInteger => new IndexValue
+            {
+                Kind = kind,
+                SignedInteger = reader.ReadInt64(),
+            },
+            IndexValueKind.UnsignedInteger => new IndexValue
+            {
+                Kind = kind,
+                UnsignedInteger = reader.ReadUInt64(),
+            },
+            IndexValueKind.Decimal => ReadDecimal(ref reader),
+            IndexValueKind.FloatingPoint => new IndexValue
+            {
+                Kind = kind,
+                FloatingPoint = BitConverter.Int64BitsToDouble(reader.ReadInt64()),
+            },
+            IndexValueKind.Timestamp => new IndexValue
+            {
+                Kind = kind,
+                UtcTicks = reader.ReadInt64(),
+            },
+            IndexValueKind.Guid => new IndexValue
+            {
+                Kind = kind,
+                Guid = new Guid(reader.ReadRawBytes(16), bigEndian: true),
+            },
+            IndexValueKind.Boolean => new IndexValue
+            {
+                Kind = kind,
+                Boolean = reader.ReadBoolean(),
+            },
+            _ => throw new InvalidOperationException($"Unknown index value kind '{kind}'."),
+        };
+        Validate(value, nameof(value));
+        return value;
+    }
+
+    public static void Validate(IndexValue value, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(value, parameterName);
+        switch (value.Kind)
+        {
+            case IndexValueKind.String when value.Text is null:
+                throw new ArgumentException("A string index value must contain text.", parameterName);
+            case IndexValueKind.FloatingPoint when double.IsNaN(value.FloatingPoint):
+                throw new ArgumentException("NaN cannot be an index value.", parameterName);
+            case IndexValueKind.Timestamp
+                when value.UtcTicks < DateTime.MinValue.Ticks
+                    || value.UtcTicks > DateTime.MaxValue.Ticks:
+                throw new ArgumentException("An index timestamp is outside the CLR tick range.", parameterName);
+            case IndexValueKind.String:
+            case IndexValueKind.SignedInteger:
+            case IndexValueKind.UnsignedInteger:
+            case IndexValueKind.Decimal:
+            case IndexValueKind.FloatingPoint:
+            case IndexValueKind.Timestamp:
+            case IndexValueKind.Guid:
+            case IndexValueKind.Boolean:
+                return;
+            default:
+                throw new ArgumentOutOfRangeException(parameterName, value.Kind, "Unknown index value kind.");
+        }
+    }
+
+    private static IndexValue ReadDecimal(ref CanonicalBinaryReader reader)
+    {
+        var bits = new int[4];
+        for (var index = 0; index < bits.Length; index++)
+        {
+            bits[index] = reader.ReadInt32();
+        }
+
+        return new IndexValue
+        {
+            Kind = IndexValueKind.Decimal,
+            Decimal = new decimal(bits),
+        };
     }
 }
 
@@ -263,6 +377,59 @@ internal static class StorageLayoutFingerprint
     }
 
     private sealed record FingerprintBox(byte[] Value);
+}
+
+internal static class FacetQueryFingerprint
+{
+    public static byte[] Compute(
+        string stateName,
+        PartitionQueryPlan query,
+        string facetScope,
+        SearchableIndexKind facetKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(facetScope);
+        if (facetKind is not SearchableIndexKind.Hash and not SearchableIndexKind.Range)
+        {
+            throw new ArgumentOutOfRangeException(nameof(facetKind), facetKind, "Unknown index kind.");
+        }
+
+        byte[] queryFingerprint;
+        try
+        {
+            queryFingerprint = QueryPlanFingerprint.Compute(stateName, query);
+        }
+        catch (ArgumentException exception) when (exception.InnerException is
+            CanonicalEncodingLimitExceededException or EncoderFallbackException)
+        {
+            throw new ArgumentException(
+                "The facet query exceeds the supported canonical query domain.",
+                nameof(query));
+        }
+        catch (EncoderFallbackException)
+        {
+            throw new ArgumentException(
+                "The facet query exceeds the supported canonical query domain.",
+                nameof(query));
+        }
+
+        try
+        {
+            using var writer = new CanonicalBinaryWriter();
+            writer.WriteInt32(QueryProtocol.PagingVersion);
+            writer.WriteRawBytes(queryFingerprint);
+            writer.WriteString(facetScope, QueryPlanFingerprint.MaximumPlanTextBytes);
+            writer.WriteInt32((int)facetKind);
+            return SHA256.HashData(writer.WrittenSpan);
+        }
+        catch (Exception exception) when (exception is CanonicalEncodingLimitExceededException
+            or EncoderFallbackException)
+        {
+            throw new ArgumentException(
+                $"The facet scope must be valid UTF-8 and not exceed "
+                + $"{QueryPlanFingerprint.MaximumPlanTextBytes} bytes.",
+                nameof(facetScope));
+        }
+    }
 }
 
 internal sealed class CanonicalBinaryWriter : IDisposable
@@ -394,6 +561,11 @@ internal ref struct CanonicalBinaryReader
     public long ReadInt64()
     {
         return BinaryPrimitives.ReadInt64BigEndian(ReadRawBytes(sizeof(long)));
+    }
+
+    public ulong ReadUInt64()
+    {
+        return BinaryPrimitives.ReadUInt64BigEndian(ReadRawBytes(sizeof(ulong)));
     }
 
     public string ReadString(int maximumByteLength, bool requireNonEmpty = false)
