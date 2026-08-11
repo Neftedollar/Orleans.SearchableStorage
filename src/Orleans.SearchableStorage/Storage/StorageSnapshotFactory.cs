@@ -15,14 +15,19 @@ internal static class StorageSnapshotFactory
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(records);
-        if (persistenceFormatVersion is not (
-            StoragePersistence.PreviousPersistenceFormatVersion
-            or StoragePersistence.CurrentPersistenceFormatVersion))
+        if (!StoragePersistence.IsSupportedFormat(persistenceFormatVersion))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(persistenceFormatVersion),
                 persistenceFormatVersion,
                 "A snapshot can only be created for a supported persistence format.");
+        }
+
+        if (!StoragePersistence.SupportsIndexSchemas(persistenceFormatVersion)
+            && records.Values.Any(static record => record.IndexSchemaFingerprint is not null))
+        {
+            throw new InvalidOperationException(
+                "A persistence-v3/v4 snapshot cannot contain a managed index-schema record.");
         }
 
         var snapshot = new StorageSnapshotState
@@ -36,7 +41,7 @@ internal static class StorageSnapshotFactory
             NextVersion = descriptor.NextVersion,
         };
 
-        if (persistenceFormatVersion == StoragePersistence.CurrentPersistenceFormatVersion)
+        if (StoragePersistence.UsesLosslessSnapshots(persistenceFormatVersion))
         {
             snapshot.RecordEncodingVersion = LosslessRecordEncodingVersion;
             snapshot.LosslessRecords = records
@@ -60,9 +65,7 @@ internal static class StorageSnapshotFactory
         int persistenceFormatVersion)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        if (persistenceFormatVersion is not (
-            StoragePersistence.PreviousPersistenceFormatVersion
-            or StoragePersistence.CurrentPersistenceFormatVersion))
+        if (!StoragePersistence.IsSupportedFormat(persistenceFormatVersion))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(persistenceFormatVersion),
@@ -75,7 +78,7 @@ internal static class StorageSnapshotFactory
             && snapshot.RecordEncodingVersion != LegacyRecordEncodingVersion)
         {
             throw new InvalidOperationException(
-                "A persistence-v3 manifest cannot reference a lossless persistence-v4 snapshot.");
+                "A persistence-v3 manifest cannot reference a newer lossless snapshot.");
         }
 
         if (snapshot.RecordEncodingVersion == LegacyRecordEncodingVersion)

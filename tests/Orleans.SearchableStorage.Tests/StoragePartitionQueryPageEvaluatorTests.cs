@@ -938,7 +938,7 @@ public sealed class StoragePartitionQueryPageEvaluatorTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "page-provider",
             PartitionCount = partitionCount,
             VirtualSlotCount = virtualSlotCount,

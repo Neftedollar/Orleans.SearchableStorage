@@ -92,6 +92,94 @@ public sealed class StorageMovementDigestGoldenTests
             "D7755D53836AFD00625BAC6052E93EE6009FAABA6F1B35D2F273AB8BDFF099D6");
     }
 
+    [Fact]
+    public void ManagedImportDigestAndByteCountMatchFrozenGoldenVector()
+    {
+        var fingerprint = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        var legacyRecord = new StoredRecord
+        {
+            GrainId = CreateRawGrainIdInSlot(slot: 0, virtualSlotCount: 2),
+            Payload = [0x01, 0x02, 0x03],
+            ETag = "7",
+            IndexEntries =
+            [
+                new IndexEntry
+                {
+                    Scope = "managed-scope",
+                    Kind = SearchableIndexKind.Hash,
+                    Value = new IndexValue { Kind = IndexValueKind.String, Text = "Moscow" },
+                },
+            ],
+        };
+        var managedRecord = new StoredRecord
+        {
+            GrainId = legacyRecord.GrainId,
+            Payload = [.. legacyRecord.Payload],
+            ETag = legacyRecord.ETag,
+            IndexEntries = legacyRecord.IndexEntries,
+            IndexSchemaFingerprint = fingerprint,
+        };
+        var legacy = StorageMoveRecordCodec.Encode("managed-record", legacyRecord);
+        var managed = StorageMoveRecordCodec.Encode("managed-record", managedRecord);
+        var payload = new StorageMoveJournalPayload
+        {
+            MoveId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            Slot = 0,
+            VirtualSlotCount = 2,
+            SourceEpoch = 11,
+            SourceOwner = 0,
+            TargetOwner = 1,
+            PageOrdinal = 2,
+            NextRecordKey = [.. managed.RecordKey],
+            Exhausted = true,
+            FrozenNextVersion = 8,
+            Imports = [managed],
+            ItemLimit = 16,
+            ByteTarget = 65_536,
+            EncodedByteCount = StorageMovePageDigest.GetEncodedByteCount(managed),
+        };
+
+        payload.EncodedByteCount.Should().Be(
+            StorageMovePageDigest.GetEncodedByteCount(legacy) + 33,
+            "managed encoding appends one presence-domain byte and the fixed 32-byte fingerprint");
+        var managedHex = Convert.ToHexString(
+            StorageMovePageDigest.Compute(StorageJournalOperation.Import, payload));
+        managedHex.Should().Be(
+            "BB8A7C94A7214D04E02D7EE5DEC3F9D30A18768831E88BBC0F350423A9C727A3");
+
+        byte[] changedFingerprint = [.. fingerprint];
+        changedFingerprint[^1] ^= 0xff;
+        var changed = StorageMoveRecordCodec.Encode(
+            "managed-record",
+            new StoredRecord
+            {
+                GrainId = managedRecord.GrainId,
+                Payload = [.. managedRecord.Payload],
+                ETag = managedRecord.ETag,
+                IndexEntries = managedRecord.IndexEntries,
+                IndexSchemaFingerprint = changedFingerprint,
+            });
+        var changedPayload = new StorageMoveJournalPayload
+        {
+            MoveId = payload.MoveId,
+            Slot = payload.Slot,
+            VirtualSlotCount = payload.VirtualSlotCount,
+            SourceEpoch = payload.SourceEpoch,
+            SourceOwner = payload.SourceOwner,
+            TargetOwner = payload.TargetOwner,
+            PageOrdinal = payload.PageOrdinal,
+            NextRecordKey = [.. changed.RecordKey],
+            Exhausted = payload.Exhausted,
+            FrozenNextVersion = payload.FrozenNextVersion,
+            Imports = [changed],
+            ItemLimit = payload.ItemLimit,
+            ByteTarget = payload.ByteTarget,
+            EncodedByteCount = StorageMovePageDigest.GetEncodedByteCount(changed),
+        };
+        StorageMovePageDigest.Compute(StorageJournalOperation.Import, changedPayload)
+            .Should().NotEqual(StorageMovePageDigest.Compute(StorageJournalOperation.Import, payload));
+    }
+
     private static GrainId CreateRawGrainIdInSlot(int slot, int virtualSlotCount)
     {
         var type = new GrainType([0xff, 0x01, 0x80, 0x42]);

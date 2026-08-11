@@ -245,7 +245,9 @@ public sealed class SearchableStorageClientExecutionTests
             .ToGrainIdsAsync();
 
         matches.Should().BeEmpty();
-        layoutCallCount.Should().Be(1);
+        layoutCallCount.Should().Be(2,
+            "the unregistered empty-plan gate performs a one-shot fresh read without populating "
+            + "the ordinary routing cache");
         partition.QueryCallCount.Should().Be(0);
         partition.FindCallCount.Should().Be(0);
         partition.RangeCallCount.Should().Be(0);

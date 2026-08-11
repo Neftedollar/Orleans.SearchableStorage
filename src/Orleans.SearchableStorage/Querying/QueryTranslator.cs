@@ -7,26 +7,42 @@ namespace Orleans.SearchableStorage.Querying;
 
 internal static class QueryTranslator
 {
-    public static QueryPlan Translate<TState>(string stateName, Expression expression)
+    public static QueryPlan Translate<TState>(
+        string stateName,
+        Expression expression,
+        byte[]? schemaFingerprint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
         ArgumentNullException.ThrowIfNull(expression);
 
         var budget = new TranslationBudget();
-        var plan = TranslateQueryExpression<TState>(stateName, expression, budget, depth: 1)
+        var plan = TranslateQueryExpression<TState>(
+            stateName,
+            expression,
+            schemaFingerprint,
+            budget,
+            depth: 1)
             ?? throw new NotSupportedException(
                 "A searchable storage query must contain at least one Where predicate.");
         QueryPlanValidator.Validate(plan);
         return plan;
     }
 
-    public static QueryPlan TranslateFacet<TState>(string stateName, Expression expression)
+    public static QueryPlan TranslateFacet<TState>(
+        string stateName,
+        Expression expression,
+        byte[]? schemaFingerprint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
         ArgumentNullException.ThrowIfNull(expression);
 
         var budget = new TranslationBudget();
-        var plan = TranslateQueryExpression<TState>(stateName, expression, budget, depth: 1)
+        var plan = TranslateQueryExpression<TState>(
+            stateName,
+            expression,
+            schemaFingerprint,
+            budget,
+            depth: 1)
             ?? AllQueryPlan.Instance;
         QueryPlanValidator.Validate(plan);
         return plan;
@@ -35,6 +51,7 @@ internal static class QueryTranslator
     private static QueryPlan? TranslateQueryExpression<TState>(
         string stateName,
         Expression expression,
+        byte[]? schemaFingerprint,
         TranslationBudget budget,
         int depth)
     {
@@ -61,12 +78,14 @@ internal static class QueryTranslator
         var sourcePlan = TranslateQueryExpression<TState>(
             stateName,
             methodCall.Arguments[0],
+            schemaFingerprint,
             budget,
             depth + 1);
         var predicatePlan = TranslatePredicate<TState>(
             stateName,
             predicate.Body,
             predicate.Parameters[0],
+            schemaFingerprint,
             budget,
             depth: 1);
         return sourcePlan is null
@@ -78,6 +97,7 @@ internal static class QueryTranslator
         string stateName,
         Expression expression,
         ParameterExpression parameter,
+        byte[]? schemaFingerprint,
         TranslationBudget budget,
         int depth)
     {
@@ -86,18 +106,18 @@ internal static class QueryTranslator
         {
             ExpressionType.AndAlso when expression is BinaryExpression binary =>
                 QueryPlanBuilder.And(
-                    TranslatePredicate<TState>(stateName, binary.Left, parameter, budget, depth + 1),
-                    TranslatePredicate<TState>(stateName, binary.Right, parameter, budget, depth + 1)),
+                    TranslatePredicate<TState>(stateName, binary.Left, parameter, schemaFingerprint, budget, depth + 1),
+                    TranslatePredicate<TState>(stateName, binary.Right, parameter, schemaFingerprint, budget, depth + 1)),
             ExpressionType.OrElse when expression is BinaryExpression binary =>
                 QueryPlanBuilder.Or(
-                    TranslatePredicate<TState>(stateName, binary.Left, parameter, budget, depth + 1),
-                    TranslatePredicate<TState>(stateName, binary.Right, parameter, budget, depth + 1)),
+                    TranslatePredicate<TState>(stateName, binary.Left, parameter, schemaFingerprint, budget, depth + 1),
+                    TranslatePredicate<TState>(stateName, binary.Right, parameter, schemaFingerprint, budget, depth + 1)),
             ExpressionType.Equal or
             ExpressionType.LessThan or
             ExpressionType.LessThanOrEqual or
             ExpressionType.GreaterThan or
             ExpressionType.GreaterThanOrEqual when expression is BinaryExpression comparison =>
-                TranslateComparison<TState>(stateName, comparison, parameter, budget),
+                TranslateComparison<TState>(stateName, comparison, parameter, schemaFingerprint, budget),
             ExpressionType.NotEqual or ExpressionType.Not =>
                 throw new NotSupportedException(
                     "Predicate negation is not supported because it requires a partition-wide set complement. " +
@@ -112,6 +132,7 @@ internal static class QueryTranslator
         string stateName,
         BinaryExpression comparison,
         ParameterExpression parameter,
+        byte[]? schemaFingerprint,
         TranslationBudget budget)
     {
         var leftIsProperty = TryGetDirectProperty(comparison.Left, parameter, out var leftProperty);
@@ -135,7 +156,8 @@ internal static class QueryTranslator
             index = IndexMetadataProvider.GetSelectedIndex<TState>(
                 stateName,
                 property,
-                nameof(comparison));
+                nameof(comparison),
+                schemaFingerprint);
         }
         catch (ArgumentException exception)
         {

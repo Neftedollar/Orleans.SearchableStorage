@@ -39,6 +39,12 @@ internal interface IStoragePartitionGrain : IGrainWithStringKey
     Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
         RoutedPartitionFacetCountSliceRequest request);
 
+    Task<StorageIndexSchemaRebuildPageResult> RebuildIndexSchemaPageAsync(
+        StorageIndexSchemaRebuildPageRequest request);
+
+    Task<StoragePartitionProtocolState> EnableIndexSchemaProtocolAsync(
+        StorageIndexSchemaPartitionProtocolRequest request);
+
     Task<StoragePartitionProtocolState> EnableMovementProtocolAsync(
         StoragePartitionProtocolRequest request);
 

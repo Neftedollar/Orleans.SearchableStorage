@@ -299,7 +299,7 @@ public sealed class StorageRecoveryValidationTests
         return new StoragePartitionManifestState
         {
             Initialized = true,
-            PersistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion,
+            PersistenceFormatVersion = StoragePersistence.MovementPersistenceFormatVersion,
             JournalSegmentCapacity = 2,
             MaximumJournalReplayEntries = 4,
             NextVersion = 1,
@@ -327,7 +327,8 @@ public sealed class StorageRecoveryValidationTests
         switch (malformedCase)
         {
             case MalformedManifestCase.UnsupportedFormat:
-                manifest.PersistenceFormatVersion++;
+                manifest.PersistenceFormatVersion = checked(
+                    StoragePersistence.CurrentPersistenceFormatVersion + 1);
                 break;
             case MalformedManifestCase.ReplayLimitExceeded:
                 manifest.WriterEpoch = 1;

@@ -2,6 +2,7 @@ using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
 using Orleans.SearchableStorage.Tests.Infrastructure;
 using Orleans.SearchableStorage.Tests.TestGrains;
@@ -23,6 +24,134 @@ public abstract class JournaledPersistenceContractTests<TFixture>
     public Task LiveSlotMoveUnderRoutedWritesSurvivesReactivationWithSingleAuthority()
     {
         return StorageMovementProviderContract.AssertMoveUnderLoadAsync(Fixture);
+    }
+
+    [SkippableFact]
+    public async Task ManagedIndexSchemaRebuildsLegacyRecordsAcrossThePhysicalBackend()
+    {
+        var providerName = StorageIndexSchemaTestConstants.BackendContractProviderName;
+        var stateName = StorageIndexSchemaTestConstants.BackendContractStateName;
+        var silo = Assert.IsType<InProcessSiloHandle>(Fixture.Cluster.Primary);
+        var services = silo.ServiceProvider;
+        var options = services.GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+            .Get(providerName);
+        var serializer = options.GrainStorageSerializer;
+        serializer.Should().NotBeNull();
+        var storage = services.GetRequiredKeyedService<IGrainStorage>(providerName);
+        var admin = services.GetRequiredKeyedService<ISearchableStorageAdminClient>(providerName);
+        var query = services.GetRequiredKeyedService<ISearchableStorageQueryClient>(providerName);
+        var grainId = Fixture.Cluster.GrainFactory
+            .GetGrain<IVacancyGrain>($"schema-backend-{Guid.NewGuid():N}")
+            .GetGrainId();
+        var layoutGrain = Fixture.Cluster.GrainFactory.GetGrain<IStorageLayoutGrain>(providerName);
+        var layout = await layoutGrain.InitializeRoutingAsync(StorageLayout.CreateDescriptor(
+            providerName,
+            options.PartitionCount,
+            options.JournalSegmentCapacity,
+            options.MaximumJournalReplayEntries,
+            options.VirtualSlotTargetCount));
+        var slot = StorageLayout.GetSlot(grainId, layout.VirtualSlotCount);
+        var owner = layout.GetOwner(slot);
+        var partition = Fixture.Cluster.GrainFactory.GetGrain<IStoragePartitionGrain>(
+            StorageLayout.CreatePartitionKey(providerName, owner));
+        var legacyState = new VacancyState { City = "legacy-moscow", Salary = 52_000 };
+        var recordKey = CreateSchemaRecordKey(stateName, grainId);
+        var persistence = new StoragePersistenceSettings
+        {
+            JournalSegmentCapacity = options.JournalSegmentCapacity,
+            MaximumJournalReplayEntries = options.MaximumJournalReplayEntries,
+            CompactionThreshold = options.CompactionThreshold,
+        };
+        var legacyEtag = await partition.WriteRoutedAsync(new RoutedStorageWriteRequest
+        {
+            Slot = slot,
+            Epoch = layout.Epoch,
+            Request = new StorageWriteRequest
+            {
+                RecordKey = recordKey,
+                GrainId = grainId,
+                Payload = serializer!.Serialize(legacyState).ToArray(),
+                IndexEntries = [.. IndexMetadataProvider.Extract(stateName, legacyState)],
+                Persistence = persistence,
+            },
+        });
+        var legacyProtocol = await partition.GetMovementStateAsync();
+        legacyProtocol.PersistenceFormatVersion.Should()
+            .Be(StoragePersistence.LegacyPersistenceFormatVersion);
+        legacyProtocol.IndexSchemaProtocolVersion.Should().Be(0);
+
+        var active = await admin.RebuildIndexSchemaAsync<VacancyState>(stateName);
+
+        active.State.Should().Be(SearchableStorageIndexSchemaState.Active);
+        active.ProcessedRecordCount.Should().Be(1);
+        active.Fingerprint.Should().NotBeNullOrWhiteSpace();
+        var managedProtocol = await partition.GetMovementStateAsync();
+        managedProtocol.PersistenceFormatVersion.Should()
+            .Be(StoragePersistence.CurrentPersistenceFormatVersion);
+        managedProtocol.IndexSchemaProtocolVersion.Should().Be(StorageIndexSchema.ProtocolVersion);
+        var rebuilt = await partition.ReadRoutedAsync(new RoutedStorageReadRequest
+        {
+            RecordKey = recordKey,
+            GrainId = grainId,
+            Slot = slot,
+            Epoch = layout.Epoch,
+        });
+        rebuilt.ETag.Should().Be(
+            legacyEtag,
+            "a derived-index rebuild must not change the object revision");
+        await AssertManagedSchemaQueriesAsync(
+            query,
+            stateName,
+            grainId,
+            legacyState.City,
+            legacyState.Salary);
+
+        await partition.CompactAsync();
+        var control = Fixture.Cluster.GrainFactory.GetGrain<IStorageIndexSchemaGrain>(
+            StorageIndexSchema.CreateGrainKey(providerName, stateName));
+        await Fixture.Cluster.DeactivateAsync(partition);
+        await Fixture.Cluster.DeactivateAsync(control);
+
+        var recovered = await partition.ReadRoutedAsync(new RoutedStorageReadRequest
+        {
+            RecordKey = recordKey,
+            GrainId = grainId,
+            Slot = slot,
+            Epoch = layout.Epoch,
+        });
+        recovered.ETag.Should().Be(legacyEtag);
+        await AssertManagedSchemaQueriesAsync(
+            query,
+            stateName,
+            grainId,
+            legacyState.City,
+            legacyState.Salary);
+
+        var updated = new GrainState<VacancyState>
+        {
+            State = new VacancyState { City = "managed-kazan", Salary = 63_000 },
+            ETag = legacyEtag,
+            RecordExists = true,
+        };
+        await storage.WriteStateAsync(stateName, grainId, updated);
+        updated.ETag.Should().NotBeNullOrWhiteSpace();
+        updated.ETag.Should().NotBe(legacyEtag);
+        (await query.FindAsync<VacancyState, string>(
+            stateName,
+            state => state.City,
+            legacyState.City)).Should().BeEmpty();
+        await AssertManagedSchemaQueriesAsync(
+            query,
+            stateName,
+            grainId,
+            updated.State.City,
+            updated.State.Salary);
+
+        await storage.ClearStateAsync(stateName, grainId, updated);
+        (await query.FindAsync<VacancyState, string>(
+            stateName,
+            state => state.City,
+            updated.State.City)).Should().BeEmpty();
     }
 
     [SkippableFact]
@@ -1240,5 +1369,36 @@ public abstract class JournaledPersistenceContractTests<TFixture>
     private static string CreateProviderName()
     {
         return $"journal-{Guid.NewGuid():N}";
+    }
+
+    private static string CreateSchemaRecordKey(string stateName, GrainId grainId)
+    {
+        return string.Concat(
+            stateName,
+            "/",
+            Convert.ToHexString(grainId.Type.AsSpan()),
+            "/",
+            Convert.ToHexString(grainId.Key.AsSpan()));
+    }
+
+    private static async Task AssertManagedSchemaQueriesAsync(
+        ISearchableStorageQueryClient query,
+        string stateName,
+        GrainId expected,
+        string city,
+        int salary)
+    {
+        var cityMatches = await query.FindAsync<VacancyState, string>(
+            stateName,
+            state => state.City,
+            city);
+        var salaryMatches = await query.RangeAsync<VacancyState, int>(
+            stateName,
+            state => state.Salary,
+            salary,
+            salary);
+
+        cityMatches.Should().ContainSingle().Which.Should().Be(expected);
+        salaryMatches.Should().ContainSingle().Which.Should().Be(expected);
     }
 }

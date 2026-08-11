@@ -121,6 +121,17 @@ internal sealed class StoragePartitionPersistence
         }
     }
 
+    public int IndexSchemaProtocolVersion
+    {
+        get
+        {
+            EnsureCoordinatorUsable();
+            return _manifest.State.Initialized
+                ? _manifest.State.IndexSchemaProtocolVersion
+                : 0;
+        }
+    }
+
     public StoragePartitionMoveControl MoveControl
     {
         get
@@ -155,11 +166,19 @@ internal sealed class StoragePartitionPersistence
 
     public async Task EnableMovementProtocolAsync(
         StoragePersistenceSettings settings,
-        long minimumRoutingEpoch)
+        long minimumRoutingEpoch,
+        int indexSchemaProtocolVersion = 0)
     {
         EnsureCoordinatorUsable();
         ValidateSettings(settings);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(minimumRoutingEpoch);
+        if (indexSchemaProtocolVersion is not 0 and not StorageIndexSchema.ProtocolVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(indexSchemaProtocolVersion),
+                indexSchemaProtocolVersion,
+                "Unknown index-schema protocol version.");
+        }
 
         var candidate = _manifest.State.Initialized
             ? _manifest.State.Copy()
@@ -173,7 +192,8 @@ internal sealed class StoragePartitionPersistence
 
         if (candidate.MovementProtocolVersion == StorageMoveProtocol.Version
             && candidate.RoutedOperationsRequired
-            && candidate.MinimumRoutingEpoch == minimumRoutingEpoch)
+            && candidate.MinimumRoutingEpoch == minimumRoutingEpoch
+            && candidate.IndexSchemaProtocolVersion >= indexSchemaProtocolVersion)
         {
             return;
         }
@@ -190,10 +210,50 @@ internal sealed class StoragePartitionPersistence
             throw new InvalidOperationException("A durable minimum routing epoch cannot move backwards.");
         }
 
-        candidate.PersistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion;
+        candidate.PersistenceFormatVersion = candidate.IndexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion
+            || indexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion
+                ? StoragePersistence.CurrentPersistenceFormatVersion
+                : StoragePersistence.MovementPersistenceFormatVersion;
         candidate.MovementProtocolVersion = StorageMoveProtocol.Version;
         candidate.RoutedOperationsRequired = true;
         candidate.MinimumRoutingEpoch = minimumRoutingEpoch;
+        candidate.IndexSchemaProtocolVersion = Math.Max(
+            candidate.IndexSchemaProtocolVersion,
+            indexSchemaProtocolVersion);
+        await PersistManifestAsync(candidate);
+    }
+
+    public async Task EnableIndexSchemaProtocolAsync(StoragePersistenceSettings settings)
+    {
+        EnsureCoordinatorUsable();
+        ValidateSettings(settings);
+
+        var candidate = _manifest.State.Initialized
+            ? _manifest.State.Copy()
+            : CreateInitialManifest(settings);
+        EnsureSettingsMatch(settings);
+        if (candidate.MoveControl.IsPresent)
+        {
+            throw new InvalidOperationException(
+                "The index-schema protocol cannot be enabled while this partition participates in a move.");
+        }
+
+        if (candidate.PersistenceFormatVersion == StoragePersistence.CurrentPersistenceFormatVersion
+            && candidate.IndexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion)
+        {
+            return;
+        }
+
+        if (!StoragePersistence.IsSupportedFormat(candidate.PersistenceFormatVersion)
+            || candidate.IndexSchemaProtocolVersion is not 0 and not StorageIndexSchema.ProtocolVersion)
+        {
+            throw new InvalidOperationException(
+                "The partition has an unsupported persistence or index-schema protocol version.");
+        }
+
+        candidate.PersistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion;
+        candidate.IndexSchemaProtocolVersion = StorageIndexSchema.ProtocolVersion;
+        candidate.MinimumRoutingEpoch = Math.Max(candidate.MinimumRoutingEpoch, 1);
         await PersistManifestAsync(candidate);
     }
 
@@ -204,7 +264,7 @@ internal sealed class StoragePartitionPersistence
         EnsureCoordinatorUsable();
         ArgumentNullException.ThrowIfNull(moveControl);
         if (!_manifest.State.Initialized
-            || _manifest.State.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion
+            || !StoragePersistence.SupportsMovement(_manifest.State.PersistenceFormatVersion)
             || _manifest.State.MovementProtocolVersion != StorageMoveProtocol.Version
             || !_manifest.State.RoutedOperationsRequired)
         {
@@ -237,8 +297,7 @@ internal sealed class StoragePartitionPersistence
     {
         EnsureCoordinatorUsable();
         if (!_manifest.State.Initialized
-            || _manifest.State.PersistenceFormatVersion
-                != StoragePersistence.CurrentPersistenceFormatVersion
+            || !StoragePersistence.SupportsMovement(_manifest.State.PersistenceFormatVersion)
             || _manifest.State.MovementProtocolVersion != StorageMoveProtocol.Version
             || !_manifest.State.RoutedOperationsRequired)
         {
@@ -282,6 +341,12 @@ internal sealed class StoragePartitionPersistence
     {
         EnsureCoordinatorUsable();
         ArgumentNullException.ThrowIfNull(entry);
+        StoragePersistenceStateValidation.ValidateJournalEntry(entry, nameof(entry));
+        ValidateJournalCapability(
+            entry,
+            _manifest.State.PersistenceFormatVersion,
+            _manifest.State.IndexSchemaProtocolVersion,
+            "The journal entry");
         if (!_writerEpochAcquired
             || entry.WriterEpoch != _manifest.State.WriterEpoch
             || entry.Sequence != checked(_manifest.State.CommittedSequence + 1)
@@ -399,6 +464,9 @@ internal sealed class StoragePartitionPersistence
             MoveControl = state.Initialized
                 ? state.MoveControl.Copy()
                 : new StoragePartitionMoveControl(),
+            IndexSchemaProtocolVersion = state.Initialized
+                ? state.IndexSchemaProtocolVersion
+                : 0,
         };
     }
 
@@ -472,6 +540,11 @@ internal sealed class StoragePartitionPersistence
         }
 
         var state = _manifest.State;
+        ValidateRecordCapabilities(
+            records.Values,
+            state.PersistenceFormatVersion,
+            state.IndexSchemaProtocolVersion,
+            "The compacted partition");
         var generation = checked(state.SnapshotGenerationHighWatermark + 1);
         var targetSlot = state.ActiveSnapshot.IsPresent ? 1 - state.ActiveSnapshot.Slot : 0;
         var pending = new StorageSnapshotDescriptor
@@ -569,7 +642,8 @@ internal sealed class StoragePartitionPersistence
             records = ValidateActiveSnapshot(
                 descriptor,
                 snapshot,
-                _manifest.State.PersistenceFormatVersion);
+                _manifest.State.PersistenceFormatVersion,
+                _manifest.State.IndexSchemaProtocolVersion);
             recoveredNextVersion = snapshot.NextVersion;
             recoveredOperationId = snapshot.OperationId;
             recoveredOperationIds.Add(snapshot.OperationId);
@@ -598,7 +672,8 @@ internal sealed class StoragePartitionPersistence
                 _manifest.State.JournalSegmentCapacity,
                 _manifest.State.WriterEpoch,
                 _manifest.State.CommittedSequence,
-                _manifest.State.PersistenceFormatVersion);
+                _manifest.State.PersistenceFormatVersion,
+                _manifest.State.IndexSchemaProtocolVersion);
             var segmentEnd = Math.Min(
                 StoragePersistence.GetSegmentEndSequence(
                     absoluteSegmentIndex,
@@ -703,8 +778,8 @@ internal sealed class StoragePartitionPersistence
     private async Task PersistManifestAsync(StoragePartitionManifestState candidate)
     {
         EnsureCoordinatorUsable();
-        // Ordinary mutations deliberately preserve persistence-v3 during a rolling deploy. Only
-        // the explicit quiesced movement enablement changes the capability gate to v4.
+        // Ordinary mutations deliberately preserve their persistence format during a rolling
+        // deploy. Only an explicit protocol enablement changes the durable capability gate.
         ValidateManifest(candidate, allowPreviousFormat: true);
 
         var previous = _manifest.State;
@@ -779,18 +854,19 @@ internal sealed class StoragePartitionPersistence
         StoragePartitionManifestState state,
         bool allowPreviousFormat = false)
     {
-        var isPreviousFormat =
-            state.PersistenceFormatVersion == StoragePersistence.PreviousPersistenceFormatVersion;
+        var isLegacyFormat =
+            state.PersistenceFormatVersion == StoragePersistence.LegacyPersistenceFormatVersion;
         if (state.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion
-            && (!allowPreviousFormat || !isPreviousFormat))
+            && (!allowPreviousFormat
+                || !StoragePersistence.IsSupportedFormat(state.PersistenceFormatVersion)))
         {
             throw new InvalidOperationException(
                 $"Partition persistence format {state.PersistenceFormatVersion} is not supported; "
-                + $"format {StoragePersistence.CurrentPersistenceFormatVersion} is required.");
+                + $"format {StoragePersistence.CurrentPersistenceFormatVersion} is required for new capabilities.");
         }
 
         ArgumentNullException.ThrowIfNull(state.MoveControl);
-        if (isPreviousFormat)
+        if (isLegacyFormat)
         {
             ValidatePreviousFormatMovementFields(state);
         }
@@ -798,6 +874,8 @@ internal sealed class StoragePartitionPersistence
         {
             ValidateMovementFields(state);
         }
+
+        ValidateIndexSchemaFields(state);
 
         StoragePersistence.ValidateOptions(
             state.JournalSegmentCapacity,
@@ -828,8 +906,8 @@ internal sealed class StoragePartitionPersistence
                     "An empty partition manifest contains non-initial persistence state.");
             }
         }
-        else if (state.NextVersion < (isPreviousFormat ? 2 : 1)
-            || (isPreviousFormat && state.NextVersion - 1 > state.CommittedSequence)
+        else if (state.NextVersion < (isLegacyFormat ? 2 : 1)
+            || (isLegacyFormat && state.NextVersion - 1 > state.CommittedSequence)
             || state.SnapshotGenerationHighWatermark > state.CommittedSequence)
         {
             throw new InvalidOperationException(
@@ -843,7 +921,27 @@ internal sealed class StoragePartitionPersistence
             throw new InvalidOperationException("The partition manifest contains an unaligned prune boundary.");
         }
 
-        ValidateSnapshotDescriptors(state, isPreviousFormat);
+        ValidateSnapshotDescriptors(state, isLegacyFormat);
+    }
+
+    private static void ValidateIndexSchemaFields(StoragePartitionManifestState state)
+    {
+        if (StoragePersistence.SupportsIndexSchemas(state.PersistenceFormatVersion))
+        {
+            if (state.IndexSchemaProtocolVersion != StorageIndexSchema.ProtocolVersion)
+            {
+                throw new InvalidOperationException(
+                    "A persistence-v5 manifest lacks its required index-schema protocol capability.");
+            }
+
+            return;
+        }
+
+        if (state.IndexSchemaProtocolVersion != 0)
+        {
+            throw new InvalidOperationException(
+                "A persistence-v3/v4 manifest contains index-schema protocol state.");
+        }
     }
 
     private static void ValidatePreviousFormatMovementFields(StoragePartitionManifestState state)
@@ -1161,7 +1259,8 @@ internal sealed class StoragePartitionPersistence
     private static Dictionary<string, StoredRecord> ValidateActiveSnapshot(
         StorageSnapshotDescriptor descriptor,
         StorageSnapshotState snapshot,
-        int persistenceFormatVersion)
+        int persistenceFormatVersion,
+        int indexSchemaProtocolVersion)
     {
         if (!snapshot.Initialized
             || snapshot.Tombstoned
@@ -1172,6 +1271,11 @@ internal sealed class StoragePartitionPersistence
         }
 
         var records = StorageSnapshotFactory.DecodeRecords(snapshot, persistenceFormatVersion);
+        ValidateRecordCapabilities(
+            records.Values,
+            persistenceFormatVersion,
+            indexSchemaProtocolVersion,
+            $"Committed snapshot generation {descriptor.Generation}");
         foreach (var record in records.Values)
         {
             ValidateRecordVersion(record, snapshot.NextVersion, descriptor.Generation);
@@ -1186,7 +1290,8 @@ internal sealed class StoragePartitionPersistence
         int capacity,
         long maximumWriterEpoch,
         long committedSequence,
-        int persistenceFormatVersion)
+        int persistenceFormatVersion,
+        int indexSchemaProtocolVersion)
     {
         if (!segment.Initialized
             || segment.Tombstoned
@@ -1233,13 +1338,11 @@ internal sealed class StoragePartitionPersistence
             }
 
 
-            if (persistenceFormatVersion == StoragePersistence.PreviousPersistenceFormatVersion
-                && entry.Operation is not StorageJournalOperation.Upsert
-                    and not StorageJournalOperation.Delete)
-            {
-                throw new InvalidOperationException(
-                    $"Persistence-v3 journal segment {absoluteSegmentIndex} contains a movement operation.");
-            }
+            ValidateJournalCapability(
+                entry,
+                persistenceFormatVersion,
+                indexSchemaProtocolVersion,
+                $"Journal segment {absoluteSegmentIndex}");
 
             if (entry.Sequence > committedSequence
                 && (entry.Sequence != checked(committedSequence + 1)
@@ -1257,6 +1360,70 @@ internal sealed class StoragePartitionPersistence
         {
             throw new InvalidOperationException(
                 $"Committed journal segment {absoluteSegmentIndex} contains inconsistent writer-epoch metadata.");
+        }
+    }
+
+    internal static void ValidateJournalCapability(
+        StorageJournalEntry entry,
+        int persistenceFormatVersion,
+        int indexSchemaProtocolVersion,
+        string context)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context);
+
+        if (persistenceFormatVersion == StoragePersistence.LegacyPersistenceFormatVersion
+            && entry.Operation is not StorageJournalOperation.Upsert
+                and not StorageJournalOperation.Delete)
+        {
+            throw new InvalidOperationException(
+                $"{context} contains an operation unavailable in persistence-v3.");
+        }
+
+        if (persistenceFormatVersion == StoragePersistence.MovementPersistenceFormatVersion
+            && entry.Operation == StorageJournalOperation.Reindex)
+        {
+            throw new InvalidOperationException(
+                $"{context} contains an index-schema operation unavailable in persistence-v4.");
+        }
+
+        var hasSchemaCapability =
+            StoragePersistence.SupportsIndexSchemas(persistenceFormatVersion)
+            && indexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion;
+        var containsManagedRecord = entry.Record?.IndexSchemaFingerprint is not null
+            || (entry.Move?.Imports.Any(
+                static item => item.Record.IndexSchemaFingerprint is not null) ?? false);
+        if (!hasSchemaCapability && containsManagedRecord)
+        {
+            throw new InvalidOperationException(
+                $"{context} contains a managed record without its durable schema capability.");
+        }
+
+        if (!hasSchemaCapability && entry.Operation == StorageJournalOperation.Reindex)
+        {
+            throw new InvalidOperationException(
+                $"{context} contains a Reindex entry without its durable schema capability.");
+        }
+    }
+
+    private static void ValidateRecordCapabilities(
+        IEnumerable<StoredRecord> records,
+        int persistenceFormatVersion,
+        int indexSchemaProtocolVersion,
+        string context)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context);
+        if (StoragePersistence.SupportsIndexSchemas(persistenceFormatVersion)
+            && indexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion)
+        {
+            return;
+        }
+
+        if (records.Any(static record => record.IndexSchemaFingerprint is not null))
+        {
+            throw new InvalidOperationException(
+                $"{context} contains a managed record without its durable schema capability.");
         }
     }
 

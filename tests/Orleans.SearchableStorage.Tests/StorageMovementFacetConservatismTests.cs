@@ -108,7 +108,7 @@ public sealed class StorageMovementFacetConservatismTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = StateName,
             PartitionCount = 2,
             VirtualSlotCount = 1,

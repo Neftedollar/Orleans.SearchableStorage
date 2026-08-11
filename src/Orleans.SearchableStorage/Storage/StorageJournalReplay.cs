@@ -65,6 +65,23 @@ internal static class StorageJournalReplay
 
                 records.Remove(entry.RecordKey);
                 break;
+            case StorageJournalOperation.Reindex when entry.Record is not null:
+                records.TryGetValue(entry.RecordKey, out currentRecord);
+                EnsureExpectedETag(entry, currentRecord);
+                StoragePersistenceStateValidation.ValidateRecord(entry.Record, nameof(entry));
+                if (currentRecord is null
+                    || entry.Record.IndexSchemaFingerprint is null
+                    || !string.Equals(entry.Record.ETag, currentRecord.ETag, StringComparison.Ordinal)
+                    || !entry.Record.GrainId.Equals(currentRecord.GrainId)
+                    || !entry.Record.Payload.AsSpan().SequenceEqual(currentRecord.Payload)
+                    || entry.NextVersionAfter != nextVersion)
+                {
+                    throw new InvalidOperationException(
+                        $"Journal entry {entry.Sequence} changes record identity or version during reindexing.");
+                }
+
+                records[entry.RecordKey] = StoragePersistenceStateCopy.CopyRecord(entry.Record)!;
+                break;
             case StorageJournalOperation.AdvanceVersion when entry.Move is not null:
                 if (entry.NextVersionAfter != Math.Max(nextVersion, entry.Move.FrozenNextVersion))
                 {

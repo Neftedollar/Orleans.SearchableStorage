@@ -146,6 +146,11 @@ internal static class StorageMovePageDigest
                 + GetIndexValueByteCount(entry.Value));
         }
 
+        if (record.IndexSchemaFingerprint is { } fingerprint)
+        {
+            total = checked(total + sizeof(byte) + fingerprint.LongLength);
+        }
+
         return total;
     }
 
@@ -195,6 +200,14 @@ internal static class StorageMovePageDigest
             WriteText(writer, entry.Scope);
             writer.WriteInt32((int)entry.Kind);
             WriteIndexValue(writer, entry.Value);
+        }
+
+        if (record.IndexSchemaFingerprint is { } fingerprint)
+        {
+            // Absent fingerprints retain the pre-schema canonical digest byte-for-byte. Managed
+            // records append a domain byte and their fixed-size identity.
+            writer.WriteBoolean(true);
+            writer.WriteRawBytes(fingerprint);
         }
     }
 

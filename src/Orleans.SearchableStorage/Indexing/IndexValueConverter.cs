@@ -7,6 +7,22 @@ using PolyType.ReflectionProvider;
 
 namespace Orleans.SearchableStorage.Indexing;
 
+/// <summary>
+/// Identifies the stable canonical representation produced by one built-in index converter.
+/// Numeric values are part of the managed index-schema fingerprint and must never be reused.
+/// </summary>
+internal enum IndexKeyCodecId
+{
+    String = 1,
+    SignedInteger = 2,
+    UnsignedInteger = 3,
+    Decimal = 4,
+    FloatingPoint = 5,
+    Timestamp = 6,
+    Guid = 7,
+    Boolean = 8,
+}
+
 internal abstract class IndexValueConverter
 {
     public abstract Type ValueType { get; }
@@ -15,29 +31,60 @@ internal abstract class IndexValueConverter
 
     public abstract bool SupportsRange { get; }
 
+    public abstract IndexKeyCodecId CodecId { get; }
+
+    /// <summary>
+    /// Identifies the persisted canonical value semantics produced by this converter. Increment it
+    /// when the emitted representation or its indexed meaning changes, not for implementation refactors.
+    /// </summary>
+    public abstract int CodecVersion { get; }
+
     public abstract IndexQueryValueDomain? QueryValueDomain { get; }
 
     public abstract IndexValue? ConvertObject(object? value);
 }
 
-internal sealed class IndexValueConverter<T>(
-    Func<T, IndexValue?> converter,
-    bool supportsRange,
-    Type? runtimeValueType = null,
-    Func<object, IndexValue?>? objectConverter = null,
-    IndexQueryValueDomain? queryValueDomain = null) : IndexValueConverter
+internal sealed class IndexValueConverter<T> : IndexValueConverter
 {
+    private readonly Func<T, IndexValue?> _converter;
+    private readonly Func<object, IndexValue?>? _objectConverter;
+
+    public IndexValueConverter(
+        Func<T, IndexValue?> converter,
+        bool supportsRange,
+        IndexKeyCodecId codecId,
+        int codecVersion,
+        Type? runtimeValueType = null,
+        Func<object, IndexValue?>? objectConverter = null,
+        IndexQueryValueDomain? queryValueDomain = null)
+    {
+        ArgumentNullException.ThrowIfNull(converter);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(codecVersion);
+
+        _converter = converter;
+        _objectConverter = objectConverter;
+        SupportsRange = supportsRange;
+        CodecId = codecId;
+        CodecVersion = codecVersion;
+        RuntimeValueType = runtimeValueType ?? typeof(T);
+        QueryValueDomain = queryValueDomain;
+    }
+
     public override Type ValueType => typeof(T);
 
-    public override Type RuntimeValueType { get; } = runtimeValueType ?? typeof(T);
+    public override Type RuntimeValueType { get; }
 
-    public override bool SupportsRange { get; } = supportsRange;
+    public override bool SupportsRange { get; }
 
-    public override IndexQueryValueDomain? QueryValueDomain { get; } = queryValueDomain;
+    public override IndexKeyCodecId CodecId { get; }
+
+    public override int CodecVersion { get; }
+
+    public override IndexQueryValueDomain? QueryValueDomain { get; }
 
     public IndexValue? Convert(T value)
     {
-        return converter(value);
+        return _converter(value);
     }
 
     public override IndexValue? ConvertObject(object? value)
@@ -54,9 +101,9 @@ internal sealed class IndexValueConverter<T>(
                 nameof(value));
         }
 
-        if (objectConverter is not null)
+        if (_objectConverter is not null)
         {
-            return objectConverter(value);
+            return _objectConverter(value);
         }
 
         if (value is not T typedValue)
@@ -65,7 +112,7 @@ internal sealed class IndexValueConverter<T>(
                 $"Value type '{value.GetType()}' could not be read as converter type '{typeof(T)}'.");
         }
 
-        return converter(typedValue);
+        return _converter(typedValue);
     }
 }
 
@@ -135,7 +182,9 @@ internal static class IndexValueConverterProvider
                     static value => value is null
                         ? null
                         : new IndexValue { Kind = IndexValueKind.String, Text = value },
-                    supportsRange: true);
+                    supportsRange: true,
+                    IndexKeyCodecId.String,
+                    codecVersion: 1);
             }
 
             if (typeof(T) == typeof(char))
@@ -143,6 +192,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<char>(
                     static value => new IndexValue { Kind = IndexValueKind.String, Text = value.ToString() },
                     supportsRange: true,
+                    IndexKeyCodecId.String,
+                    codecVersion: 1,
                     queryValueDomain: new IntegralIndexQueryValueDomain(
                         char.MinValue,
                         char.MaxValue,
@@ -158,6 +209,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<sbyte>(
                     static value => IndexValue.FromSignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.SignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateSignedIntegralDomain(sbyte.MinValue, sbyte.MaxValue));
             }
 
@@ -166,6 +219,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<short>(
                     static value => IndexValue.FromSignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.SignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateSignedIntegralDomain(short.MinValue, short.MaxValue));
             }
 
@@ -174,6 +229,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<int>(
                     static value => IndexValue.FromSignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.SignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateSignedIntegralDomain(int.MinValue, int.MaxValue));
             }
 
@@ -182,6 +239,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<long>(
                     static value => IndexValue.FromSignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.SignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateSignedIntegralDomain(long.MinValue, long.MaxValue));
             }
 
@@ -190,6 +249,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<byte>(
                     static value => IndexValue.FromUnsignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.UnsignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateUnsignedIntegralDomain(byte.MinValue, byte.MaxValue));
             }
 
@@ -198,6 +259,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<ushort>(
                     static value => IndexValue.FromUnsignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.UnsignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateUnsignedIntegralDomain(ushort.MinValue, ushort.MaxValue));
             }
 
@@ -206,6 +269,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<uint>(
                     static value => IndexValue.FromUnsignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.UnsignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateUnsignedIntegralDomain(uint.MinValue, uint.MaxValue));
             }
 
@@ -214,6 +279,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<ulong>(
                     static value => IndexValue.FromUnsignedInteger(value),
                     supportsRange: true,
+                    IndexKeyCodecId.UnsignedInteger,
+                    codecVersion: 1,
                     queryValueDomain: CreateUnsignedIntegralDomain(ulong.MinValue, ulong.MaxValue));
             }
 
@@ -222,6 +289,8 @@ internal static class IndexValueConverterProvider
                 return new IndexValueConverter<decimal>(
                     static value => new IndexValue { Kind = IndexValueKind.Decimal, Decimal = value },
                     supportsRange: true,
+                    IndexKeyCodecId.Decimal,
+                    codecVersion: 1,
                     queryValueDomain: DecimalIndexQueryValueDomain.Instance);
             }
 
@@ -232,6 +301,8 @@ internal static class IndexValueConverterProvider
                         ? new IndexValue { Kind = IndexValueKind.FloatingPoint, FloatingPoint = value }
                         : throw new NotSupportedException("NaN values cannot be indexed."),
                     supportsRange: true,
+                    IndexKeyCodecId.FloatingPoint,
+                    codecVersion: 1,
                     queryValueDomain: FloatingPointIndexQueryValueDomain.Instance);
             }
 
@@ -242,6 +313,8 @@ internal static class IndexValueConverterProvider
                         ? new IndexValue { Kind = IndexValueKind.FloatingPoint, FloatingPoint = value }
                         : throw new NotSupportedException("NaN values cannot be indexed."),
                     supportsRange: true,
+                    IndexKeyCodecId.FloatingPoint,
+                    codecVersion: 1,
                     queryValueDomain: FloatingPointIndexQueryValueDomain.Instance);
             }
 
@@ -251,28 +324,36 @@ internal static class IndexValueConverterProvider
                     static value => value.Kind == DateTimeKind.Utc
                         ? new IndexValue { Kind = IndexValueKind.Timestamp, UtcTicks = value.Ticks }
                         : throw new ArgumentException("Indexed DateTime values must use DateTimeKind.Utc.", nameof(value)),
-                    supportsRange: true);
+                    supportsRange: true,
+                    IndexKeyCodecId.Timestamp,
+                    codecVersion: 1);
             }
 
             if (typeof(T) == typeof(DateTimeOffset))
             {
                 return new IndexValueConverter<DateTimeOffset>(
                     static value => new IndexValue { Kind = IndexValueKind.Timestamp, UtcTicks = value.UtcTicks },
-                    supportsRange: true);
+                    supportsRange: true,
+                    IndexKeyCodecId.Timestamp,
+                    codecVersion: 1);
             }
 
             if (typeof(T) == typeof(Guid))
             {
                 return new IndexValueConverter<Guid>(
                     static value => new IndexValue { Kind = IndexValueKind.Guid, Guid = value },
-                    supportsRange: false);
+                    supportsRange: false,
+                    IndexKeyCodecId.Guid,
+                    codecVersion: 1);
             }
 
             if (typeof(T) == typeof(bool))
             {
                 return new IndexValueConverter<bool>(
                     static value => new IndexValue { Kind = IndexValueKind.Boolean, Boolean = value },
-                    supportsRange: false);
+                    supportsRange: false,
+                    IndexKeyCodecId.Boolean,
+                    codecVersion: 1);
             }
 
             return typeShape.Kind is TypeShapeKind.Enum or TypeShapeKind.Optional
@@ -312,6 +393,8 @@ internal static class IndexValueConverterProvider
             return new IndexValueConverter<TEnum>(
                 value => underlyingConverter.Convert(Unsafe.BitCast<TEnum, TUnderlying>(value)),
                 supportsRange: true,
+                underlyingConverter.CodecId,
+                underlyingConverter.CodecVersion,
                 queryValueDomain: underlyingConverter.QueryValueDomain);
         }
 
@@ -333,6 +416,8 @@ internal static class IndexValueConverterProvider
                     ? elementConverter.Convert(element!)
                     : null,
                 elementConverter.SupportsRange,
+                elementConverter.CodecId,
+                elementConverter.CodecVersion,
                 runtimeValueType: elementConverter.RuntimeValueType,
                 objectConverter: elementConverter.ConvertObject,
                 queryValueDomain: elementConverter.QueryValueDomain);

@@ -3,7 +3,19 @@
 GET {{host}}/
 Accept: application/json
 
-### The read-only admin endpoint returns 404 before the namespace is initialized
+### The fresh in-memory sample completes its empty managed-schema bootstrap before HTTP starts.
+### Inspect the active vacancy generation and provider-wide schema protocol.
+
+GET {{host}}/storage/index-schemas/vacancies
+Accept: application/json
+
+### The rebuild endpoint is idempotent while the registered generation is already active.
+
+POST {{host}}/storage/index-schemas/vacancies/rebuild
+Accept: application/json
+
+### Inspect routing-compatible layout format 5: epoch 1, 64 virtual slots, schema protocol 1,
+### and eight slots per initial owner.
 
 GET {{host}}/storage/layout
 Accept: application/json
@@ -38,7 +50,7 @@ Content-Type: application/json
   "salary": 9
 }
 
-### Inspect layout v4: epoch 1, 64 virtual slots, and eight slots per initial owner
+### Recheck the unchanged routing map after writes.
 
 GET {{host}}/storage/layout
 Accept: application/json

@@ -7,8 +7,9 @@ This document describes the maintainer-facing design of the first Orleans.Search
 `SearchableGrainStorage` implements Orleans `IGrainStorage`. Application grains use it through normal `IPersistentState<T>` injection and do not coordinate index updates themselves.
 
 Each searchable provider owns one `StorageLayoutGrain` and a set of
-`StoragePartitionGrain` instances addressed by physical owner index. Layout format 4 holds an
-immutable virtual-slot space, a movement-capable assignment map, and a routing epoch. A partition keeps its records and derived hash and range buckets
+`StoragePartitionGrain` instances addressed by physical owner index. Layout formats 4 and 5 hold the
+same immutable virtual-slot space, movement-capable assignment map, and routing epoch; format 5 adds
+the managed-schema capability and maintenance intent. A partition keeps its records and derived hash and range buckets
 in the activation. Its durable representation is split into one constant-size manifest, a fixed ring
 of bounded journal-segment grains, and two reusable snapshot-slot grains. All four grain kinds write
 through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
@@ -331,7 +332,31 @@ applications must validate facet text as a schema rule.
 Floating-point NaN values are rejected because they do not provide a useful total ordering for these
 indexes.
 
-Index names, index kinds, and indexed property types are persisted schema. Adding an attribute does not backfill records which were written before that index existed. Renaming an index, changing its kind or property type, or changing the index-scope format requires a migration or complete record rewrite.
+Index names, index kinds, indexed property types, codec versions, and a positive application-owned
+version are persisted schema. Applications register exactly one CLR type/version for every
+provider/state-name pair. The deterministic fingerprint binds those inputs to physical scopes and
+is stored on each rebuilt record. A separate per-state control grain stores the active fingerprint,
+last completed count, and one resumable rebuild cursor. Partitions commit page-limited `Reindex` WAL
+entries which preserve payload, `GrainId`, ETag, and the object-version allocator. A page covers at
+most 64 catalog records but can trigger retained whole-partition compaction, so it is not a strict
+work, memory, or wall-clock bound.
+
+The first rebuild is also a provider-wide, one-way capability transition. It upgrades every current
+owner to persistence format 5 and rebuilds every record for its one state name before publishing
+schema protocol version 1 in layout format 5. One additional control commit then activates only
+that state fingerprint. Other registered states retain independent controls and remain unavailable
+until their own rebuilds reach `Active`; first adoption therefore completes all registered states in
+one quiesced provider window before traffic or movement resumes.
+After publication, every state using that provider must be registered on every silo, and every
+direct query client must declare every state it queries. Schema-unbound writes, clears, queries,
+pages, and facets are rejected; current routed point reads remain generation-independent. Managed
+operations reject an absent, rebuilding, or different generation. The control automatically resets
+its owner/frontier scan when a different completed routing layout appears before the maintenance
+intent is acquired. Once that intent exists, movement cannot change the layout until schema work
+publishes or confirms the provider capability and clears the intent. Old and new physical scopes
+remain disjoint, and continuations authenticated against the old plan cannot resume under the new
+generation. The protocol is deliberately quiesced rather than dual-write; see
+[index-schema-lifecycle.md](index-schema-lifecycle.md).
 
 ## Persisted compatibility rules
 
@@ -343,26 +368,45 @@ particular, renaming the layout grain interface or changing its key can silently
 namespace unless the old identity is migrated.
 
 Layout format and partition persistence format are independent compatibility axes. Layout format 4
-adds the exact virtual-slot count, assignment array, and routing epoch to the existing layout state;
-partition persistence format 4 continues to use the manifest, bounded journal ring, and two snapshot
-slots described above. It appends movement protocol/minimum-epoch/control fields and WAL operations
-for version advance, import, and movement delete. Existing upsert/delete values and every prior field
-ID remain unchanged. The layout state's existing C# property names and Orleans field IDs remain
-durable, including the `PartitionCount` JSON property at field ID 3. New routing and movement fields
-use appended IDs and absent fields are interpreted only through explicit compatibility paths.
+adds the exact virtual-slot count, assignment array, and routing epoch to the existing layout state.
+Layout format 5 preserves that routing identity and appends the index-schema protocol plus
+per-rebuild maintenance intent; adopting it does not advance the routing epoch. The intent durably
+excludes movement throughout the owner sweep, record pages, and final capability confirmation. It is
+used for later generation changes as well as first adoption. Partition format 4
+appends movement protocol/minimum-epoch/control fields and WAL operations for version advance,
+import, and movement delete. Partition format 5 appends the schema capability, per-record
+fingerprints, and the replayable `Reindex` operation. Existing values and every prior field ID remain
+unchanged. The layout state's existing C# property names and Orleans field IDs remain durable,
+including the `PartitionCount` JSON property at field ID 3. New fields use appended IDs and absent
+fields are interpreted only through explicit compatibility paths.
 
-Persistence format 4 retains the recursive, assembly-version-independent type identity introduced
-in format 2 and can read every format-3 record, journal, and snapshot representation. It appends a
-snapshot record-encoding marker at field ID 9 and a lossless record list at field ID 10; newly
-published format-4 snapshots leave the legacy string dictionary at field ID 8 empty and encode
-persisted text as explicit UTF-16 code units. A format-3 active snapshot remains readable after
-explicit enablement. The next format-4 compaction writes the lossless representation to the inactive
-snapshot slot and publishes it through the existing manifest fence, without rewriting the active
-child in place. A format-3 manifest is upgraded only when the explicit movement-enablement owner
-sweep reaches that movement-capable activation; ordinary activation and mutation leave it at format
-3. The same enablement step durably fences every current owner before publishing the layout
-capability. Version 1 and version 2 partitions are intentionally not interpreted as format 4 and
-still require an explicit migration or complete rewrite.
+Persistence formats 4 and 5 retain the recursive, assembly-version-independent type identity
+introduced in format 2 and can read every format-3 record, journal, and snapshot representation.
+Format 4 appends a snapshot record-encoding marker at field ID 9 and a lossless record list at field
+ID 10; newly published format-4 snapshots leave the legacy string dictionary at field ID 8 empty and
+encode persisted text as explicit UTF-16 code units. A format-3 active snapshot remains readable
+after explicit enablement. The next format-4 or format-5 compaction writes the lossless
+representation to the inactive snapshot slot and publishes it through the existing manifest fence,
+without rewriting the active child in place. A movement-only owner sweep upgrades a supported
+format-3 manifest to format 4. A schema-adoption owner sweep upgrades a supported format-3 or
+format-4 manifest directly to format 5.
+In either protocol, every current owner is durably fenced before the corresponding layout capability
+is published. Ordinary activation and mutation do not opt into a newer capability. Version 1 and
+version 2 partitions are intentionally not interpreted as formats 3, 4, or 5 and still require an
+explicit migration or complete rewrite.
+
+The per-state `index-schema` control document is persisted through the same physical provider but is
+not embedded in a partition manifest or layout. It must be retained and backed up with both. Losing
+only that control leaves a schema-enabled provider fail-closed. A quiesced rebuild can recreate the
+active generation when the layout has no surviving schema-maintenance intent and every application
+payload is still decodable. If an intent survives a mid-rebuild control loss, the public protocol
+cannot reconstruct its missing rebuild/schema identity; recovery requires a consistent backup or a
+reviewed physical repair. Reindexing uses the configured application-state serializer. A serializer-
+or CLR-state-breaking deployment can therefore stop a
+page after earlier records in that page have committed; its durable control cursor remains safe to
+retry after payload compatibility is restored. The remote failure identifies the provider, state,
+record, owner, and exception type, but deliberately omits the application-controlled exception
+message and all raw index or payload values.
 
 Orleans serializer `[Id]` values on persisted layout, manifest, journal, snapshot, record,
 index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or
@@ -392,7 +436,9 @@ format-4 layout. Operators must quiesce searchable storage and query traffic, up
 Orleans client, and verify that no version-3 process remains. While traffic is still paused, one
 normal grain-state storage operation must adopt each provider namespace as the epoch-1 identity map;
 operators should verify that the admin read succeeds and reports epoch 1.
-The admin path returns a snapshot only for format 4. Adoption performs one layout CAS and no
+Starting a managed-schema rebuild is an alternative quiesced adoption path: its first step invokes
+the same idempotent routing initializer before it creates the schema-rebuild intent.
+The admin path returns a snapshot only for routing-capable format 4 or 5. Version-3 adoption performs one layout CAS and no
 partition-persistence write. Query and admin reads do not perform adoption. Legacy calls remain
 available on updated processes, and the identity map preserves their modulo placement, but this is
 not an online rolling upgrade guarantee. Operators may then resume traffic with movement disabled,
@@ -401,6 +447,19 @@ second explicit gate: quiesce traffic again if it was resumed, restart every par
 movement-capable package, call `EnableMovementAsync`, and
 require the enabled protocol from the admin read. The owner-by-owner enablement intent is resumable,
 but quiescence remains an operator precondition until its final capability/epoch CAS commits.
+
+Managed schemas add another mixed-version boundary. Before first adoption, operators quiesce the
+whole provider before deploying the first schema-capable binary or changed registration. While it
+remains paused, they deploy the complete registration set to every silo and external query client
+and verify that no older participant remains. The owner sweep may make an individual partition
+reject unbound legacy calls before the final layout capability write, so starting the sweep is
+already an irreversible rollout decision. Once the layout publishes schema protocol version 1, old
+binaries, clients without a complete registry, and persistence-v3/v4 rollback are unsupported. That
+publication does not activate a state generation; the following state-control commit activates only
+the rebuild's target fingerprint. Finish and verify every registered state before ending the
+first-adoption provider pause. Later schema generation changes remain quiesced for each
+affected state and invalidate existing page/distinct-facet continuations; a layout change between
+rebuild turns restarts the durable scan automatically.
 
 Physical providers can use serializers other than Orleans' binary serializer. With JSON persistence, CLR type and property names plus configured JSON converters are part of the compatibility surface; Orleans `[Id]` values do not rename JSON members. The memory contract suite explicitly uses `JsonGrainStorageSerializer` so partition and layout reactivation exercise that representation.
 
@@ -411,7 +470,9 @@ behavior. The contract covers partition rehydration, exact and range lookup, inc
 replacement and removal, optimistic-concurrency rejection, persisted-layout mismatch, bounded
 journal replay, snapshot compaction, and before/after-commit failure boundaries for mutation and
 maintenance transitions. It also covers one live move under routed writes, point/index/facet
-membership during and after the epoch change, source/target reactivation, and single authority.
+membership during and after the epoch change, source/target reactivation, and single authority. A
+shared schema case upgrades a real format-3 record to persistence format 5, preserves its ETag,
+compacts/reactivates partition and control state, and verifies managed update and clear behavior.
 
 The contract runs unchanged against Orleans memory, ADO.NET/PostgreSQL, Redis, and Azure Blob
 providers. A compatible physical provider must offer atomic whole-state writes, authoritative point

@@ -1,4 +1,5 @@
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Querying;
 
 namespace Orleans.SearchableStorage.Storage;
 
@@ -54,7 +55,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         EnsureUsable();
         ArgumentNullException.ThrowIfNull(descriptor);
 
-        if (descriptor.FormatVersion == StorageLayout.CurrentFormatVersion)
+        if (descriptor.FormatVersion == StorageLayout.MovementFormatVersion)
         {
             _ = await InitializeRoutingAsync(descriptor);
             return;
@@ -63,13 +64,13 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         ValidateLegacyDescriptor(descriptor);
         if (_state.State.Initialized)
         {
-            if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+            if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
             {
                 EnsureLegacyMatches(descriptor);
                 return;
             }
 
-            if (_state.State.FormatVersion == StorageLayout.CurrentFormatVersion)
+            if (StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
             {
                 EnsureLegacyCompatibleWithRouting(descriptor);
                 return;
@@ -88,13 +89,13 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
 
         if (_state.State.Initialized)
         {
-            if (_state.State.FormatVersion == StorageLayout.CurrentFormatVersion)
+            if (StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
             {
                 EnsureRoutingMatches(descriptor);
                 return CreateSnapshot();
             }
 
-            if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+            if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
             {
                 EnsureLegacyCanMigrate(descriptor);
                 await PersistAsync(CreateRoutingState(descriptor));
@@ -116,7 +117,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
 
         if (!_state.State.Initialized)
         {
-            if (descriptor.FormatVersion == StorageLayout.CurrentFormatVersion)
+            if (descriptor.FormatVersion == StorageLayout.MovementFormatVersion)
             {
                 ValidateRoutingSeed(descriptor);
             }
@@ -124,13 +125,13 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             return Task.FromResult(false);
         }
 
-        if (descriptor.FormatVersion == StorageLayout.PreviousFormatVersion)
+        if (descriptor.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
-            if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+            if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
             {
                 EnsureLegacyMatches(descriptor);
             }
-            else if (_state.State.FormatVersion == StorageLayout.CurrentFormatVersion)
+            else if (StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
             {
                 EnsureLegacyCompatibleWithRouting(descriptor);
             }
@@ -139,11 +140,11 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
                 ThrowUnsupportedPersistedVersion(_state.State.FormatVersion);
             }
         }
-        else if (_state.State.FormatVersion == StorageLayout.CurrentFormatVersion)
+        else if (StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
         {
             EnsureRoutingMatches(descriptor);
         }
-        else if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+        else if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
             throw CreateRoutingInitializationRequiredException();
         }
@@ -166,13 +167,13 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             return Task.FromResult(false);
         }
 
-        if (identity.FormatVersion == StorageLayout.PreviousFormatVersion)
+        if (identity.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
-            if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+            if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
             {
                 EnsureLegacyIdentityMatches(identity);
             }
-            else if (_state.State.FormatVersion == StorageLayout.CurrentFormatVersion)
+            else if (StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
             {
                 EnsureLegacyIdentityCompatibleWithRouting(identity);
             }
@@ -181,11 +182,11 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
                 ThrowUnsupportedPersistedVersion(_state.State.FormatVersion);
             }
         }
-        else if (_state.State.FormatVersion == StorageLayout.CurrentFormatVersion)
+        else if (StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
         {
             EnsureRoutingIdentityMatches(identity);
         }
-        else if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+        else if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
             throw CreateRoutingInitializationRequiredException();
         }
@@ -207,12 +208,12 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             return Task.FromResult<StorageLayoutSnapshot?>(null);
         }
 
-        if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+        if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
             throw CreateRoutingInitializationRequiredException();
         }
 
-        if (_state.State.FormatVersion != StorageLayout.CurrentFormatVersion)
+        if (!StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
         {
             ThrowUnsupportedPersistedVersion(_state.State.FormatVersion);
         }
@@ -231,12 +232,12 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
                 return Task.FromResult<StorageLayoutSnapshot?>(null);
             }
 
-            if (_durableLayoutFormatVersionDuringWrite == StorageLayout.PreviousFormatVersion)
+            if (_durableLayoutFormatVersionDuringWrite == StorageLayout.LegacyFormatVersion)
             {
                 throw CreateRoutingInitializationRequiredException();
             }
 
-            if (_durableLayoutFormatVersionDuringWrite != StorageLayout.CurrentFormatVersion)
+            if (!StorageLayout.IsRoutingFormatVersion(_durableLayoutFormatVersionDuringWrite))
             {
                 ThrowUnsupportedPersistedVersion(_durableLayoutFormatVersionDuringWrite);
             }
@@ -251,12 +252,12 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             return Task.FromResult<StorageLayoutSnapshot?>(null);
         }
 
-        if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+        if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
             throw CreateRoutingInitializationRequiredException();
         }
 
-        if (_state.State.FormatVersion != StorageLayout.CurrentFormatVersion)
+        if (!StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
         {
             ThrowUnsupportedPersistedVersion(_state.State.FormatVersion);
         }
@@ -265,10 +266,94 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         return Task.FromResult<StorageLayoutSnapshot?>(CreateSnapshot());
     }
 
+    public async Task<StorageLayoutSnapshot> BeginIndexSchemaProtocolEnablementAsync(
+        StorageIndexSchemaLayoutProtocolRequest request)
+    {
+        EnsureUsable();
+        EnsureCurrentRoutingState();
+        ValidateIndexSchemaEnablementRequest(request);
+        var current = CreateSnapshot();
+        EnsureIndexSchemaRequestMatchesLayout(request, current);
+
+        if (_state.State.MovementEnablement is not null || _state.State.MoveIntent is not null)
+        {
+            throw new InvalidOperationException(
+                "Index-schema enablement and virtual-slot movement cannot run at the same time.");
+        }
+
+        if (_state.State.IndexSchemaProtocolVersion is not 0
+            and not StorageLayout.CurrentIndexSchemaProtocolVersion)
+        {
+            throw new InvalidOperationException(
+                $"Layout index-schema protocol version {_state.State.IndexSchemaProtocolVersion} is not supported.");
+        }
+
+        if (_state.State.IndexSchemaEnablement is { } active)
+        {
+            EnsureSameIndexSchemaEnablement(active, request);
+            return current;
+        }
+
+        var candidate = _state.State.Copy();
+        candidate.FormatVersion = StorageLayout.IndexSchemaFormatVersion;
+        candidate.IndexSchemaEnablement = new StorageIndexSchemaEnableIntent
+        {
+            EnablementId = request.EnablementId,
+            ProtocolVersion = request.ProtocolVersion,
+            LayoutEpoch = request.LayoutEpoch,
+            LayoutFingerprint = [.. request.LayoutFingerprint],
+        };
+        await PersistAsync(candidate);
+        return CreateSnapshot();
+    }
+
+    public async Task<StorageLayoutSnapshot> EnableIndexSchemaProtocolAsync(
+        StorageIndexSchemaLayoutProtocolRequest request)
+    {
+        EnsureUsable();
+        EnsureCurrentRoutingState();
+        ValidateIndexSchemaEnablementRequest(request);
+        var current = CreateSnapshot();
+        EnsureIndexSchemaRequestMatchesLayout(request, current);
+
+        if (_state.State.MovementEnablement is not null || _state.State.MoveIntent is not null)
+        {
+            throw new InvalidOperationException(
+                "Index-schema enablement and virtual-slot movement cannot run at the same time.");
+        }
+
+        if (_state.State.IndexSchemaProtocolVersion
+                == StorageLayout.CurrentIndexSchemaProtocolVersion
+            && _state.State.IndexSchemaEnablement is null)
+        {
+            // The publish CAS may have committed before its acknowledgement was lost.
+            return current;
+        }
+
+        if (_state.State.IndexSchemaProtocolVersion is not 0
+            and not StorageLayout.CurrentIndexSchemaProtocolVersion)
+        {
+            throw new InvalidOperationException(
+                $"Layout index-schema protocol version {_state.State.IndexSchemaProtocolVersion} is not supported.");
+        }
+
+        var active = _state.State.IndexSchemaEnablement
+            ?? throw new InvalidOperationException(
+                "Index-schema enablement must be durably begun before it can be published.");
+        EnsureSameIndexSchemaEnablement(active, request);
+
+        var candidate = _state.State.Copy();
+        candidate.IndexSchemaProtocolVersion = StorageLayout.CurrentIndexSchemaProtocolVersion;
+        candidate.IndexSchemaEnablement = null;
+        await PersistAsync(candidate);
+        return CreateSnapshot();
+    }
+
     public async Task<StorageLayoutSnapshot> BeginMovementEnablementAsync()
     {
         EnsureUsable();
         EnsureCurrentRoutingState();
+        EnsureNoIndexSchemaEnablement();
         if (_state.State.MovementProtocolVersion == StorageLayout.CurrentMovementProtocolVersion)
         {
             return CreateSnapshot();
@@ -300,6 +385,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         }
 
         EnsureCurrentRoutingState();
+        EnsureNoIndexSchemaEnablement();
         if (_state.State.MovementProtocolVersion == StorageLayout.CurrentMovementProtocolVersion
             && _state.State.MovementEnablement is null)
         {
@@ -349,6 +435,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             request.TransferPageRecordLimit,
             request.TransferPageByteTarget,
             nameof(request));
+        EnsureNoIndexSchemaEnablement();
         EnsureMovementEnabled();
         if (request.Slot >= _state.State.VirtualSlotCount)
         {
@@ -965,20 +1052,85 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         if (!_state.State.Initialized)
         {
             throw new InvalidOperationException(
-                "The searchable-storage layout must be initialized before movement can be administered.");
+                "The searchable-storage layout must be initialized before routing protocols can be administered.");
         }
 
-        if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion)
+        if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
             throw CreateRoutingInitializationRequiredException();
         }
 
-        if (_state.State.FormatVersion != StorageLayout.CurrentFormatVersion)
+        if (!StorageLayout.IsRoutingFormatVersion(_state.State.FormatVersion))
         {
             ThrowUnsupportedPersistedVersion(_state.State.FormatVersion);
         }
 
         ValidateRoutingState();
+    }
+
+    private static void ValidateIndexSchemaEnablementRequest(
+        StorageIndexSchemaLayoutProtocolRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.ProtocolVersion != StorageLayout.CurrentIndexSchemaProtocolVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.ProtocolVersion,
+                "Unknown layout index-schema protocol version.");
+        }
+
+        if (request.EnablementId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "An index-schema enablement id must not be empty.",
+                nameof(request));
+        }
+
+        Indexing.IndexSchemaIdentity.ValidateIdentity(
+            request.LayoutFingerprint,
+            nameof(request));
+    }
+
+    private static void EnsureIndexSchemaRequestMatchesLayout(
+        StorageIndexSchemaLayoutProtocolRequest request,
+        StorageLayoutSnapshot current)
+    {
+        if (request.LayoutEpoch != current.Epoch
+            || !Indexing.IndexSchemaIdentity.FixedTimeEquals(
+                request.LayoutFingerprint,
+                StorageLayoutFingerprint.Compute(current)))
+        {
+            throw new InvalidOperationException(
+                "The index-schema capability request does not match the current routing layout.");
+        }
+    }
+
+    private static void EnsureSameIndexSchemaEnablement(
+        StorageIndexSchemaEnableIntent active,
+        StorageIndexSchemaLayoutProtocolRequest request)
+    {
+        if (active.EnablementId != request.EnablementId
+            || active.ProtocolVersion != request.ProtocolVersion
+            || active.LayoutEpoch != request.LayoutEpoch
+            || !Indexing.IndexSchemaIdentity.FixedTimeEquals(
+                active.LayoutFingerprint,
+                request.LayoutFingerprint))
+        {
+            throw new InvalidOperationException(
+                $"Index-schema enablement '{active.EnablementId}' is active; "
+                + $"'{request.EnablementId}' cannot address it.");
+        }
+    }
+
+    private void EnsureNoIndexSchemaEnablement()
+    {
+        if (_state.State.IndexSchemaEnablement is { } active)
+        {
+            throw new InvalidOperationException(
+                $"Index-schema enablement '{active.EnablementId}' is active; "
+                + "virtual-slot movement cannot run until it is published.");
+        }
     }
 
     private void EnsureMovementEnabled()
@@ -1048,6 +1200,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             MinimumRoutingEpoch = minimumRoutingEpoch,
             JournalSegmentCapacity = _state.State.JournalSegmentCapacity,
             MaximumJournalReplayEntries = _state.State.MaximumJournalReplayEntries,
+            IndexSchemaProtocolVersion = _state.State.IndexSchemaProtocolVersion,
         };
     }
 
@@ -1075,17 +1228,18 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             await targetTask);
     }
 
-    private static bool IsProtocolReady(
+    private bool IsProtocolReady(
         StoragePartitionProtocolState state,
         long minimumRoutingEpoch)
     {
-        return state.PersistenceFormatVersion == StoragePersistence.CurrentPersistenceFormatVersion
+        return StoragePersistence.SupportsMovement(state.PersistenceFormatVersion)
             && state.MovementProtocolVersion == StorageLayout.CurrentMovementProtocolVersion
             && state.RoutedOperationsRequired
-            && state.MinimumRoutingEpoch == minimumRoutingEpoch;
+            && state.MinimumRoutingEpoch == minimumRoutingEpoch
+            && state.IndexSchemaProtocolVersion == _state.State.IndexSchemaProtocolVersion;
     }
 
-    private static void ValidateProtocolState(
+    private void ValidateProtocolState(
         StoragePartitionProtocolState state,
         long minimumRoutingEpoch,
         bool allowMove)
@@ -1101,16 +1255,17 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         }
     }
 
-    private static void ValidateMoveParticipant(
+    private void ValidateMoveParticipant(
         StoragePartitionProtocolState state,
         StorageMoveIdentity identity,
         StoragePartitionMoveRole role)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(state.MoveControl);
-        if (state.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion
+        if (!StoragePersistence.SupportsMovement(state.PersistenceFormatVersion)
             || state.MovementProtocolVersion != identity.ProtocolVersion
             || !state.RoutedOperationsRequired
+            || state.IndexSchemaProtocolVersion != _state.State.IndexSchemaProtocolVersion
             || state.MinimumRoutingEpoch < identity.SourceEpoch
             || state.MinimumRoutingEpoch > checked(identity.SourceEpoch + 1))
         {
@@ -1145,7 +1300,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         }
     }
 
-    private static StoragePartitionMoveControl RequireParticipantPhase(
+    private StoragePartitionMoveControl RequireParticipantPhase(
         StoragePartitionProtocolState state,
         StorageMoveIdentity identity,
         StoragePartitionMoveRole role,
@@ -1342,7 +1497,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         return new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.PreviousFormatVersion,
+            FormatVersion = StorageLayout.LegacyFormatVersion,
             ProviderName = descriptor.ProviderName,
             PartitionCount = descriptor.PartitionCount,
             JournalSegmentCapacity = descriptor.JournalSegmentCapacity,
@@ -1358,7 +1513,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         return new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = descriptor.ProviderName,
             PartitionCount = descriptor.PartitionCount,
             JournalSegmentCapacity = descriptor.JournalSegmentCapacity,
@@ -1379,7 +1534,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
 
     private void ValidateSupportedDescriptor(StorageLayoutDescriptor descriptor)
     {
-        if (descriptor.FormatVersion == StorageLayout.PreviousFormatVersion)
+        if (descriptor.FormatVersion == StorageLayout.LegacyFormatVersion)
         {
             ValidateLegacyDescriptor(descriptor);
             return;
@@ -1396,7 +1551,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             descriptor.PartitionCount,
             nameof(descriptor),
             "layout descriptor",
-            StorageLayout.PreviousFormatVersion);
+            StorageLayout.LegacyFormatVersion);
         StoragePersistence.ValidateOptions(
             descriptor.JournalSegmentCapacity,
             descriptor.MaximumJournalReplayEntries);
@@ -1417,7 +1572,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             descriptor.PartitionCount,
             nameof(descriptor),
             "layout descriptor",
-            StorageLayout.CurrentFormatVersion);
+            StorageLayout.MovementFormatVersion);
         StoragePersistence.ValidateOptions(
             descriptor.JournalSegmentCapacity,
             descriptor.MaximumJournalReplayEntries);
@@ -1433,14 +1588,14 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
     private void ValidateSupportedIdentity(StorageLayoutIdentity identity)
     {
         ArgumentNullException.ThrowIfNull(identity);
-        if (identity.FormatVersion is not StorageLayout.PreviousFormatVersion
-            and not StorageLayout.CurrentFormatVersion)
+        if (identity.FormatVersion is not StorageLayout.LegacyFormatVersion
+            and not StorageLayout.MovementFormatVersion)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(identity),
                 identity.FormatVersion,
-                $"Layout format version {StorageLayout.CurrentFormatVersion} or placement-compatible version "
-                + $"{StorageLayout.PreviousFormatVersion} is required.");
+                $"Layout format version {StorageLayout.MovementFormatVersion} or placement-compatible version "
+                + $"{StorageLayout.LegacyFormatVersion} is required.");
         }
 
         ValidateIdentityValues(
@@ -1461,7 +1616,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             identity.PartitionCount,
             nameof(identity),
             "layout identity",
-            StorageLayout.CurrentFormatVersion);
+            StorageLayout.MovementFormatVersion);
     }
 
     private void ValidateIdentityValues(
@@ -1496,7 +1651,9 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         EnsureLegacyBaseMatches(descriptor);
         if (_state.State.VirtualSlotCount != 0
             || (_state.State.SlotAssignments is not null && _state.State.SlotAssignments.Length != 0)
-            || _state.State.Epoch != 0)
+            || _state.State.Epoch != 0
+            || _state.State.IndexSchemaProtocolVersion != 0
+            || _state.State.IndexSchemaEnablement is not null)
         {
             throw new InvalidOperationException(
                 "The persisted version-3 layout contains unexpected virtual-routing state and cannot be migrated.");
@@ -1505,7 +1662,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
 
     private void EnsureLegacyMatches(StorageLayoutDescriptor descriptor)
     {
-        if (_state.State.FormatVersion != StorageLayout.PreviousFormatVersion)
+        if (_state.State.FormatVersion != StorageLayout.LegacyFormatVersion)
         {
             ThrowLayoutMismatch(descriptor);
         }
@@ -1513,7 +1670,9 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         EnsureLegacyBaseMatches(descriptor);
         if (_state.State.VirtualSlotCount != 0
             || (_state.State.SlotAssignments is not null && _state.State.SlotAssignments.Length != 0)
-            || _state.State.Epoch != 0)
+            || _state.State.Epoch != 0
+            || _state.State.IndexSchemaProtocolVersion != 0
+            || _state.State.IndexSchemaEnablement is not null)
         {
             throw new InvalidOperationException("The persisted version-3 layout contains invalid routing fields.");
         }
@@ -1538,6 +1697,8 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         if (_state.State.MovementProtocolVersion == 0
             && _state.State.MovementEnablement is null
             && _state.State.MoveIntent is null
+            && _state.State.IndexSchemaProtocolVersion == 0
+            && _state.State.IndexSchemaEnablement is null
             && _state.State.Epoch == InitialRoutingEpoch
             && string.Equals(_state.State.ProviderName, descriptor.ProviderName, StringComparison.Ordinal)
             && _state.State.PartitionCount == descriptor.PartitionCount
@@ -1567,7 +1728,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
 
     private void EnsureLegacyIdentityMatches(StorageLayoutIdentity identity)
     {
-        if (_state.State.FormatVersion == StorageLayout.PreviousFormatVersion
+        if (_state.State.FormatVersion == StorageLayout.LegacyFormatVersion
             && string.Equals(_state.State.ProviderName, identity.ProviderName, StringComparison.Ordinal)
             && _state.State.PartitionCount == identity.PartitionCount)
         {
@@ -1583,6 +1744,8 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         if (_state.State.MovementProtocolVersion == 0
             && _state.State.MovementEnablement is null
             && _state.State.MoveIntent is null
+            && _state.State.IndexSchemaProtocolVersion == 0
+            && _state.State.IndexSchemaEnablement is null
             && _state.State.Epoch == InitialRoutingEpoch
             && string.Equals(_state.State.ProviderName, identity.ProviderName, StringComparison.Ordinal)
             && _state.State.PartitionCount == identity.PartitionCount)
@@ -1614,7 +1777,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
 
         var state = _state.State;
         if (!state.Initialized
-            || state.FormatVersion != StorageLayout.CurrentFormatVersion
+            || !StorageLayout.IsRoutingFormatVersion(state.FormatVersion)
             || string.IsNullOrWhiteSpace(state.ProviderName)
             || !string.Equals(state.ProviderName, ProviderName, StringComparison.Ordinal)
             || state.PartitionCount <= 0
@@ -1625,12 +1788,43 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             || state.SlotAssignments.Length != state.VirtualSlotCount
             || state.Epoch <= 0)
         {
-            throw new InvalidOperationException("The persisted version-4 layout contains invalid routing boundaries.");
+            throw new InvalidOperationException(
+                "The persisted routing layout contains invalid format or assignment boundaries.");
         }
 
         StoragePersistence.ValidateOptions(
             state.JournalSegmentCapacity,
             state.MaximumJournalReplayEntries);
+        if (state.IndexSchemaProtocolVersion is not 0
+            and not StorageLayout.CurrentIndexSchemaProtocolVersion)
+        {
+            throw new InvalidOperationException(
+                $"The persisted layout index-schema protocol version {state.IndexSchemaProtocolVersion} is not supported.");
+        }
+
+        if (state.FormatVersion == StorageLayout.MovementFormatVersion)
+        {
+            if (state.IndexSchemaProtocolVersion != 0 || state.IndexSchemaEnablement is not null)
+            {
+                throw new InvalidOperationException(
+                    "A version-4 layout cannot contain managed index-schema capability state.");
+            }
+        }
+        else
+        {
+            var schemaMaintenanceActive = state.IndexSchemaEnablement is not null
+                && (state.IndexSchemaProtocolVersion is 0
+                    or StorageLayout.CurrentIndexSchemaProtocolVersion);
+            var schemaEnabled = state.IndexSchemaEnablement is null
+                && state.IndexSchemaProtocolVersion
+                    == StorageLayout.CurrentIndexSchemaProtocolVersion;
+            if (!schemaMaintenanceActive && !schemaEnabled)
+            {
+                throw new InvalidOperationException(
+                    "A version-5 layout must contain an active or published managed index-schema capability.");
+            }
+        }
+
         switch (state.MovementProtocolVersion)
         {
             case 0:
@@ -1644,7 +1838,33 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
                     $"The persisted layout movement protocol version {state.MovementProtocolVersion} is not supported.");
         }
 
+        if (state.IndexSchemaEnablement is { } indexSchemaEnablement)
+        {
+            ValidateIndexSchemaEnablement(state, indexSchemaEnablement);
+        }
+
         _routingStateValidated = true;
+    }
+
+    private static void ValidateIndexSchemaEnablement(
+        StorageLayoutState state,
+        StorageIndexSchemaEnableIntent enablement)
+    {
+        if (state.IndexSchemaProtocolVersion is not 0
+                and not StorageLayout.CurrentIndexSchemaProtocolVersion
+            || state.MovementEnablement is not null
+            || state.MoveIntent is not null
+            || enablement.EnablementId == Guid.Empty
+            || enablement.ProtocolVersion != StorageLayout.CurrentIndexSchemaProtocolVersion
+            || enablement.LayoutEpoch != state.Epoch
+            || enablement.LayoutFingerprint is null
+            || !StorageLayoutFingerprint.Equals(
+                enablement.LayoutFingerprint,
+                StorageLayoutFingerprint.Compute(StorageLayoutSnapshot.FromState(state))))
+        {
+            throw new InvalidOperationException(
+                "The persisted index-schema enablement intent contains invalid routing boundaries.");
+        }
     }
 
     private static void ValidateMovementDisabledState(StorageLayoutState state)
@@ -1797,7 +2017,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         var previous = _state.State;
         var previousSnapshot = _routingSnapshot;
         var previousValidated = _routingStateValidated;
-        if (previous.Initialized && previous.FormatVersion == StorageLayout.CurrentFormatVersion)
+        if (previous.Initialized && StorageLayout.IsRoutingFormatVersion(previous.FormatVersion))
         {
             ValidateRoutingState();
             previousSnapshot ??= StorageLayoutSnapshot.FromState(previous);
@@ -1813,7 +2033,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             // The physical provider ETag makes the single layout document the routing commit point.
             await _state.WriteStateAsync();
             _routingSnapshot = candidate.Initialized
-                && candidate.FormatVersion == StorageLayout.CurrentFormatVersion
+                && StorageLayout.IsRoutingFormatVersion(candidate.FormatVersion)
                     ? StorageLayoutSnapshot.FromState(candidate)
                     : null;
             _routingStateValidated = false;

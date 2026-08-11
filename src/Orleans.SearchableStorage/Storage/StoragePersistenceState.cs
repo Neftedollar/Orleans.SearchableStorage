@@ -77,6 +77,13 @@ internal sealed class StoragePartitionManifestState
     [Id(17)]
     public StoragePartitionMoveControl MoveControl { get; set; } = new();
 
+    /// <summary>
+    /// Identifies the managed index-schema protocol durably enabled for this partition. A nonzero
+    /// value is valid only in persistence format 5 or later.
+    /// </summary>
+    [Id(18)]
+    public int IndexSchemaProtocolVersion { get; set; }
+
     public StoragePartitionManifestState Copy()
     {
         return new StoragePartitionManifestState
@@ -99,6 +106,7 @@ internal sealed class StoragePartitionManifestState
             RoutedOperationsRequired = RoutedOperationsRequired,
             MinimumRoutingEpoch = MinimumRoutingEpoch,
             MoveControl = MoveControl.Copy(),
+            IndexSchemaProtocolVersion = IndexSchemaProtocolVersion,
         };
     }
 }
@@ -344,6 +352,7 @@ internal enum StorageJournalOperation
     AdvanceVersion = 2,
     Import = 3,
     MoveDelete = 4,
+    Reindex = 5,
 }
 
 [GenerateSerializer]
@@ -528,7 +537,7 @@ internal sealed class StorageSnapshotState
 
     /// <summary>
     /// Identifies the snapshot record payload representation. Version zero is the original
-    /// string-based dictionary. Version one stores lossless movement records so persistence-v4
+    /// string-based dictionary. Version one stores lossless movement records so persistence-v4+
     /// compaction preserves every UTF-16 code unit accepted by the storage write domain.
     /// </summary>
     [Id(9)]
@@ -576,6 +585,9 @@ internal static class StoragePersistenceStateCopy
             Payload = [.. record.Payload],
             ETag = record.ETag,
             IndexEntries = record.IndexEntries.Select(CopyIndexEntry).ToList(),
+            IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
+                ? null
+                : [.. record.IndexSchemaFingerprint],
         };
     }
 
@@ -640,16 +652,25 @@ internal static class StoragePersistenceStateValidation
         switch (entry.Operation)
         {
             case StorageJournalOperation.Upsert:
+            case StorageJournalOperation.Reindex:
                 ArgumentException.ThrowIfNullOrWhiteSpace(entry.RecordKey, parameterName);
                 if (entry.Record is null
                     || entry.Move is not null)
                 {
                     throw new ArgumentException(
-                        "An upsert journal entry requires one record and cannot contain a move payload.",
+                        "An upsert or reindex journal entry requires one record and cannot contain a move payload.",
                         parameterName);
                 }
 
                 ValidateRecord(entry.Record, parameterName);
+                if (entry.Operation == StorageJournalOperation.Reindex
+                    && entry.Record.IndexSchemaFingerprint is null)
+                {
+                    throw new ArgumentException(
+                        "A reindex journal entry requires a managed schema fingerprint.",
+                        parameterName);
+                }
+
                 break;
             case StorageJournalOperation.Delete:
                 ArgumentException.ThrowIfNullOrWhiteSpace(entry.RecordKey, parameterName);
@@ -863,6 +884,10 @@ internal static class StoragePersistenceStateValidation
         ArgumentNullException.ThrowIfNull(record.Payload, parameterName);
         ArgumentException.ThrowIfNullOrWhiteSpace(record.ETag, parameterName);
         ArgumentNullException.ThrowIfNull(record.IndexEntries, parameterName);
+        if (record.IndexSchemaFingerprint is { } fingerprint)
+        {
+            IndexSchemaIdentity.ValidateIdentity(fingerprint, parameterName);
+        }
 
         foreach (var indexEntry in record.IndexEntries)
         {
@@ -1026,6 +1051,9 @@ internal static class StoragePersistenceStateEquality
         if (!left.GrainId.Equals(right.GrainId)
             || !left.Payload.AsSpan().SequenceEqual(right.Payload)
             || !string.Equals(left.ETag, right.ETag, StringComparison.Ordinal)
+            || !NullableBytesEqual(
+                left.IndexSchemaFingerprint,
+                right.IndexSchemaFingerprint)
             || left.IndexEntries.Count != right.IndexEntries.Count)
         {
             return false;
@@ -1044,5 +1072,12 @@ internal static class StoragePersistenceStateEquality
         }
 
         return true;
+    }
+
+    private static bool NullableBytesEqual(byte[]? left, byte[]? right)
+    {
+        return left is null || right is null
+            ? left is null && right is null
+            : left.AsSpan().SequenceEqual(right);
     }
 }

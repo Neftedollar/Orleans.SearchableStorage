@@ -62,7 +62,7 @@ public sealed class StorageSnapshotProtocolTests
             requestDeactivation: static () => { });
         var reverseInsertion = StorageSnapshotFactory.DecodeRecords(
                 snapshot,
-                StoragePersistence.CurrentPersistenceFormatVersion)
+                StoragePersistence.MovementPersistenceFormatVersion)
             .Reverse()
             .ToDictionary(
                 static pair => pair.Key,
@@ -71,7 +71,7 @@ public sealed class StorageSnapshotProtocolTests
         var regenerated = StorageSnapshotFactory.Create(
             StorageSnapshotDescriptor.FromSnapshot(snapshot),
             reverseInsertion,
-            StoragePersistence.CurrentPersistenceFormatVersion);
+            StoragePersistence.MovementPersistenceFormatVersion);
         StoragePersistenceStateEquality.SnapshotEquals(snapshot, regenerated).Should().BeTrue();
 
         Func<Task> firstStore = () => firstActivation.StoreAsync(snapshot);
@@ -248,8 +248,8 @@ public sealed class StorageSnapshotProtocolTests
             nextDescriptor,
             StorageSnapshotFactory.DecodeRecords(
                 current,
-                StoragePersistence.CurrentPersistenceFormatVersion),
-            StoragePersistence.CurrentPersistenceFormatVersion);
+                StoragePersistence.MovementPersistenceFormatVersion),
+            StoragePersistence.MovementPersistenceFormatVersion);
         await grain.StoreAsync(next);
 
         state.State.Tombstoned.Should().BeFalse();
@@ -326,6 +326,6 @@ public sealed class StorageSnapshotProtocolTests
                 ["a-\ud800"] = first,
                 ["b-\udc00"] = second,
             },
-            StoragePersistence.CurrentPersistenceFormatVersion);
+            StoragePersistence.MovementPersistenceFormatVersion);
     }
 }

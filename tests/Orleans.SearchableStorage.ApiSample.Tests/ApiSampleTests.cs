@@ -30,7 +30,7 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         description.Should().NotBeNull();
         description!.Name.Should().Be("Orleans.SearchableStorage API sample");
         description.Storage.Should().Be("Journaled Orleans storage over in-memory physical persistence");
-        description.Endpoints.Should().HaveCount(18);
+        description.Endpoints.Should().HaveCount(20);
     }
 
     [Fact]
@@ -49,6 +49,33 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         options.Movement.TransferPageByteTarget.Should().Be(256 * 1024);
         options.Query.ContinuationProtection.CurrentKey.Should().NotBeNull();
         options.Query.ContinuationProtection.CurrentKey!.KeyId.Should().Be("api-sample-ephemeral");
+    }
+
+    [Fact]
+    public async Task HostBootstrapsAndExposesTheManagedVacancySchema()
+    {
+        var response = await _client.GetAsync("/storage/index-schemas/vacancies");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var status = await response.Content
+            .ReadFromJsonAsync<SearchableStorageIndexSchemaStatus>();
+        status.Should().NotBeNull();
+        status!.State.Should().Be(SearchableStorageIndexSchemaState.Active);
+        status.StateName.Should().Be(VacancyGrain.StateName);
+        status.Fingerprint.Should().NotBeNullOrWhiteSpace();
+        status.ProcessedRecordCount.Should().Be(0);
+
+        var layoutResponse = await _client.GetAsync("/storage/layout");
+        var layout = await layoutResponse.Content.ReadFromJsonAsync<SearchableStorageLayout>();
+        layout.Should().NotBeNull();
+        layout!.IndexSchemaProtocolVersion.Should().Be(1);
+
+        var rebuild = await _client.PostAsync(
+            "/storage/index-schemas/vacancies/rebuild",
+            content: null);
+        rebuild.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await rebuild.Content.ReadFromJsonAsync<SearchableStorageIndexSchemaStatus>())!
+            .Fingerprint.Should().Be(status.Fingerprint);
     }
 
     [Fact]

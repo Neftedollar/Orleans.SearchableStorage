@@ -24,6 +24,8 @@ siloBuilder.AddSearchableGrainStorage(
                 Convert.FromBase64String(
                     configuration["SearchableStorage:ContinuationKey"]!));
     });
+
+siloBuilder.AddSearchableStorageState<VacancyState>("Searchable", "vacancy");
 ```
 
 Public paging requires exactly 32 bytes of secret key material. Configure the same provider-scoped
@@ -35,8 +37,8 @@ response-family-bound continuation.
 
 These are the defaults. `VirtualSlotTargetCount` seeds the exact persisted map for that provider
 namespace by rounding upward to a multiple of `PartitionCount`; it does not change an existing
-version-4 map, although it must remain a valid configured value. The exact per-layout map is capped
-at 262,144 owner integers. `PartitionCount` remains the persisted initial owner count; live
+format-4 or format-5 map, although it must remain a valid configured value. The exact per-layout map
+is capped at 262,144 owner integers. `PartitionCount` remains the persisted initial owner count; live
 rebalancing changes assignments and may introduce higher owner indices without changing that
 identity field. `JournalSegmentCapacity` and `MaximumJournalReplayEntries` are persisted choices and
 require migration to change. `CompactionThreshold` and the movement page settings are operational.
@@ -49,15 +51,17 @@ the same stale-ETag and lost-acknowledgement behavior for the layout document as
 partition manifest. The project uses JSON physical serialization; durable C# property names in the
 layout state are retained across the version change in addition to Orleans serializer field IDs.
 Layout adoption itself leaves partition manifests, journal segments, and snapshots untouched.
-Only the later explicit, quiesced movement-enablement owner sweep upgrades a format-3 partition
-manifest to persistence format 4; ordinary activation and mutation remain format 3 until that gate.
-The upgrade retains the bounded journal ring and two snapshot slots.
+Only an explicit, quiesced capability sweep upgrades partition persistence. Movement enablement
+upgrades a supported format-3 owner to format 4. Managed-schema adoption upgrades a supported
+format-3 or format-4 owner directly to format 5. Ordinary activation and mutation do not opt into a
+newer capability. Both upgrades retain the bounded journal ring and two snapshot slots; formats 4
+and 5 use the lossless snapshot record representation.
 
 The v3-to-v4 transition requires a traffic pause rather than an online mixed-version rollout.
 Quiesce searchable storage and query traffic, update every silo and Orleans client, verify that no
 version-3 process remains, and keep traffic paused while one normal grain-state storage operation
 adopts each provider namespace. Verify that the admin read succeeds and reports epoch 1; the admin
-path returns a snapshot only for format 4, and it does not perform
+path returns a snapshot only for routing-capable layout format 4 or 5, and it does not perform
 adoption. A new storage activation immediately uses routed methods which an old silo does not
 implement, and an old activation cannot read the adopted format-4 layout. Updated consumers retain
 legacy methods while the epoch-1 identity map preserves old modulo placement. At this point either
@@ -71,6 +75,43 @@ resuming traffic. Legacy placement-only calls are rejected thereafter, so binary
 supported. The complete procedure and recovery rules are in the
 [live-movement runbook](live-movement.md).
 
+Managed index schemas have a separate `index-schema` control document for every provider/state pair
+in the same physical provider. The first rebuild can initialize a fresh layout, upgrades every
+current owner to persistence format 5, rebuilds every record for that one state, and then publishes
+a provider-wide, one-way capability in the layout. Publication activates no other state: complete
+and verify every registered state's rebuild in that same quiesced first-adoption window before
+resuming provider traffic or movement. A durable per-rebuild layout intent blocks movement
+throughout the owner sweep and record pages, including for later generation changes. Every state
+using that provider must be registered on every silo, and every direct query client must declare the
+states it uses, before this sweep starts. Against existing data, quiesce the provider before the
+first new binary or changed registration is deployed, then keep it paused while every participant
+is updated and verified. Admin calls must supply the same CLR type and application version. Old
+binaries and schema-unaware clients are unsupported afterwards.
+
+The rebuild uses the existing partition WAL and snapshots, so backend conditional-write and
+lost-acknowledgement requirements are unchanged. A control write can fail before commit or commit
+before its acknowledgement is lost; retry on a fresh activation must expose the durable cursor or
+active generation and resume idempotently. A completed routing-layout change between turns resets
+the owner scan and processed count if it occurs before the rebuild acquires its layout maintenance
+intent; movement is excluded after that point. Registration and rebuild are explicit: use the
+homogeneous, quiesced procedure in
+[index-schema-lifecycle.md](index-schema-lifecycle.md). Owner enablement, record scanning, and
+provider-capability publication cannot overlap live movement. The following state-control
+activation remains protected by the operator's quiescence window.
+
+The control document is not disposable metadata. Include it in the same backup, replication,
+retention, and restore boundary as the provider layout, manifests, journals, and snapshots. If only
+the control is lost, a restarted or cold-cache participant fails closed against the still-enabled
+format-5 namespace. Already validated participants do not poll the control on each operation, so
+quiesce and restart them during recovery rather than treating out-of-band deletion as an immediate
+distributed fence. After investigation, a quiesced rebuild can recreate the generation only when
+the layout has no surviving schema-maintenance intent and every payload which needs reindexing is
+still decodable. Mid-rebuild control loss with a surviving intent requires a consistent backup or a
+reviewed physical recovery; the public API cannot synthesize its missing identity. The rebuild
+deserializes those payloads through
+the configured application-state serializer, so a CLR or serializer-breaking deployment must be
+corrected before retrying. The schema protocol does not migrate payload serialization.
+
 The bounded query protocol has a separate mixed-version rule and no persistence migration. Before
 upgrading from a release which lacks the page RPC, quiesce searchable query traffic, deploy every
 partition-hosting silo and built-in query client, distribute the common continuation key ring, and
@@ -79,7 +120,7 @@ Never send a page or facet RPC to an old activation and never fall back to the o
 RPC. Facets require no durable migration: their messages are non-persisted wire protocol, and the
 canonical hash-value projection is rebuilt from the same durable records/index entries on activation.
 
-The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, and snapshot states is required; the manifest is the searchable-storage commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, or snapshot state.
+The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, snapshot, and schema-control states is required; the partition manifest is the record/index commit point and the per-state control is the generation commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, snapshot, or `index-schema` control state.
 
 Journal segments are bounded by operation count, not serialized bytes, and each snapshot contains
 the whole partition. The two snapshot slots bound object count, not object size. Movement export,

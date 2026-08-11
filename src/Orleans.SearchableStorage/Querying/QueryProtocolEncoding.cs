@@ -361,7 +361,7 @@ internal static class StorageLayoutFingerprint
     private static byte[] ComputeCore(StorageLayoutSnapshot snapshot)
     {
         using var writer = new CanonicalBinaryWriter();
-        writer.WriteInt32(snapshot.FormatVersion);
+        writer.WriteInt32(StorageLayout.GetRoutingFingerprintFormatVersion(snapshot.FormatVersion));
         writer.WriteString(snapshot.ProviderName);
         writer.WriteInt32(snapshot.InitialPartitionCount);
         writer.WriteInt32(snapshot.VirtualSlotCount);

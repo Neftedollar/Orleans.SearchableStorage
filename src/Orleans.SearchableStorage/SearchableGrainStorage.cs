@@ -9,27 +9,37 @@ namespace Orleans.SearchableStorage;
 
 internal sealed class SearchableGrainStorage : IGrainStorage
 {
+    private readonly string _providerName;
     private readonly IActivatorProvider _activatorProvider;
     private readonly Func<int, IStoragePartitionGrain> _getPartition;
     private readonly StorageLayoutCache _layoutCache;
     private readonly IGrainStorageSerializer _serializer;
     private readonly StoragePersistenceSettings _persistenceSettings;
+    private readonly SearchableStateRegistry _stateRegistry;
+    private readonly Func<string, IStorageIndexSchemaGrain>? _getIndexSchema;
+    private readonly ActiveSchemaValidationCache _activeSchemas = new();
 
     public SearchableGrainStorage(
         string name,
         SearchableStorageOptions options,
         IGrainFactory grainFactory,
-        IActivatorProvider activatorProvider)
+        IActivatorProvider activatorProvider,
+        SearchableStateRegistry stateRegistry)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentNullException.ThrowIfNull(activatorProvider);
+        ArgumentNullException.ThrowIfNull(stateRegistry);
 
         var configuration = CreateConfiguration(name, options);
+        _providerName = name;
         _persistenceSettings = configuration.PersistenceSettings;
         _serializer = configuration.Serializer;
         _activatorProvider = activatorProvider;
+        _stateRegistry = stateRegistry;
+        _getIndexSchema = stateName => grainFactory.GetGrain<IStorageIndexSchemaGrain>(
+            StorageIndexSchema.CreateGrainKey(name, stateName));
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(name);
         _layoutCache = new StorageLayoutCache(
             async () => await layoutGrain.InitializeRoutingAsync(configuration.Layout));
@@ -52,9 +62,12 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         ArgumentNullException.ThrowIfNull(getPartition);
 
         var configuration = CreateConfiguration(name, options);
+        _providerName = name;
         _persistenceSettings = configuration.PersistenceSettings;
         _serializer = configuration.Serializer;
         _activatorProvider = activatorProvider;
+        _stateRegistry = SearchableStateRegistry.Empty;
+        _getIndexSchema = null;
         _layoutCache = layoutCache;
         _getPartition = getPartition;
     }
@@ -137,7 +150,14 @@ internal sealed class SearchableGrainStorage : IGrainStorage
 
         var recordKey = CreateRecordKey(stateName, grainId);
         var payload = _serializer.Serialize(grainState.State).ToArray();
-        var indexes = IndexMetadataProvider.Extract(stateName, grainState.State);
+        var registration = _stateRegistry.Find<T>(_providerName, stateName);
+        await EnsureSchemaActiveAsync(stateName, registration);
+        var indexes = registration is null
+            ? IndexMetadataProvider.Extract(stateName, grainState.State)
+            : IndexMetadataProvider.Extract(
+                stateName,
+                grainState.State,
+                registration.Schema.Fingerprint);
         var request = new StorageWriteRequest
         {
             RecordKey = recordKey,
@@ -146,6 +166,11 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             ExpectedETag = grainState.ETag,
             IndexEntries = [.. indexes],
             Persistence = _persistenceSettings,
+            IndexSchemaFingerprint = registration?.Schema.Fingerprint,
+            StateName = stateName,
+            IndexSchemaProtocolVersion = registration is null
+                ? 0
+                : StorageIndexSchema.ProtocolVersion,
         };
 
         grainState.ETag = await ExecuteRoutedAsync(
@@ -162,6 +187,8 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     public async Task ClearStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
+        var registration = _stateRegistry.Find<T>(_providerName, stateName);
+        await EnsureSchemaActiveAsync(stateName, registration);
 
         var recordKey = CreateRecordKey(stateName, grainId);
         await ExecuteRoutedAsync(
@@ -173,6 +200,11 @@ internal sealed class SearchableGrainStorage : IGrainStorage
                     RecordKey = recordKey,
                     ExpectedETag = grainState.ETag,
                     Persistence = _persistenceSettings,
+                    StateName = stateName,
+                    IndexSchemaFingerprint = registration?.Schema.Fingerprint,
+                    IndexSchemaProtocolVersion = registration is null
+                        ? 0
+                        : StorageIndexSchema.ProtocolVersion,
                 },
                 GrainId = grainId,
                 Slot = slot,
@@ -238,6 +270,70 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     private T CreateInstance<T>()
     {
         return _activatorProvider.GetActivator<T>().Create();
+    }
+
+    private async Task EnsureSchemaActiveAsync(
+        string stateName,
+        ISearchableStateRegistration? registration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+        if (registration is null)
+        {
+            if (_stateRegistry.ContainsProvider(_providerName))
+            {
+                throw new SearchableStorageIndexSchemaException(
+                    $"Provider '{_providerName}' has managed schema declarations, but state "
+                    + $"'{stateName}' is not registered on this silo. Register every state used by "
+                    + "the provider with AddSearchableStorageState<TState>.");
+            }
+
+            var layout = await GetRequiredLayoutAsync();
+            var schemaProtocolPublished = layout.IndexSchemaProtocolVersion
+                == StorageIndexSchema.ProtocolVersion;
+            var schemaEnablementActive = layout.CopyIndexSchemaEnablement() is not null;
+            if (schemaProtocolPublished || schemaEnablementActive)
+            {
+                var capabilityState = schemaProtocolPublished
+                    ? "has managed index schemas enabled"
+                    : "is durably enabling managed index schemas";
+                throw new SearchableStorageIndexSchemaException(
+                    $"Provider '{_providerName}' {capabilityState}, but state "
+                    + $"'{stateName}' "
+                    + "is not registered on the silo. Register every state used by the provider "
+                    + "with AddSearchableStorageState<TState>.");
+            }
+
+            return;
+        }
+
+        if (_activeSchemas.IsActive(registration))
+        {
+            return;
+        }
+
+        var control = _getIndexSchema
+            ?? throw new InvalidOperationException("The managed index-schema control is unavailable.");
+        var snapshot = await control(registration.StateName).GetAsync(
+            StorageIndexSchema.CreateRequest(registration));
+        if (snapshot.Rebuild is not null)
+        {
+            throw new SearchableStorageIndexSchemaException(
+                $"Index schema rebuild '{snapshot.Rebuild.RebuildId}' is still running for state "
+                + $"'{registration.StateName}'. Keep searchable traffic quiesced and resume it through "
+                + "ISearchableStorageAdminClient.");
+        }
+
+        if (snapshot.ActiveFingerprint is null
+            || !IndexSchemaIdentity.FixedTimeEquals(
+                snapshot.ActiveFingerprint,
+                registration.Schema.Fingerprint))
+        {
+            throw new SearchableStorageIndexSchemaException(
+                $"The registered index schema for state '{registration.StateName}' is not active. "
+                + "Quiesce searchable traffic and run RebuildIndexSchemaAsync<TState> before using it.");
+        }
+
+        _activeSchemas.MarkActive(registration);
     }
 
     private static void ValidatePersistenceOptions(

@@ -933,7 +933,7 @@ public sealed class SearchableStorageFacetCoordinatorTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = ProviderName,
             PartitionCount = ownerCount,
             VirtualSlotCount = assignments.Length,

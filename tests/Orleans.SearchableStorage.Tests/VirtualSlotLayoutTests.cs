@@ -75,11 +75,11 @@ public sealed class VirtualSlotLayoutTests
         var snapshot = await grain.InitializeRoutingAsync(descriptor);
 
         state.WriteCount.Should().Be(1);
-        state.State.FormatVersion.Should().Be(StorageLayout.CurrentFormatVersion);
+        state.State.FormatVersion.Should().Be(StorageLayout.MovementFormatVersion);
         state.State.VirtualSlotCount.Should().Be(16_386);
         state.State.SlotAssignments.Should().HaveCount(16_386);
         state.State.Epoch.Should().Be(1);
-        snapshot.FormatVersion.Should().Be(StorageLayout.CurrentFormatVersion);
+        snapshot.FormatVersion.Should().Be(StorageLayout.MovementFormatVersion);
         snapshot.ProviderName.Should().Be(providerName);
         snapshot.InitialPartitionCount.Should().Be(3);
         snapshot.VirtualSlotCount.Should().Be(16_386);
@@ -166,7 +166,7 @@ public sealed class VirtualSlotLayoutTests
         var snapshot = await grain.InitializeRoutingAsync(descriptor);
 
         state.WriteCount.Should().Be(1);
-        state.State.FormatVersion.Should().Be(StorageLayout.CurrentFormatVersion);
+        state.State.FormatVersion.Should().Be(StorageLayout.MovementFormatVersion);
         state.State.ProviderName.Should().Be(providerName);
         state.State.PartitionCount.Should().Be(7);
         state.State.JournalSegmentCapacity.Should().Be(23);
@@ -227,7 +227,7 @@ public sealed class VirtualSlotLayoutTests
 
         await migrate.Should().ThrowAsync<InvalidOperationException>();
         state.WriteCount.Should().Be(0);
-        state.State.FormatVersion.Should().Be(StorageLayout.PreviousFormatVersion);
+        state.State.FormatVersion.Should().Be(StorageLayout.LegacyFormatVersion);
     }
 
     [Fact]
@@ -241,7 +241,7 @@ public sealed class VirtualSlotLayoutTests
         var legacyDescriptor = CreateVersionThreeDescriptor(providerName, partitionCount: 8);
         var legacyIdentity = new StorageLayoutIdentity
         {
-            FormatVersion = StorageLayout.PreviousFormatVersion,
+            FormatVersion = StorageLayout.LegacyFormatVersion,
             ProviderName = providerName,
             PartitionCount = 8,
         };
@@ -251,7 +251,7 @@ public sealed class VirtualSlotLayoutTests
         await grain.InitializeAsync(legacyDescriptor);
 
         state.WriteCount.Should().Be(1);
-        state.State.FormatVersion.Should().Be(StorageLayout.CurrentFormatVersion);
+        state.State.FormatVersion.Should().Be(StorageLayout.MovementFormatVersion);
         state.State.Epoch.Should().Be(1);
     }
 
@@ -274,7 +274,7 @@ public sealed class VirtualSlotLayoutTests
         await current.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*InitializeRoutingAsync*");
         state.WriteCount.Should().Be(0);
-        state.State.FormatVersion.Should().Be(StorageLayout.PreviousFormatVersion);
+        state.State.FormatVersion.Should().Be(StorageLayout.LegacyFormatVersion);
     }
 
     [Fact]
@@ -332,7 +332,7 @@ public sealed class VirtualSlotLayoutTests
         poisonCount.Should().Be(1);
         state.WriteCount.Should().Be(1);
         state.State.FormatVersion.Should().Be(
-            migrate ? StorageLayout.PreviousFormatVersion : 0);
+            migrate ? StorageLayout.LegacyFormatVersion : 0);
 
         Func<Task> read = () => grain.GetCurrentLayoutAsync();
         Func<Task> retry = () => grain.InitializeRoutingAsync(descriptor);
@@ -437,7 +437,7 @@ public sealed class VirtualSlotLayoutTests
     {
         return new StorageLayoutDescriptor
         {
-            FormatVersion = StorageLayout.PreviousFormatVersion,
+            FormatVersion = StorageLayout.LegacyFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
             JournalSegmentCapacity = journalSegmentCapacity,
@@ -454,7 +454,7 @@ public sealed class VirtualSlotLayoutTests
         return new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.PreviousFormatVersion,
+            FormatVersion = StorageLayout.LegacyFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
             JournalSegmentCapacity = journalSegmentCapacity,
@@ -470,7 +470,7 @@ public sealed class VirtualSlotLayoutTests
         return new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,

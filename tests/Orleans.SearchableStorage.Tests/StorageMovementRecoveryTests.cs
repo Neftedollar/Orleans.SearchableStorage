@@ -257,7 +257,7 @@ public sealed class StorageMovementRecoveryTests
         await persistence.EnableMovementProtocolAsync(settings, minimumRoutingEpoch: 1);
         existingManifest.WriteCount.Should().Be(2);
         existingManifest.State.PersistenceFormatVersion.Should()
-            .Be(StoragePersistence.CurrentPersistenceFormatVersion);
+            .Be(StoragePersistence.MovementPersistenceFormatVersion);
         existingManifest.State.MovementProtocolVersion.Should().Be(StorageMoveProtocol.Version);
 
         await persistence.EnableMovementProtocolAsync(settings, minimumRoutingEpoch: 1);
@@ -334,7 +334,7 @@ public sealed class StorageMovementRecoveryTests
 
         manifest.WriteCount.Should().Be(1);
         manifest.State.PersistenceFormatVersion.Should()
-            .Be(StoragePersistence.CurrentPersistenceFormatVersion);
+            .Be(StoragePersistence.MovementPersistenceFormatVersion);
         var childAfterEnable = await snapshotGrain.ReadAsync();
         StoragePersistenceStateEquality.SnapshotEquals(childAfterEnable, snapshot).Should().BeTrue();
 

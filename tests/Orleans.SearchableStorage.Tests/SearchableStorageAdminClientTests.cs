@@ -1,4 +1,5 @@
 using AwesomeAssertions;
+using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
@@ -19,7 +20,28 @@ public sealed class SearchableStorageAdminClientTests
     }
 
     [Fact]
-    public void AdditiveLayoutMovementPropertiesDoNotBecomeRequiredMembers()
+    public async Task ExistingReadOnlyAdminImplementationsGetExplicitSchemaFailures()
+    {
+        ISearchableStorageAdminClient client = new ReadOnlyAdminClient();
+        Task[] faultedCalls =
+        [
+            client.GetIndexSchemaAsync<object>("state"),
+            client.GetIndexSchemaAsync<object>("state", applicationSchemaVersion: 2),
+            client.RebuildIndexSchemaAsync<object>("state"),
+            client.RebuildIndexSchemaAsync<object>("state", applicationSchemaVersion: 2),
+        ];
+
+        foreach (var faulted in faultedCalls)
+        {
+            faulted.IsFaulted.Should().BeTrue();
+            Func<Task> call = async () => await faulted;
+            await call.Should().ThrowAsync<NotSupportedException>()
+                .WithMessage("*managed index schemas*AddSearchableGrainStorage*");
+        }
+    }
+
+    [Fact]
+    public void AdditiveLayoutPropertiesDoNotBecomeRequiredMembers()
     {
         var required = typeof(System.Runtime.CompilerServices.RequiredMemberAttribute);
 
@@ -32,6 +54,117 @@ public sealed class SearchableStorageAdminClientTests
         typeof(SearchableStorageLayout)
             .GetProperty(nameof(SearchableStorageLayout.ActiveMove))!
             .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+        typeof(SearchableStorageLayout)
+            .GetProperty(nameof(SearchableStorageLayout.IndexSchemaProtocolVersion))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AdditiveSchemaProgressPropertiesDoNotBecomeRequiredMembers()
+    {
+        var required = typeof(System.Runtime.CompilerServices.RequiredMemberAttribute);
+
+        typeof(SearchableStorageIndexSchemaStatus)
+            .GetProperty(nameof(SearchableStorageIndexSchemaStatus.RebuildPhase))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+        typeof(SearchableStorageIndexSchemaStatus)
+            .GetProperty(nameof(SearchableStorageIndexSchemaStatus.TotalOwnerCount))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+        typeof(SearchableStorageIndexSchemaStatus)
+            .GetProperty(nameof(SearchableStorageIndexSchemaStatus.SchemaEnabledOwnerCount))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+        typeof(SearchableStorageIndexSchemaStatus)
+            .GetProperty(nameof(SearchableStorageIndexSchemaStatus.ScannedOwnerCount))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(
+        1,
+        0,
+        false,
+        SearchableStorageIndexSchemaRebuildPhase.EnablingOwners)]
+    [InlineData(
+        4,
+        2,
+        false,
+        SearchableStorageIndexSchemaRebuildPhase.ScanningRecords)]
+    [InlineData(
+        4,
+        4,
+        true,
+        SearchableStorageIndexSchemaRebuildPhase.ActivatingGeneration)]
+    public void SchemaStatusProjectsEveryDurableRebuildPhase(
+        int schemaEnabledOwnerCount,
+        int scannedOwnerCount,
+        bool layoutProtocolPublished,
+        SearchableStorageIndexSchemaRebuildPhase expectedPhase)
+    {
+        var targetFingerprint = CreateSchemaFingerprint(17);
+        var rebuildId = Guid.NewGuid();
+        var processedRecordCount =
+            expectedPhase == SearchableStorageIndexSchemaRebuildPhase.EnablingOwners
+                ? 0
+                : 73;
+        var snapshot = new StorageIndexSchemaSnapshot
+        {
+            ProviderName = "admin-tests",
+            StateName = "vacancy",
+            Rebuild = new StorageIndexSchemaRebuildIntent
+            {
+                RebuildId = rebuildId,
+                SchemaKey = CreateSchemaFingerprint(29),
+                TargetFingerprint = targetFingerprint,
+                LayoutEpoch = 7,
+                LayoutFingerprint = CreateSchemaFingerprint(41),
+                OwnerCount = 4,
+                NextProtocolOwnerIndex = schemaEnabledOwnerCount,
+                LayoutProtocolPublished = layoutProtocolPublished,
+                NextOwnerIndex = scannedOwnerCount,
+                ProcessedRecordCount = processedRecordCount,
+            },
+        };
+
+        var status = SearchableStorageAdminClient.CreatePublicSchemaStatus(
+            snapshot,
+            targetFingerprint);
+
+        status.State.Should().Be(SearchableStorageIndexSchemaState.Rebuilding);
+        status.RebuildId.Should().Be(rebuildId);
+        status.RebuildPhase.Should().Be(expectedPhase);
+        status.TotalOwnerCount.Should().Be(4);
+        status.SchemaEnabledOwnerCount.Should().Be(schemaEnabledOwnerCount);
+        status.ScannedOwnerCount.Should().Be(scannedOwnerCount);
+        status.ProcessedRecordCount.Should().Be(processedRecordCount);
+        status.Fingerprint.Should().Be(Convert.ToHexString(targetFingerprint));
+    }
+
+    [Fact]
+    public void SchemaStatusOmitsRebuildProgressOutsideARebuild()
+    {
+        var configuredFingerprint = CreateSchemaFingerprint(53);
+        var uninitialized = SearchableStorageAdminClient.CreatePublicSchemaStatus(
+            new StorageIndexSchemaSnapshot
+            {
+                ProviderName = "admin-tests",
+                StateName = "vacancy",
+            },
+            configuredFingerprint);
+        var active = SearchableStorageAdminClient.CreatePublicSchemaStatus(
+            new StorageIndexSchemaSnapshot
+            {
+                ProviderName = "admin-tests",
+                StateName = "vacancy",
+                ActiveFingerprint = configuredFingerprint,
+                LastCompletedRecordCount = 73,
+            },
+            configuredFingerprint);
+
+        uninitialized.State.Should().Be(SearchableStorageIndexSchemaState.Uninitialized);
+        AssertNoRebuildProgress(uninitialized);
+        active.State.Should().Be(SearchableStorageIndexSchemaState.Active);
+        active.ProcessedRecordCount.Should().Be(73);
+        AssertNoRebuildProgress(active);
     }
 
     [Fact]
@@ -312,7 +445,7 @@ public sealed class SearchableStorageAdminClientTests
         var state = new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "admin-tests",
             PartitionCount = 2,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
@@ -348,7 +481,7 @@ public sealed class SearchableStorageAdminClientTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "admin-tests",
             PartitionCount = initialPartitionCount,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
@@ -367,7 +500,7 @@ public sealed class SearchableStorageAdminClientTests
         return StorageLayoutSnapshot.FromState(new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = "admin-tests",
             PartitionCount = 2,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
@@ -384,6 +517,22 @@ public sealed class SearchableStorageAdminClientTests
     {
         return new SearchableStorageAdminClient(new StorageLayoutCache(
             () => Task.FromResult<StorageLayoutSnapshot?>(snapshot)));
+    }
+
+    private static byte[] CreateSchemaFingerprint(byte seed)
+    {
+        return Enumerable.Range(0, IndexSchemaDefinition.FingerprintLength)
+            .Select(index => unchecked((byte)(seed + index)))
+            .ToArray();
+    }
+
+    private static void AssertNoRebuildProgress(SearchableStorageIndexSchemaStatus status)
+    {
+        status.RebuildId.Should().BeNull();
+        status.RebuildPhase.Should().BeNull();
+        status.TotalOwnerCount.Should().BeNull();
+        status.SchemaEnabledOwnerCount.Should().BeNull();
+        status.ScannedOwnerCount.Should().BeNull();
     }
 
     private sealed class ReadOnlyAdminClient : ISearchableStorageAdminClient

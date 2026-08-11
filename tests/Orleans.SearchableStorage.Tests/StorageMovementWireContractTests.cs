@@ -12,6 +12,29 @@ public sealed class StorageMovementWireContractTests
     [Fact]
     public void DurableManifestAndWalFieldsAreExactlyContiguousAndAppendOnly()
     {
+        AssertExactFieldIds<StoredRecord>(
+            (nameof(StoredRecord.GrainId), 0),
+            (nameof(StoredRecord.Payload), 1),
+            (nameof(StoredRecord.ETag), 2),
+            (nameof(StoredRecord.IndexEntries), 3),
+            (nameof(StoredRecord.IndexSchemaFingerprint), 4));
+        AssertExactFieldIds<StorageWriteRequest>(
+            (nameof(StorageWriteRequest.RecordKey), 0),
+            (nameof(StorageWriteRequest.GrainId), 1),
+            (nameof(StorageWriteRequest.Payload), 2),
+            (nameof(StorageWriteRequest.ExpectedETag), 3),
+            (nameof(StorageWriteRequest.IndexEntries), 4),
+            (nameof(StorageWriteRequest.Persistence), 5),
+            (nameof(StorageWriteRequest.IndexSchemaFingerprint), 6),
+            (nameof(StorageWriteRequest.StateName), 7),
+            (nameof(StorageWriteRequest.IndexSchemaProtocolVersion), 8));
+        AssertExactFieldIds<StorageClearRequest>(
+            (nameof(StorageClearRequest.RecordKey), 0),
+            (nameof(StorageClearRequest.ExpectedETag), 1),
+            (nameof(StorageClearRequest.Persistence), 2),
+            (nameof(StorageClearRequest.StateName), 3),
+            (nameof(StorageClearRequest.IndexSchemaFingerprint), 4),
+            (nameof(StorageClearRequest.IndexSchemaProtocolVersion), 5));
         AssertExactFieldIds<StoragePartitionManifestState>(
             (nameof(StoragePartitionManifestState.Initialized), 0),
             (nameof(StoragePartitionManifestState.PersistenceFormatVersion), 1),
@@ -30,7 +53,8 @@ public sealed class StorageMovementWireContractTests
             (nameof(StoragePartitionManifestState.MovementProtocolVersion), 14),
             (nameof(StoragePartitionManifestState.RoutedOperationsRequired), 15),
             (nameof(StoragePartitionManifestState.MinimumRoutingEpoch), 16),
-            (nameof(StoragePartitionManifestState.MoveControl), 17));
+            (nameof(StoragePartitionManifestState.MoveControl), 17),
+            (nameof(StoragePartitionManifestState.IndexSchemaProtocolVersion), 18));
         AssertExactFieldIds<StoragePartitionMoveControl>(
             (nameof(StoragePartitionMoveControl.IsPresent), 0),
             (nameof(StoragePartitionMoveControl.MoveId), 1),
@@ -90,7 +114,8 @@ public sealed class StorageMovementWireContractTests
             (nameof(StorageMoveStoredRecord.GrainKey), 1),
             (nameof(StorageMoveStoredRecord.Payload), 2),
             (nameof(StorageMoveStoredRecord.ETag), 3),
-            (nameof(StorageMoveStoredRecord.IndexEntries), 4));
+            (nameof(StorageMoveStoredRecord.IndexEntries), 4),
+            (nameof(StorageMoveStoredRecord.IndexSchemaFingerprint), 5));
         AssertExactFieldIds<StorageMoveIndexEntry>(
             (nameof(StorageMoveIndexEntry.Scope), 0),
             (nameof(StorageMoveIndexEntry.Kind), 1),
@@ -117,6 +142,81 @@ public sealed class StorageMovementWireContractTests
     }
 
     [Fact]
+    public void ManagedIndexSchemaMessagesKeepExactContiguousFieldIds()
+    {
+        AssertExactFieldIds<StorageIndexSchemaRequest>(
+            (nameof(StorageIndexSchemaRequest.ProviderName), 0),
+            (nameof(StorageIndexSchemaRequest.StateName), 1),
+            (nameof(StorageIndexSchemaRequest.SchemaKey), 2),
+            (nameof(StorageIndexSchemaRequest.Fingerprint), 3),
+            (nameof(StorageIndexSchemaRequest.ProtocolVersion), 4));
+        AssertExactFieldIds<StorageIndexSchemaCommand>(
+            (nameof(StorageIndexSchemaCommand.Schema), 0),
+            (nameof(StorageIndexSchemaCommand.RebuildId), 1));
+        AssertExactFieldIds<StorageIndexSchemaSnapshot>(
+            (nameof(StorageIndexSchemaSnapshot.ProviderName), 0),
+            (nameof(StorageIndexSchemaSnapshot.StateName), 1),
+            (nameof(StorageIndexSchemaSnapshot.ActiveFingerprint), 2),
+            (nameof(StorageIndexSchemaSnapshot.Rebuild), 3),
+            (nameof(StorageIndexSchemaSnapshot.LastCompletedRecordCount), 4));
+        AssertExactFieldIds<StorageIndexSchemaState>(
+            (nameof(StorageIndexSchemaState.Initialized), 0),
+            (nameof(StorageIndexSchemaState.ProtocolVersion), 1),
+            (nameof(StorageIndexSchemaState.ProviderName), 2),
+            (nameof(StorageIndexSchemaState.StateName), 3),
+            (nameof(StorageIndexSchemaState.ActiveFingerprint), 4),
+            (nameof(StorageIndexSchemaState.Rebuild), 5),
+            (nameof(StorageIndexSchemaState.LastCompletedRecordCount), 6));
+        AssertExactFieldIds<StorageIndexSchemaRebuildIntent>(
+            (nameof(StorageIndexSchemaRebuildIntent.RebuildId), 0),
+            (nameof(StorageIndexSchemaRebuildIntent.SchemaKey), 1),
+            (nameof(StorageIndexSchemaRebuildIntent.TargetFingerprint), 2),
+            (nameof(StorageIndexSchemaRebuildIntent.LayoutEpoch), 3),
+            (nameof(StorageIndexSchemaRebuildIntent.LayoutFingerprint), 4),
+            (nameof(StorageIndexSchemaRebuildIntent.OwnerCount), 5),
+            (nameof(StorageIndexSchemaRebuildIntent.NextProtocolOwnerIndex), 6),
+            (nameof(StorageIndexSchemaRebuildIntent.LayoutProtocolPublished), 7),
+            (nameof(StorageIndexSchemaRebuildIntent.NextOwnerIndex), 8),
+            (nameof(StorageIndexSchemaRebuildIntent.HasAfter), 9),
+            (nameof(StorageIndexSchemaRebuildIntent.After), 10),
+            (nameof(StorageIndexSchemaRebuildIntent.ProcessedRecordCount), 11));
+        AssertExactFieldIds<StorageIndexSchemaRebuildPageRequest>(
+            (nameof(StorageIndexSchemaRebuildPageRequest.ProviderName), 0),
+            (nameof(StorageIndexSchemaRebuildPageRequest.StateName), 1),
+            (nameof(StorageIndexSchemaRebuildPageRequest.SchemaKey), 2),
+            (nameof(StorageIndexSchemaRebuildPageRequest.TargetFingerprint), 3),
+            (nameof(StorageIndexSchemaRebuildPageRequest.LayoutEpoch), 4),
+            (nameof(StorageIndexSchemaRebuildPageRequest.HasAfter), 5),
+            (nameof(StorageIndexSchemaRebuildPageRequest.After), 6),
+            (nameof(StorageIndexSchemaRebuildPageRequest.PageSize), 7),
+            (nameof(StorageIndexSchemaRebuildPageRequest.Persistence), 8));
+        AssertExactFieldIds<StorageIndexSchemaRebuildPageResult>(
+            (nameof(StorageIndexSchemaRebuildPageResult.Exhausted), 0),
+            (nameof(StorageIndexSchemaRebuildPageResult.HasAfter), 1),
+            (nameof(StorageIndexSchemaRebuildPageResult.After), 2),
+            (nameof(StorageIndexSchemaRebuildPageResult.ProcessedRecordCount), 3));
+        AssertExactFieldIds<StorageIndexSchemaPartitionProtocolRequest>(
+            (nameof(StorageIndexSchemaPartitionProtocolRequest.ProtocolVersion), 0),
+            (nameof(StorageIndexSchemaPartitionProtocolRequest.ProviderName), 1),
+            (nameof(StorageIndexSchemaPartitionProtocolRequest.LayoutEpoch), 2),
+            (nameof(StorageIndexSchemaPartitionProtocolRequest.LayoutFingerprint), 3),
+            (nameof(StorageIndexSchemaPartitionProtocolRequest.Persistence), 4));
+        AssertExactFieldIds<StorageIndexSchemaLayoutProtocolRequest>(
+            (nameof(StorageIndexSchemaLayoutProtocolRequest.ProtocolVersion), 0),
+            (nameof(StorageIndexSchemaLayoutProtocolRequest.LayoutEpoch), 1),
+            (nameof(StorageIndexSchemaLayoutProtocolRequest.LayoutFingerprint), 2),
+            (nameof(StorageIndexSchemaLayoutProtocolRequest.EnablementId), 3));
+
+        StorageIndexSchema.ProtocolVersion.Should().Be(1);
+        StorageLayout.LegacyFormatVersion.Should().Be(3);
+        StorageLayout.MovementFormatVersion.Should().Be(4);
+        StorageLayout.IndexSchemaFormatVersion.Should().Be(5);
+        StorageLayout.AreRoutingFormatsCompatible(4, 5).Should().BeTrue();
+        StorageLayout.AreRoutingFormatsCompatible(3, 3).Should().BeFalse();
+        StorageLayout.AreRoutingFormatsCompatible(6, 6).Should().BeFalse();
+    }
+
+    [Fact]
     public void PartitionMovementMessagesKeepExactContiguousFieldIds()
     {
         AssertExactFieldIds<StoragePartitionProtocolRequest>(
@@ -124,7 +224,8 @@ public sealed class StorageMovementWireContractTests
             (nameof(StoragePartitionProtocolRequest.VirtualSlotCount), 1),
             (nameof(StoragePartitionProtocolRequest.MinimumRoutingEpoch), 2),
             (nameof(StoragePartitionProtocolRequest.JournalSegmentCapacity), 3),
-            (nameof(StoragePartitionProtocolRequest.MaximumJournalReplayEntries), 4));
+            (nameof(StoragePartitionProtocolRequest.MaximumJournalReplayEntries), 4),
+            (nameof(StoragePartitionProtocolRequest.IndexSchemaProtocolVersion), 5));
         AssertExactFieldIds<StoragePartitionProtocolState>(
             (nameof(StoragePartitionProtocolState.PersistenceFormatVersion), 0),
             (nameof(StoragePartitionProtocolState.MovementProtocolVersion), 1),
@@ -132,7 +233,8 @@ public sealed class StorageMovementWireContractTests
             (nameof(StoragePartitionProtocolState.MinimumRoutingEpoch), 3),
             (nameof(StoragePartitionProtocolState.CommittedSequence), 4),
             (nameof(StoragePartitionProtocolState.NextVersion), 5),
-            (nameof(StoragePartitionProtocolState.MoveControl), 6));
+            (nameof(StoragePartitionProtocolState.MoveControl), 6),
+            (nameof(StoragePartitionProtocolState.IndexSchemaProtocolVersion), 7));
         AssertExactFieldIds<StorageMoveIdentity>(
             (nameof(StorageMoveIdentity.ProtocolVersion), 0),
             (nameof(StorageMoveIdentity.MoveId), 1),
@@ -189,7 +291,7 @@ public sealed class StorageMovementWireContractTests
     [Fact]
     public void AppendedMovementEnumValuesRemainFrozen()
     {
-        AssertEnumValues<StorageJournalOperation>(0, 1, 2, 3, 4);
+        AssertEnumValues<StorageJournalOperation>(0, 1, 2, 3, 4, 5);
         AssertEnumValues<StoragePartitionMoveRole>(0, 1, 2);
         AssertEnumValues<StoragePartitionMovePhase>(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
         AssertEnumValues<StorageMoveDeleteMode>(1, 2);

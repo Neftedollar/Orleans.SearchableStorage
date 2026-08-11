@@ -1032,7 +1032,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             State = new StorageLayoutState
             {
                 Initialized = true,
-                FormatVersion = StorageLayout.PreviousFormatVersion,
+                FormatVersion = StorageLayout.LegacyFormatVersion,
                 ProviderName = providerName,
                 PartitionCount = Fixture.PartitionCount,
                 JournalSegmentCapacity = journalSegmentCapacity,
@@ -1074,7 +1074,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             var legacyLayout = new GrainState<StorageLayoutState>();
             await physical.ReadStateAsync("layout", layout.GetGrainId(), legacyLayout);
             legacyLayout.RecordExists.Should().BeTrue();
-            legacyLayout.State.FormatVersion.Should().Be(StorageLayout.PreviousFormatVersion);
+            legacyLayout.State.FormatVersion.Should().Be(StorageLayout.LegacyFormatVersion);
             legacyLayout.State.VirtualSlotCount.Should().Be(0);
             legacyLayout.State.SlotAssignments.Should().BeEmpty();
             legacyLayout.State.Epoch.Should().Be(0);
@@ -1111,7 +1111,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
             migratedLayout.RecordExists.Should().BeTrue();
             migratedLayout.ETag.Should().NotBeNull();
             migratedLayout.ETag.Should().NotBe(legacyLayout.ETag);
-            migratedLayout.State.FormatVersion.Should().Be(StorageLayout.CurrentFormatVersion);
+            migratedLayout.State.FormatVersion.Should().Be(StorageLayout.MovementFormatVersion);
             migratedLayout.State.ProviderName.Should().Be(providerName);
             migratedLayout.State.PartitionCount.Should().Be(Fixture.PartitionCount);
             migratedLayout.State.JournalSegmentCapacity.Should().Be(journalSegmentCapacity);
@@ -1169,7 +1169,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         var layout = Fixture.Cluster.GrainFactory.GetGrain<IStorageLayoutGrain>(providerName);
         var wrongProvider = new StorageLayoutDescriptor
         {
-            FormatVersion = StorageLayout.CurrentFormatVersion,
+            FormatVersion = StorageLayout.MovementFormatVersion,
             ProviderName = $"wrong-{Guid.NewGuid():N}",
             PartitionCount = Fixture.PartitionCount,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
@@ -1177,7 +1177,7 @@ public abstract class SearchableStorageContractTests<TFixture> : IClassFixture<T
         };
         var unsupportedVersion = new StorageLayoutDescriptor
         {
-            FormatVersion = StorageLayout.CurrentFormatVersion + 1,
+            FormatVersion = StorageLayout.IndexSchemaFormatVersion + 1,
             ProviderName = providerName,
             PartitionCount = Fixture.PartitionCount,
             JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,

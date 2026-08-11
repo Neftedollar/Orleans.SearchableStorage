@@ -205,13 +205,22 @@ public sealed class QueryApiContractTests
             (nameof(RoutedStorageClearRequest.GrainId), 3));
         AssertFieldIds<RoutedExactIndexQuery>(
             (nameof(RoutedExactIndexQuery.Query), 0),
-            (nameof(RoutedExactIndexQuery.Epoch), 1));
+            (nameof(RoutedExactIndexQuery.Epoch), 1),
+            (nameof(RoutedExactIndexQuery.StateName), 2),
+            (nameof(RoutedExactIndexQuery.IndexSchemaFingerprint), 3),
+            (nameof(RoutedExactIndexQuery.IndexSchemaProtocolVersion), 4));
         AssertFieldIds<RoutedRangeIndexQuery>(
             (nameof(RoutedRangeIndexQuery.Query), 0),
-            (nameof(RoutedRangeIndexQuery.Epoch), 1));
+            (nameof(RoutedRangeIndexQuery.Epoch), 1),
+            (nameof(RoutedRangeIndexQuery.StateName), 2),
+            (nameof(RoutedRangeIndexQuery.IndexSchemaFingerprint), 3),
+            (nameof(RoutedRangeIndexQuery.IndexSchemaProtocolVersion), 4));
         AssertFieldIds<RoutedPartitionQuery>(
             (nameof(RoutedPartitionQuery.Query), 0),
-            (nameof(RoutedPartitionQuery.Epoch), 1));
+            (nameof(RoutedPartitionQuery.Epoch), 1),
+            (nameof(RoutedPartitionQuery.StateName), 2),
+            (nameof(RoutedPartitionQuery.IndexSchemaFingerprint), 3),
+            (nameof(RoutedPartitionQuery.IndexSchemaProtocolVersion), 4));
         AssertFieldIds<RoutedPartitionQueryPageRequest>(
             (nameof(RoutedPartitionQueryPageRequest.Query), 0),
             (nameof(RoutedPartitionQueryPageRequest.Epoch), 1),
@@ -227,7 +236,9 @@ public sealed class QueryApiContractTests
             (nameof(RoutedPartitionQueryPageRequest.QueryFingerprint), 11),
             (nameof(RoutedPartitionQueryPageRequest.LayoutFormatVersion), 12),
             (nameof(RoutedPartitionQueryPageRequest.LayoutFingerprint), 13),
-            (nameof(RoutedPartitionQueryPageRequest.StateName), 14));
+            (nameof(RoutedPartitionQueryPageRequest.StateName), 14),
+            (nameof(RoutedPartitionQueryPageRequest.IndexSchemaFingerprint), 15),
+            (nameof(RoutedPartitionQueryPageRequest.IndexSchemaProtocolVersion), 16));
         AssertFieldIds<PartitionQueryPageResult>(
             (nameof(PartitionQueryPageResult.Items), 0),
             (nameof(PartitionQueryPageResult.HasFrontier), 1),
@@ -282,7 +293,9 @@ public sealed class QueryApiContractTests
             (nameof(RoutedPartitionDistinctFacetPageRequest.LayoutFingerprint), 14),
             (nameof(RoutedPartitionDistinctFacetPageRequest.StateName), 15),
             (nameof(RoutedPartitionDistinctFacetPageRequest.HasExpectedDataVersion), 16),
-            (nameof(RoutedPartitionDistinctFacetPageRequest.ExpectedDataVersion), 17));
+            (nameof(RoutedPartitionDistinctFacetPageRequest.ExpectedDataVersion), 17),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.IndexSchemaFingerprint), 18),
+            (nameof(RoutedPartitionDistinctFacetPageRequest.IndexSchemaProtocolVersion), 19));
         AssertFieldIds<PartitionDistinctFacetPageResult>(
             (nameof(PartitionDistinctFacetPageResult.Items), 0),
             (nameof(PartitionDistinctFacetPageResult.Frontier), 1),
@@ -317,7 +330,9 @@ public sealed class QueryApiContractTests
             (nameof(RoutedPartitionFacetCandidatePageRequest.LayoutFingerprint), 14),
             (nameof(RoutedPartitionFacetCandidatePageRequest.StateName), 15),
             (nameof(RoutedPartitionFacetCandidatePageRequest.HasExpectedDataVersion), 16),
-            (nameof(RoutedPartitionFacetCandidatePageRequest.ExpectedDataVersion), 17));
+            (nameof(RoutedPartitionFacetCandidatePageRequest.ExpectedDataVersion), 17),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.IndexSchemaFingerprint), 18),
+            (nameof(RoutedPartitionFacetCandidatePageRequest.IndexSchemaProtocolVersion), 19));
         AssertFieldIds<PartitionFacetCandidate>(
             (nameof(PartitionFacetCandidate.Value), 0),
             (nameof(PartitionFacetCandidate.RawCount), 1));
@@ -357,7 +372,9 @@ public sealed class QueryApiContractTests
             (nameof(RoutedPartitionFacetCountSliceRequest.LayoutFingerprint), 14),
             (nameof(RoutedPartitionFacetCountSliceRequest.StateName), 15),
             (nameof(RoutedPartitionFacetCountSliceRequest.HasExpectedDataVersion), 16),
-            (nameof(RoutedPartitionFacetCountSliceRequest.ExpectedDataVersion), 17));
+            (nameof(RoutedPartitionFacetCountSliceRequest.ExpectedDataVersion), 17),
+            (nameof(RoutedPartitionFacetCountSliceRequest.IndexSchemaFingerprint), 18),
+            (nameof(RoutedPartitionFacetCountSliceRequest.IndexSchemaProtocolVersion), 19));
         AssertFieldIds<PartitionFacetCountSliceResult>(
             (nameof(PartitionFacetCountSliceResult.CountDelta), 0),
             (nameof(PartitionFacetCountSliceResult.HasFrontier), 1),
@@ -419,7 +436,9 @@ public sealed class QueryApiContractTests
             (nameof(StorageLayoutSnapshot.MovementProtocolVersion), 6),
             ("MovementEnablement", 7),
             ("MoveIntent", 8),
-            ("LastMoveReceipt", 9));
+            ("LastMoveReceipt", 9),
+            (nameof(StorageLayoutSnapshot.IndexSchemaProtocolVersion), 10),
+            ("IndexSchemaEnablement", 11));
         AssertFieldIds<StorageLayoutState>(
             (nameof(StorageLayoutState.Initialized), 0),
             (nameof(StorageLayoutState.FormatVersion), 1),
@@ -433,7 +452,14 @@ public sealed class QueryApiContractTests
             (nameof(StorageLayoutState.MovementProtocolVersion), 9),
             (nameof(StorageLayoutState.MovementEnablement), 10),
             (nameof(StorageLayoutState.MoveIntent), 11),
-            (nameof(StorageLayoutState.LastMoveReceipt), 12));
+            (nameof(StorageLayoutState.LastMoveReceipt), 12),
+            (nameof(StorageLayoutState.IndexSchemaProtocolVersion), 13),
+            (nameof(StorageLayoutState.IndexSchemaEnablement), 14));
+        AssertFieldIds<StorageIndexSchemaEnableIntent>(
+            (nameof(StorageIndexSchemaEnableIntent.EnablementId), 0),
+            (nameof(StorageIndexSchemaEnableIntent.ProtocolVersion), 1),
+            (nameof(StorageIndexSchemaEnableIntent.LayoutEpoch), 2),
+            (nameof(StorageIndexSchemaEnableIntent.LayoutFingerprint), 3));
         AssertFieldIds<StorageMovementEnableIntent>(
             (nameof(StorageMovementEnableIntent.EnablementId), 0),
             (nameof(StorageMovementEnableIntent.SourceEpoch), 1),
@@ -505,11 +531,18 @@ public sealed class QueryApiContractTests
     private static void AssertFieldIds<T>(params (string MemberName, uint Id)[] expected)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-        foreach (var (memberName, id) in expected)
-        {
-            typeof(T).GetProperty(memberName, flags)!
-                .GetCustomAttribute<IdAttribute>()!.Id.Should().Be(id);
-        }
+        var actual = typeof(T).GetProperties(flags)
+            .Select(static property => (
+                property.Name,
+                Attribute: property.GetCustomAttribute<IdAttribute>()))
+            .Where(static item => item.Attribute is not null)
+            .Select(static item => (item.Name, item.Attribute!.Id))
+            .OrderBy(static item => item.Id)
+            .ToArray();
+
+        actual.Should().Equal(expected.Select(static item => (item.MemberName, item.Id)));
+        actual.Select(static item => item.Id).Should().Equal(
+            Enumerable.Range(0, expected.Length).Select(static value => (uint)value));
     }
 
     private static uint[] GetFieldIds<T>()

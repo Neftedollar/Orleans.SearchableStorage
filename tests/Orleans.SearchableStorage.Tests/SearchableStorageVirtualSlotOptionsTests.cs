@@ -117,14 +117,14 @@ public sealed class SearchableStorageVirtualSlotOptionsTests
             {
                 ProviderName = firstProvider,
                 PartitionCount = 3,
-                FormatVersion = StorageLayout.CurrentFormatVersion,
+                FormatVersion = StorageLayout.MovementFormatVersion,
             });
         recordingFactory.GetLayoutGrain(secondProvider).Identities.Should().ContainSingle()
             .Which.Should().BeEquivalentTo(new
             {
                 ProviderName = secondProvider,
                 PartitionCount = 5,
-                FormatVersion = StorageLayout.CurrentFormatVersion,
+                FormatVersion = StorageLayout.MovementFormatVersion,
             });
     }
 
@@ -239,7 +239,7 @@ public sealed class SearchableStorageVirtualSlotOptionsTests
                 new StorageLayoutState
                 {
                     Initialized = true,
-                    FormatVersion = StorageLayout.CurrentFormatVersion,
+                    FormatVersion = StorageLayout.MovementFormatVersion,
                     ProviderName = _providerName,
                     PartitionCount = identity.PartitionCount,
                     JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
