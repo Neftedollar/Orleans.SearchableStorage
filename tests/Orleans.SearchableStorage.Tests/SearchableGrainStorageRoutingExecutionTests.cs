@@ -300,7 +300,7 @@ public sealed class SearchableGrainStorageRoutingExecutionTests
         public T Create() => Activator.CreateInstance<T>();
     }
 
-    private sealed class ControlledPartition : IStoragePartitionGrain
+    private sealed class ControlledPartition : StoragePartitionGrainMovementTestDouble, IStoragePartitionGrain
     {
         public Func<RoutedStorageReadRequest, Task<StorageReadResult>> Read { get; set; } =
             _ => throw new NotSupportedException();

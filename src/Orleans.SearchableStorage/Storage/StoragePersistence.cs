@@ -7,7 +7,8 @@ namespace Orleans.SearchableStorage.Storage;
 /// </summary>
 internal static class StoragePersistence
 {
-    public const int CurrentPersistenceFormatVersion = 3;
+    public const int CurrentPersistenceFormatVersion = 4;
+    public const int PreviousPersistenceFormatVersion = 3;
     public const int DefaultJournalSegmentCapacity = 64;
     public const int DefaultMaximumJournalReplayEntries = 4_096;
     public const int DefaultCompactionThreshold = 1_024;

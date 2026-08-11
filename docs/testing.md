@@ -13,6 +13,8 @@ The reviewer must map changed behavior to tests instead of approving a raw test 
 - activation loss, rehydration, and serializer compatibility;
 - layout-format migration independently from partition-persistence compatibility;
 - virtual-slot derivation, ownership, epoch mismatches, and whole-attempt retry behavior;
+- quiesced movement enablement, version high-watermarks, source visibility, bounded page replay,
+  abort/forward recovery, and single authority after reactivation;
 - deterministic execution across more than one storage partition;
 - facet value ordering, exactness/approximation certificates, owner-version pinning, and aggregate
   limit behavior;
@@ -39,7 +41,7 @@ partition-grain execution.
 ### Virtual routing tests
 
 Focused layout tests freeze the separation between layout format 4 and partition persistence format
-3. They cover checked derivation of the per-layout virtual-slot count, the 262,144-slot cap, exact
+4. They cover checked derivation of the per-layout virtual-slot count, the 262,144-slot cap, exact
 identity-placement equivalence for power-of-two and non-power-of-two initial partition counts, and
 defensive copying of persisted assignments. Fresh initialization and an exact version-3 adoption
 must each use one layout compare-and-swap. Migration rejects provider, initial partition count,
@@ -56,10 +58,22 @@ epoch, and current owner before point-state or ETag behavior and prove that rout
 legacy records which no longer belong to the addressed owner.
 
 Admin-client tests cover an uninitialized namespace, immutable public summaries, sorted per-owner
-slot counts, keyed provider identity, and cancellation which does not cancel a shared layout read.
-The executable sample verifies the same summary through `GET /storage/layout`. This phase exposes no
-slot-movement command; movement protocol, recovery, and mixed-epoch tests belong to its separately
-reviewed change.
+slot counts, keyed provider identity, movement-limit capture, validation, and caller-local
+cancellation. Movement cases cover resumable enablement, sole-intent conflicts, one durable
+transition or bounded page payload per advance, execute/abort loops, abort rejection after ownership
+commit, stable progress projection, and deterministic minimal-churn rebalance recomputation without
+a bulk persisted plan. The executable
+sample exercises the same surface through explicit HTTP endpoints; core storage has no automatic
+rebalance policy.
+
+Movement protocol tests inject deterministic failures before commit and after commit but before
+acknowledgement at enablement, freeze, target WAL high-watermark, every export/import page, ownership
+CAS, durable source visibility, target enable, every cleanup page, participant retirement, abort,
+and intent clear. They require idempotent exact-page replay, reject conflicting ordinal/digest/cursor
+reuse, preserve target `NextVersion` after reactivation before the first import, and prove a
+reactivated hidden source cannot serve an old-epoch fan-out. Count limits, byte targets, empty pages,
+oversize singletons, skew, move chains, cancellation, and cleanup resumption remain structural test
+oracles rather than timing assumptions.
 
 ### Bounded query protocol gate
 
@@ -112,7 +126,7 @@ self-checksums, and unsafe histogram paths. Secret tests cover connection string
 userinfo, JSON credentials, and HTTP bearer authorization values.
 
 The pull-request smoke reflects the built microbenchmark assembly and requires exactly the reviewed
-18 `[Benchmark]` identities and every exact `[Params]` vector. It validates the actual
+22 `[Benchmark]` identities and every exact `[Params]` vector. It validates the actual
 BenchmarkDotNet job, GC, diagnoser, p95 column, exporters, and artifact-retention config rather than
 trusting duplicated provenance text, then invokes every production-backed fixture with semantic
 oracles for query-plan construction/evaluation, wire and journal serialization, journal append and
@@ -126,6 +140,10 @@ The production facet evaluator adds two BenchmarkDotNet identities across 4,096/
 independent value/count oracle and freezes the exact candidate and resumable-count work vectors; a
 focused CI vector requires `(seek=1, visit=8, materialize=8)` for metadata nomination and zero hidden
 posting scans, then 32 filtered slices with the exact probe vector.
+Four movement identities call the production slot-catalog and transfer helpers for rebuild, export,
+import, and delete. Their uniform, skewed, and oversize-singleton fixtures freeze exact slot
+membership, cursor, count/byte target, digest, apply, and idempotence outcomes. They explicitly keep
+whole-partition snapshot construction and activation rebuild outside the per-page claim.
 A pinned Crank Controller `--debug` expansion gate checks both distributed-client
 coordinates, exact source revision/environment/arguments, and artifact download paths without
 executing an agent. These are correctness gates with no wall-clock threshold. Dedicated nightly and
@@ -153,9 +171,41 @@ real generated Orleans dispatch before and after activation rehydration. It veri
 records rebuild the activation-derived ordered hash-value projection without a persistence-format
 migration. The existing layout-adoption case remains the explicit physical-write-counter oracle.
 
+The same inherited contract creates an isolated provider namespace, enables movement, moves a slot
+with multiple transfer pages while routed writers exercise both the frozen slot and another slot,
+and continuously completes exact-index and exact-facet reads while ownership changes. The
+successful path also advances one durable turn at a time and anchors point, exact-index, exact-facet,
+and min/max checks in every observed phase from `SourceFrozen` through `Completed` before
+reactivating source and target. Every completed read must contain the frozen membership/count
+exactly, never a duplicate or partial epoch result. Post-commit writes succeed only at the target;
+after both participants reactivate, the old source rejects a current-epoch write and clear plus an
+E−1 write without changing its physical record count, while the target ETag/payload and
+public indexes/facets remain unchanged. Source routed reads report the new owner; final
+point/index/facet membership contains every moved record exactly once; exported/deleted counts
+match; and no active intent remains. Memory, PostgreSQL, Redis, and Azure Blob execute this
+identical acceptance case.
+
+Before the successful move, that inherited case also aborts at `Planned`, `SourceFrozen`,
+`TargetVersionFenced`, after a 2-of-5-record partial import, and after all 5 records reach
+`CopyComplete`. Every rollback must leave the target slot physically empty, preserve source
+records/indexes/facets and ETags, clear the active intent, and retain the target version floor at or
+above the captured source high-water mark. At the two staged-copy checkpoints, direct physical
+target counts are 2 and 5 while public exact top-N still reports the authoritative count of 5.
+Approximate top-N returns only ownership-filtered exact counts: depending on its first canonical
+candidate turn it returns either that 5-record value or a known singleton with count 1, and its
+conservative omitted-count certificate covers the possibly omitted count of 5. A focused evaluator
+test separately proves that staged target raw candidate metadata can be positive while
+ownership-filtered exact count contribution is zero.
+
 The generic write-ahead log (WAL) contract is inherited by the memory, PostgreSQL, Redis, and Azure Blob fixtures. It verifies committed replay after reactivation, bounded segment rollover, the steady-state journal-plus-manifest write shape, snapshot publication and two-slot reuse, retirement fencing, hard replay-limit backpressure, and recovery at each injected before-commit or lost-acknowledgement boundary. The same cases also prove that records and exact/range indexes are immediately usable after recovery without a test-only deactivation step.
 
-Lower-level tests isolate the durable protocol from provider setup. They cover journal and snapshot idempotency, writer-epoch and generation fencing, ring reuse, immutable-state copying and equality, slot arithmetic and addressability limits, layout initialization after an ambiguous write, malformed manifest/snapshot/journal rejection, and coordinator poisoning after an ambiguous manifest write. These tests complement the provider matrix; they do not replace it.
+Lower-level tests isolate the durable protocol from provider setup. They cover journal and snapshot
+idempotency, writer-epoch and generation fencing, ring reuse, immutable-state copying and equality,
+slot arithmetic and addressability limits, slot-catalog rebuild/mutation/order, movement page
+count/byte/digest rules, high-watermark/import/delete replay, manifest capability and minimum-epoch
+fences, layout initialization after an ambiguous write, malformed manifest/snapshot/journal
+rejection, and coordinator poisoning after an ambiguous manifest write. These tests complement the
+provider matrix; they do not replace it.
 
 Serializer and API contract tests freeze the required non-null fields and IDs of the existing
 bounded range message, the IDs and nullable bounds of the new non-persisted query plan, and a nested
@@ -169,6 +219,9 @@ exercise external public async, paging, and facet terminal providers. Facet seri
 freezes all four response-family values, the distinct/candidate/count request and result IDs, their
 data-version fields, candidate page/total raw counts, the nine-component facet work vector, and the
 concurrent-change exception.
+Movement serializer coverage freezes appended layout/manifest/journal fields and enum values, every
+partition RPC request/result ID, stable move identity and page digest inputs, public progress/layout/
+rebalance shapes, and real Orleans dispatch of pages, exceptions, and reactivation state.
 
 The memory, PostgreSQL, Redis, and Azure Blob fixtures inherit this same contract class; backend tests do not copy or weaken its assertions.
 
@@ -187,8 +240,8 @@ External fixture lifecycle tests use a recording cluster abstraction to verify o
 The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
 
 CI writes four independently filtered TRX files using the `Backend` trait. The workflow stores the
-97-case shared contract count once, then derives the exact profile totals: memory has 98 cases
-(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 99 (shared
+98-case shared contract count once, then derives the exact profile totals: memory has 99 cases
+(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 100 (shared
 plus provider and cleanup assertions). The small `eng/validate-trx.sh` gate requires one `Counters`
 element, the exact total, executed and passed counts, zero failed and not-executed summary counts,
 no `NotExecuted` result, and no non-passed result element. Missing files, empty filters, partial
@@ -206,7 +259,12 @@ the documented host starts, keyed Orleans services resolve, writes reach the sea
 the focused `IQueryable` API returns both compatibility results and resumable pages, concatenated
 pages preserve canonical order, facet endpoints expose distinct continuation, `IsExact`,
 `MaximumOmittedCount`, filtered exact counts and extrema, the layout endpoint reports the persisted
-epoch-1 identity map, and deletes remove both state and index entries. A keyed blocking query client
+owner summary, and deletes remove both state and index entries. The movement test explicitly enables
+the protocol, plans/advances/aborts and then executes one move, completes a deterministic rebalance,
+verifies moved point/index state, reverses the rebalance to the sample's initial owner count, and
+then re-verifies the same record through point, index, and facet reads. This supplies an executable
+same-record move-chain oracle rather than treating reverse cleanup as best effort. Invalid admin
+inputs return HTTP 400, while durable state conflicts return 409. A keyed blocking query client
 verifies that HTTP request cancellation reaches every search and facet endpoint and its async
 terminal while it is in flight.
 

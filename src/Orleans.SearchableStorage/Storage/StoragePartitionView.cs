@@ -5,12 +5,17 @@ namespace Orleans.SearchableStorage.Storage;
 /// </summary>
 internal sealed class StoragePartitionView
 {
-    public StoragePartitionView(Dictionary<string, StoredRecord> records)
+    public StoragePartitionView(
+        Dictionary<string, StoredRecord> records,
+        int? virtualSlotCount = null)
     {
         ArgumentNullException.ThrowIfNull(records);
         Records = records;
         Indexes = StoragePartitionIndexes.Build(records);
         OrderedIndexes = StoragePartitionOrderedIndexes.Build(records);
+        SlotCatalog = virtualSlotCount is null
+            ? null
+            : new StoragePartitionSlotCatalog(records, virtualSlotCount.Value);
     }
 
     public Dictionary<string, StoredRecord> Records { get; }
@@ -18,6 +23,8 @@ internal sealed class StoragePartitionView
     public StoragePartitionIndexes Indexes { get; }
 
     public StoragePartitionOrderedIndexes OrderedIndexes { get; }
+
+    public StoragePartitionSlotCatalog? SlotCatalog { get; }
 
     public void ApplyUpsert(string recordKey, StoredRecord record)
     {
@@ -28,10 +35,12 @@ internal sealed class StoragePartitionView
         {
             Indexes.RemoveRecord(recordKey, current);
             OrderedIndexes.RemoveRecord(recordKey, current);
+            SlotCatalog?.Remove(recordKey, current);
         }
 
         Indexes.AddRecord(recordKey, record);
         OrderedIndexes.AddRecord(recordKey, record);
+        SlotCatalog?.Add(recordKey, record);
         Records[recordKey] = record;
     }
 
@@ -45,6 +54,7 @@ internal sealed class StoragePartitionView
 
         Indexes.RemoveRecord(recordKey, current);
         OrderedIndexes.RemoveRecord(recordKey, current);
+        SlotCatalog?.Remove(recordKey, current);
         Records.Remove(recordKey);
     }
 }

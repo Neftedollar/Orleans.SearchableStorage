@@ -14,10 +14,17 @@ public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
     public SearchableStorageQueryOptions Query { get; } = new();
 
     /// <summary>
-    /// Gets or sets the number of stable storage partitions.
+    /// Gets the bounded live-movement settings used by the keyed admin client.
+    /// </summary>
+    public SearchableStorageMovementOptions Movement { get; } = new();
+
+    /// <summary>
+    /// Gets or sets the immutable initial physical-owner count used to seed a provider namespace.
     /// </summary>
     /// <remarks>
-    /// This value is part of the persisted data layout and must not be changed after data is written.
+    /// This value is part of the persisted layout identity and must not be changed after data is
+    /// written. Live rebalancing can assign virtual slots to additional owner indices without
+    /// changing this initial count.
     /// </remarks>
     public int PartitionCount { get; set; } = 32;
 
@@ -60,6 +67,40 @@ public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
 
     /// <inheritdoc />
     public IGrainStorageSerializer GrainStorageSerializer { get; set; } = default!;
+}
+
+/// <summary>
+/// Configures bounded virtual-slot transfer pages for one searchable-storage provider.
+/// </summary>
+public sealed class SearchableStorageMovementOptions
+{
+    /// <summary>The default record-count ceiling for one transfer page.</summary>
+    public const int DefaultTransferPageRecordLimit = 128;
+
+    /// <summary>The hard record-count ceiling for one transfer page.</summary>
+    public const int MaximumTransferPageRecordLimit = 1_024;
+
+    /// <summary>The default canonical encoded-byte target for one transfer page.</summary>
+    public const int DefaultTransferPageByteTarget = 256 * 1_024;
+
+    /// <summary>The hard canonical encoded-byte target accepted for one transfer page.</summary>
+    public const int MaximumTransferPageByteTarget = 4 * 1_024 * 1_024;
+
+    /// <summary>
+    /// Gets or sets the maximum number of records returned by one source export page.
+    /// </summary>
+    public int TransferPageRecordLimit { get; set; } = DefaultTransferPageRecordLimit;
+
+    /// <summary>
+    /// Gets or sets the canonical encoded-byte target for one source export page.
+    /// </summary>
+    /// <remarks>
+    /// The movement protocol counts its deterministic canonical record encoding, not physical
+    /// storage or Orleans transport bytes. A single accepted record larger than this target is
+    /// returned alone. The target therefore bounds every multi-record page under that measure but
+    /// is not an absolute maximum record-size or network-payload policy.
+    /// </remarks>
+    public int TransferPageByteTarget { get; set; } = DefaultTransferPageByteTarget;
 }
 
 /// <summary>

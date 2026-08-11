@@ -179,6 +179,11 @@ public sealed class QueryApiContractTests
     [Fact]
     public void VirtualRoutingWireAndLayoutMessagesKeepStableFieldIds()
     {
+        typeof(IStorageLayoutGrain)
+            .GetMethod(nameof(IStorageLayoutGrain.GetCurrentLayoutAsync))!
+            .GetCustomAttribute<Orleans.Concurrency.AlwaysInterleaveAttribute>()
+            .Should().NotBeNull("partition ownership validation must be able to read the layout during orchestration");
+
         typeof(StorageLayoutState).GetProperty(
                 "PartitionCount",
                 BindingFlags.Instance | BindingFlags.Public)
@@ -410,7 +415,11 @@ public sealed class QueryApiContractTests
             (nameof(StorageLayoutSnapshot.InitialPartitionCount), 2),
             (nameof(StorageLayoutSnapshot.VirtualSlotCount), 3),
             (nameof(StorageLayoutSnapshot.Epoch), 4),
-            ("SlotAssignments", 5));
+            ("SlotAssignments", 5),
+            (nameof(StorageLayoutSnapshot.MovementProtocolVersion), 6),
+            ("MovementEnablement", 7),
+            ("MoveIntent", 8),
+            ("LastMoveReceipt", 9));
         AssertFieldIds<StorageLayoutState>(
             (nameof(StorageLayoutState.Initialized), 0),
             (nameof(StorageLayoutState.FormatVersion), 1),
@@ -420,7 +429,76 @@ public sealed class QueryApiContractTests
             (nameof(StorageLayoutState.MaximumJournalReplayEntries), 5),
             (nameof(StorageLayoutState.VirtualSlotCount), 6),
             (nameof(StorageLayoutState.SlotAssignments), 7),
-            (nameof(StorageLayoutState.Epoch), 8));
+            (nameof(StorageLayoutState.Epoch), 8),
+            (nameof(StorageLayoutState.MovementProtocolVersion), 9),
+            (nameof(StorageLayoutState.MovementEnablement), 10),
+            (nameof(StorageLayoutState.MoveIntent), 11),
+            (nameof(StorageLayoutState.LastMoveReceipt), 12));
+        AssertFieldIds<StorageMovementEnableIntent>(
+            (nameof(StorageMovementEnableIntent.EnablementId), 0),
+            (nameof(StorageMovementEnableIntent.SourceEpoch), 1),
+            (nameof(StorageMovementEnableIntent.PlannedEpoch), 2),
+            (nameof(StorageMovementEnableIntent.Owners), 3),
+            (nameof(StorageMovementEnableIntent.NextOwnerIndex), 4));
+        AssertFieldIds<StorageSlotMoveIntent>(
+            (nameof(StorageSlotMoveIntent.MoveId), 0),
+            (nameof(StorageSlotMoveIntent.Slot), 1),
+            (nameof(StorageSlotMoveIntent.SourceOwner), 2),
+            (nameof(StorageSlotMoveIntent.TargetOwner), 3),
+            (nameof(StorageSlotMoveIntent.SourceEpoch), 4),
+            (nameof(StorageSlotMoveIntent.Phase), 5),
+            (nameof(StorageSlotMoveIntent.TransferPageRecordLimit), 6),
+            (nameof(StorageSlotMoveIntent.TransferPageByteTarget), 7),
+            (nameof(StorageSlotMoveIntent.ExportedRecordCount), 8),
+            (nameof(StorageSlotMoveIntent.ExportedByteCount), 9),
+            (nameof(StorageSlotMoveIntent.DeletedRecordCount), 10),
+            (nameof(StorageSlotMoveIntent.DeletedByteCount), 11));
+        AssertFieldIds<StorageSlotMoveReceipt>(
+            (nameof(StorageSlotMoveReceipt.MoveId), 0),
+            (nameof(StorageSlotMoveReceipt.Slot), 1),
+            (nameof(StorageSlotMoveReceipt.SourceOwner), 2),
+            (nameof(StorageSlotMoveReceipt.TargetOwner), 3),
+            (nameof(StorageSlotMoveReceipt.SourceEpoch), 4),
+            (nameof(StorageSlotMoveReceipt.CompletionEpoch), 5),
+            (nameof(StorageSlotMoveReceipt.TerminalPhase), 6),
+            (nameof(StorageSlotMoveReceipt.ExportedRecordCount), 7),
+            (nameof(StorageSlotMoveReceipt.ExportedByteCount), 8),
+            (nameof(StorageSlotMoveReceipt.DeletedRecordCount), 9),
+            (nameof(StorageSlotMoveReceipt.DeletedByteCount), 10));
+        AssertFieldIds<StorageSlotMovePlanRequest>(
+            (nameof(StorageSlotMovePlanRequest.Slot), 0),
+            (nameof(StorageSlotMovePlanRequest.TargetOwner), 1),
+            (nameof(StorageSlotMovePlanRequest.MovementProtocolVersion), 2),
+            (nameof(StorageSlotMovePlanRequest.TransferPageRecordLimit), 3),
+            (nameof(StorageSlotMovePlanRequest.TransferPageByteTarget), 4));
+        AssertFieldIds<StorageSlotMoveCommand>(
+            (nameof(StorageSlotMoveCommand.MoveId), 0),
+            (nameof(StorageSlotMoveCommand.MovementProtocolVersion), 1));
+        AssertFieldIds<StorageSlotMoveProgressSnapshot>(
+            (nameof(StorageSlotMoveProgressSnapshot.Intent), 0),
+            (nameof(StorageSlotMoveProgressSnapshot.CurrentEpoch), 1),
+            (nameof(StorageSlotMoveProgressSnapshot.ExportedRecordCount), 2),
+            (nameof(StorageSlotMoveProgressSnapshot.ExportedByteCount), 3),
+            (nameof(StorageSlotMoveProgressSnapshot.DeletedRecordCount), 4),
+            (nameof(StorageSlotMoveProgressSnapshot.DeletedByteCount), 5));
+
+        StorageLayout.CurrentMovementProtocolVersion.Should().Be(1);
+        ((int)SearchableStorageMovementState.Disabled).Should().Be(0);
+        ((int)SearchableStorageMovementState.Enabling).Should().Be(1);
+        ((int)SearchableStorageMovementState.Enabled).Should().Be(2);
+        ((int)SearchableStorageSlotMovePhase.Planned).Should().Be(0);
+        ((int)SearchableStorageSlotMovePhase.SourceFrozen).Should().Be(1);
+        ((int)SearchableStorageSlotMovePhase.TargetVersionFenced).Should().Be(2);
+        ((int)SearchableStorageSlotMovePhase.Copying).Should().Be(3);
+        ((int)SearchableStorageSlotMovePhase.CopyComplete).Should().Be(4);
+        ((int)SearchableStorageSlotMovePhase.OwnershipCommitted).Should().Be(5);
+        ((int)SearchableStorageSlotMovePhase.SourceVisibilityFenced).Should().Be(6);
+        ((int)SearchableStorageSlotMovePhase.TargetEnabled).Should().Be(7);
+        ((int)SearchableStorageSlotMovePhase.DeletingSource).Should().Be(8);
+        ((int)SearchableStorageSlotMovePhase.Retiring).Should().Be(9);
+        ((int)SearchableStorageSlotMovePhase.Aborting).Should().Be(10);
+        ((int)SearchableStorageSlotMovePhase.Completed).Should().Be(11);
+        ((int)SearchableStorageSlotMovePhase.Aborted).Should().Be(12);
 
     }
 

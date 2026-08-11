@@ -879,7 +879,7 @@ public sealed class SearchableStoragePagingCoordinatorTests
         }
     }
 
-    private sealed class PagePartition : IStoragePartitionGrain
+    private sealed class PagePartition : StoragePartitionGrainMovementTestDouble, IStoragePartitionGrain
     {
         private readonly Func<RoutedPartitionQueryPageRequest, Task<PartitionQueryPageResult>> _query;
         private readonly TaskCompletionSource _started = new(

@@ -94,6 +94,42 @@ internal sealed class StoragePartitionPersistence
         }
     }
 
+    public bool IsInitialized
+    {
+        get
+        {
+            EnsureCoordinatorUsable();
+            return _manifest.State.Initialized;
+        }
+    }
+
+    public bool RoutedOperationsRequired
+    {
+        get
+        {
+            EnsureCoordinatorUsable();
+            return _manifest.State.Initialized && _manifest.State.RoutedOperationsRequired;
+        }
+    }
+
+    public long MinimumRoutingEpoch
+    {
+        get
+        {
+            EnsureCoordinatorUsable();
+            return _manifest.State.Initialized ? _manifest.State.MinimumRoutingEpoch : 1;
+        }
+    }
+
+    public StoragePartitionMoveControl MoveControl
+    {
+        get
+        {
+            EnsureCoordinatorUsable();
+            return _manifest.State.MoveControl.Copy();
+        }
+    }
+
     public async Task<Dictionary<string, StoredRecord>> ActivateAsync()
     {
         EnsureCoordinatorUsable();
@@ -115,6 +151,102 @@ internal sealed class StoragePartitionPersistence
         }
 
         return records;
+    }
+
+    public async Task EnableMovementProtocolAsync(
+        StoragePersistenceSettings settings,
+        long minimumRoutingEpoch)
+    {
+        EnsureCoordinatorUsable();
+        ValidateSettings(settings);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(minimumRoutingEpoch);
+
+        var candidate = _manifest.State.Initialized
+            ? _manifest.State.Copy()
+            : CreateInitialManifest(settings);
+        EnsureSettingsMatch(settings);
+        if (candidate.MoveControl.IsPresent)
+        {
+            throw new InvalidOperationException(
+                "The movement protocol cannot be enabled while this partition participates in a move.");
+        }
+
+        if (candidate.MovementProtocolVersion == StorageMoveProtocol.Version
+            && candidate.RoutedOperationsRequired
+            && candidate.MinimumRoutingEpoch == minimumRoutingEpoch)
+        {
+            return;
+        }
+
+        if (candidate.MovementProtocolVersion is not 0 and not StorageMoveProtocol.Version)
+        {
+            throw new InvalidOperationException(
+                $"Movement protocol version {candidate.MovementProtocolVersion} is not supported.");
+        }
+
+        if (candidate.RoutedOperationsRequired
+            && minimumRoutingEpoch < candidate.MinimumRoutingEpoch)
+        {
+            throw new InvalidOperationException("A durable minimum routing epoch cannot move backwards.");
+        }
+
+        candidate.PersistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion;
+        candidate.MovementProtocolVersion = StorageMoveProtocol.Version;
+        candidate.RoutedOperationsRequired = true;
+        candidate.MinimumRoutingEpoch = minimumRoutingEpoch;
+        await PersistManifestAsync(candidate);
+    }
+
+    public async Task SetMoveControlAsync(
+        StoragePartitionMoveControl moveControl,
+        long? minimumRoutingEpoch = null)
+    {
+        EnsureCoordinatorUsable();
+        ArgumentNullException.ThrowIfNull(moveControl);
+        if (!_manifest.State.Initialized
+            || _manifest.State.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion
+            || _manifest.State.MovementProtocolVersion != StorageMoveProtocol.Version
+            || !_manifest.State.RoutedOperationsRequired)
+        {
+            throw new InvalidOperationException(
+                "The partition movement protocol has not been durably enabled.");
+        }
+
+        var candidate = _manifest.State.Copy();
+        candidate.MoveControl = moveControl.Copy();
+        if (minimumRoutingEpoch is not null)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(minimumRoutingEpoch.Value);
+            if (minimumRoutingEpoch.Value < candidate.MinimumRoutingEpoch)
+            {
+                throw new InvalidOperationException("A durable minimum routing epoch cannot move backwards.");
+            }
+
+            candidate.MinimumRoutingEpoch = minimumRoutingEpoch.Value;
+        }
+
+        await PersistManifestAsync(candidate);
+    }
+
+    public Task ClearMoveControlAsync()
+    {
+        return SetMoveControlAsync(new StoragePartitionMoveControl());
+    }
+
+    public Task PrepareForProtocolMutationAsync(IReadOnlyDictionary<string, StoredRecord> records)
+    {
+        EnsureCoordinatorUsable();
+        if (!_manifest.State.Initialized
+            || _manifest.State.PersistenceFormatVersion
+                != StoragePersistence.CurrentPersistenceFormatVersion
+            || _manifest.State.MovementProtocolVersion != StorageMoveProtocol.Version
+            || !_manifest.State.RoutedOperationsRequired)
+        {
+            throw new InvalidOperationException(
+                "The partition movement protocol has not been durably enabled.");
+        }
+
+        return PrepareForMutationAsync(records, CreateProtocolPersistenceSettings());
     }
 
     public async Task PrepareForMutationAsync(
@@ -144,7 +276,9 @@ internal sealed class StoragePartitionPersistence
         await AcquireWriterEpochAsync(settings);
     }
 
-    public async Task CommitAsync(StorageJournalEntry entry)
+    public async Task CommitAsync(
+        StorageJournalEntry entry,
+        StoragePartitionMoveControl? moveControl = null)
     {
         EnsureCoordinatorUsable();
         ArgumentNullException.ThrowIfNull(entry);
@@ -184,6 +318,11 @@ internal sealed class StoragePartitionPersistence
         candidate.CommittedSequence = entry.Sequence;
         candidate.CommittedOperationId = entry.OperationId;
         candidate.NextVersion = entry.NextVersionAfter;
+        if (moveControl is not null)
+        {
+            candidate.MoveControl = moveControl.Copy();
+        }
+
         await PersistManifestAsync(candidate);
     }
 
@@ -245,6 +384,24 @@ internal sealed class StoragePartitionPersistence
         };
     }
 
+    public StoragePartitionProtocolState CreateProtocolState()
+    {
+        EnsureCoordinatorUsable();
+        var state = _manifest.State;
+        return new StoragePartitionProtocolState
+        {
+            PersistenceFormatVersion = state.Initialized ? state.PersistenceFormatVersion : 0,
+            MovementProtocolVersion = state.Initialized ? state.MovementProtocolVersion : 0,
+            RoutedOperationsRequired = state.Initialized && state.RoutedOperationsRequired,
+            MinimumRoutingEpoch = state.Initialized ? state.MinimumRoutingEpoch : 1,
+            CommittedSequence = state.Initialized ? state.CommittedSequence : 0,
+            NextVersion = state.Initialized ? state.NextVersion : 1,
+            MoveControl = state.Initialized
+                ? state.MoveControl.Copy()
+                : new StoragePartitionMoveControl(),
+        };
+    }
+
     public static void ValidateSettings(StoragePersistenceSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -266,6 +423,19 @@ internal sealed class StoragePartitionPersistence
                 threshold,
                 "The compaction threshold must not exceed the hard journal replay limit.");
         }
+    }
+
+    private StoragePersistenceSettings CreateProtocolPersistenceSettings()
+    {
+        return new StoragePersistenceSettings
+        {
+            JournalSegmentCapacity = _manifest.State.JournalSegmentCapacity,
+            MaximumJournalReplayEntries = _manifest.State.MaximumJournalReplayEntries,
+            // Protocol pages compact only at the hard replay boundary. This retains the existing
+            // whole-partition snapshot boundary without coupling an admin operation to one silo's
+            // mutable compaction preference.
+            CompactionThreshold = _manifest.State.MaximumJournalReplayEntries,
+        };
     }
 
     private async Task AcquireWriterEpochAsync(StoragePersistenceSettings settings)
@@ -341,7 +511,10 @@ internal sealed class StoragePartitionPersistence
                 "The pending snapshot does not identify the current committed partition state.");
         }
 
-        var snapshot = StorageSnapshotFactory.Create(pending, records);
+        var snapshot = StorageSnapshotFactory.Create(
+            pending,
+            records,
+            state.PersistenceFormatVersion);
 
         try
         {
@@ -374,7 +547,7 @@ internal sealed class StoragePartitionPersistence
             return new Dictionary<string, StoredRecord>(StringComparer.Ordinal);
         }
 
-        ValidateManifest(_manifest.State);
+        ValidateManifest(_manifest.State, allowPreviousFormat: true);
         var records = new Dictionary<string, StoredRecord>(StringComparer.Ordinal);
         var recoveredNextVersion = 1L;
         var recoveredOperationId = Guid.Empty;
@@ -393,11 +566,10 @@ internal sealed class StoragePartitionPersistence
                 throw;
             }
 
-            ValidateActiveSnapshot(descriptor, snapshot);
-            records = snapshot.Records.ToDictionary(
-                static pair => pair.Key,
-                static pair => StoragePersistenceStateCopy.CopyRecord(pair.Value)!,
-                StringComparer.Ordinal);
+            records = ValidateActiveSnapshot(
+                descriptor,
+                snapshot,
+                _manifest.State.PersistenceFormatVersion);
             recoveredNextVersion = snapshot.NextVersion;
             recoveredOperationId = snapshot.OperationId;
             recoveredOperationIds.Add(snapshot.OperationId);
@@ -425,7 +597,8 @@ internal sealed class StoragePartitionPersistence
                 absoluteSegmentIndex,
                 _manifest.State.JournalSegmentCapacity,
                 _manifest.State.WriterEpoch,
-                _manifest.State.CommittedSequence);
+                _manifest.State.CommittedSequence,
+                _manifest.State.PersistenceFormatVersion);
             var segmentEnd = Math.Min(
                 StoragePersistence.GetSegmentEndSequence(
                     absoluteSegmentIndex,
@@ -530,7 +703,9 @@ internal sealed class StoragePartitionPersistence
     private async Task PersistManifestAsync(StoragePartitionManifestState candidate)
     {
         EnsureCoordinatorUsable();
-        ValidateManifest(candidate);
+        // Ordinary mutations deliberately preserve persistence-v3 during a rolling deploy. Only
+        // the explicit quiesced movement enablement changes the capability gate to v4.
+        ValidateManifest(candidate, allowPreviousFormat: true);
 
         var previous = _manifest.State;
         _manifest.State = candidate;
@@ -591,20 +766,37 @@ internal sealed class StoragePartitionPersistence
         return new StoragePartitionManifestState
         {
             Initialized = true,
-            PersistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion,
+            PersistenceFormatVersion = StoragePersistence.PreviousPersistenceFormatVersion,
             JournalSegmentCapacity = settings.JournalSegmentCapacity,
             MaximumJournalReplayEntries = settings.MaximumJournalReplayEntries,
             NextVersion = 1,
+            MinimumRoutingEpoch = 1,
+            MoveControl = new StoragePartitionMoveControl(),
         };
     }
 
-    private static void ValidateManifest(StoragePartitionManifestState state)
+    internal static void ValidateManifest(
+        StoragePartitionManifestState state,
+        bool allowPreviousFormat = false)
     {
-        if (state.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion)
+        var isPreviousFormat =
+            state.PersistenceFormatVersion == StoragePersistence.PreviousPersistenceFormatVersion;
+        if (state.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion
+            && (!allowPreviousFormat || !isPreviousFormat))
         {
             throw new InvalidOperationException(
                 $"Partition persistence format {state.PersistenceFormatVersion} is not supported; "
                 + $"format {StoragePersistence.CurrentPersistenceFormatVersion} is required.");
+        }
+
+        ArgumentNullException.ThrowIfNull(state.MoveControl);
+        if (isPreviousFormat)
+        {
+            ValidatePreviousFormatMovementFields(state);
+        }
+        else
+        {
+            ValidateMovementFields(state);
         }
 
         StoragePersistence.ValidateOptions(
@@ -636,8 +828,8 @@ internal sealed class StoragePartitionPersistence
                     "An empty partition manifest contains non-initial persistence state.");
             }
         }
-        else if (state.NextVersion < 2
-            || state.NextVersion - 1 > state.CommittedSequence
+        else if (state.NextVersion < (isPreviousFormat ? 2 : 1)
+            || (isPreviousFormat && state.NextVersion - 1 > state.CommittedSequence)
             || state.SnapshotGenerationHighWatermark > state.CommittedSequence)
         {
             throw new InvalidOperationException(
@@ -651,10 +843,202 @@ internal sealed class StoragePartitionPersistence
             throw new InvalidOperationException("The partition manifest contains an unaligned prune boundary.");
         }
 
-        ValidateSnapshotDescriptors(state);
+        ValidateSnapshotDescriptors(state, isPreviousFormat);
     }
 
-    private static void ValidateSnapshotDescriptors(StoragePartitionManifestState state)
+    private static void ValidatePreviousFormatMovementFields(StoragePartitionManifestState state)
+    {
+        if (state.MovementProtocolVersion != 0
+            || state.RoutedOperationsRequired
+            || state.MinimumRoutingEpoch is not 0 and not 1)
+        {
+            throw new InvalidOperationException(
+                "A persistence-v3 manifest contains unsupported movement-protocol fields.");
+        }
+
+        ValidateAbsentMoveControl(state.MoveControl);
+    }
+
+    private static void ValidateMovementFields(StoragePartitionManifestState state)
+    {
+        if (state.MinimumRoutingEpoch <= 0
+            || (state.MovementProtocolVersion == 0
+                && (state.RoutedOperationsRequired || state.MinimumRoutingEpoch != 1))
+            || (state.MovementProtocolVersion == StorageMoveProtocol.Version
+                && !state.RoutedOperationsRequired)
+            || state.MovementProtocolVersion is not 0 and not StorageMoveProtocol.Version)
+        {
+            throw new InvalidOperationException(
+                "The partition manifest contains invalid movement-protocol boundaries.");
+        }
+
+        var move = state.MoveControl;
+        if (!move.IsPresent)
+        {
+            ValidateAbsentMoveControl(move);
+            return;
+        }
+
+        if (state.MovementProtocolVersion != StorageMoveProtocol.Version
+            || !state.RoutedOperationsRequired
+            || move.MoveId == Guid.Empty
+            || move.Slot < 0
+            || move.VirtualSlotCount <= 0
+            || move.VirtualSlotCount > StorageLayout.MaximumVirtualSlotCount
+            || move.Slot >= move.VirtualSlotCount
+            || move.SourceEpoch <= 0
+            || move.SourceOwner < 0
+            || move.SourceOwner >= StorageLayout.MaximumVirtualSlotCount
+            || move.TargetOwner < 0
+            || move.TargetOwner >= StorageLayout.MaximumVirtualSlotCount
+            || move.SourceOwner == move.TargetOwner
+            || move.FrozenNextVersion <= 0
+            || move.NextPageOrdinal < 0
+            || move.ImportedRecordCount < 0
+            || move.ImportedByteCount < 0
+            || move.DeletedRecordCount < 0
+            || move.DeletedByteCount < 0
+            || move.LastPageItemLimit < 0
+            || move.LastPageByteTarget < 0
+            || move.LastPageEncodedByteCount < 0
+            || move.LastPageDigest is null
+            || (move.NextPageOrdinal == 0
+                && (move.ProgressAfterRecordKey is not null
+                    || move.LastPageDigest.Length != 0
+                    || move.LastPageRequestAfterRecordKey is not null
+                    || move.LastPageItemLimit != 0
+                    || move.LastPageByteTarget != 0
+                    || move.LastPageEncodedByteCount != 0))
+            || (move.NextPageOrdinal > 0
+                && (move.LastPageDigest.Length != StorageMovePageDigest.DigestLength
+                    || move.LastPageItemLimit <= 0
+                    || move.LastPageItemLimit > StorageMoveProtocol.MaximumPageRecords
+                    || move.LastPageByteTarget <= 0
+                    || move.LastPageByteTarget > StorageMoveProtocol.MaximumPageBytes)))
+        {
+            throw new InvalidOperationException("The partition manifest contains invalid move control.");
+        }
+
+        try
+        {
+            ValidateMoveCursor(move.ProgressAfterRecordKey, nameof(move.ProgressAfterRecordKey));
+            ValidateMoveCursor(
+                move.LastPageRequestAfterRecordKey,
+                nameof(move.LastPageRequestAfterRecordKey));
+        }
+        catch (ArgumentException exception)
+        {
+            throw new InvalidOperationException(
+                "The partition manifest contains an invalid lossless move cursor.",
+                exception);
+        }
+
+        var sourcePhase = move.Phase is StoragePartitionMovePhase.SourceFrozen
+            or StoragePartitionMovePhase.SourceHidden
+            or StoragePartitionMovePhase.SourceDeleting
+            or StoragePartitionMovePhase.SourceDeleteComplete;
+        var targetPhase = move.Phase is StoragePartitionMovePhase.TargetPrepared
+            or StoragePartitionMovePhase.TargetImporting
+            or StoragePartitionMovePhase.TargetImportComplete
+            or StoragePartitionMovePhase.TargetEnabled
+            or StoragePartitionMovePhase.TargetAbortDeleting
+            or StoragePartitionMovePhase.TargetAbortComplete;
+        if ((!sourcePhase && !targetPhase)
+            || (move.Role == StoragePartitionMoveRole.Source) != sourcePhase
+            || (move.Role == StoragePartitionMoveRole.Target) != targetPhase)
+        {
+            throw new InvalidOperationException(
+                "The partition move role and phase are inconsistent.");
+        }
+
+        if (sourcePhase)
+        {
+            if (move.ImportedRecordCount != 0
+                || move.ImportedByteCount != 0
+                || (move.Phase is StoragePartitionMovePhase.SourceFrozen
+                        or StoragePartitionMovePhase.SourceHidden
+                    && (move.NextPageOrdinal != 0
+                        || move.DeletedRecordCount != 0
+                        || move.DeletedByteCount != 0))
+                || (move.Phase is StoragePartitionMovePhase.SourceDeleting
+                        or StoragePartitionMovePhase.SourceDeleteComplete
+                    && move.NextPageOrdinal == 0)
+                || move.FrozenNextVersion > state.NextVersion
+                || (move.Phase == StoragePartitionMovePhase.SourceFrozen
+                    && state.MinimumRoutingEpoch > move.SourceEpoch)
+                || (move.Phase != StoragePartitionMovePhase.SourceFrozen
+                    && state.MinimumRoutingEpoch <= move.SourceEpoch))
+            {
+                throw new InvalidOperationException(
+                    "The source move control is inconsistent with its version or visibility fence.");
+            }
+        }
+        else if ((move.Phase == StoragePartitionMovePhase.TargetPrepared
+                && (move.NextPageOrdinal != 0
+                    || move.ImportedRecordCount != 0
+                    || move.ImportedByteCount != 0
+                    || move.DeletedRecordCount != 0
+                    || move.DeletedByteCount != 0))
+            || (move.Phase is StoragePartitionMovePhase.TargetImporting
+                    or StoragePartitionMovePhase.TargetImportComplete
+                    or StoragePartitionMovePhase.TargetEnabled
+                && (move.DeletedRecordCount != 0 || move.DeletedByteCount != 0))
+            || (move.Phase is StoragePartitionMovePhase.TargetImportComplete
+                    or StoragePartitionMovePhase.TargetEnabled
+                    or StoragePartitionMovePhase.TargetAbortDeleting
+                    or StoragePartitionMovePhase.TargetAbortComplete
+                && move.NextPageOrdinal == 0)
+            || (move.Phase != StoragePartitionMovePhase.TargetPrepared
+                && state.NextVersion < move.FrozenNextVersion))
+        {
+            throw new InvalidOperationException(
+                "The target move control has invalid progress or lacks its source version fence.");
+        }
+    }
+
+    private static void ValidateAbsentMoveControl(StoragePartitionMoveControl move)
+    {
+        if (move.IsPresent
+            || move.MoveId != Guid.Empty
+            || move.Slot != 0
+            || move.VirtualSlotCount != 0
+            || move.SourceEpoch != 0
+            || move.SourceOwner != 0
+            || move.TargetOwner != 0
+            || move.Role != StoragePartitionMoveRole.None
+            || move.Phase != StoragePartitionMovePhase.None
+            || move.FrozenNextVersion != 0
+            || move.ProgressAfterRecordKey is not null
+            || move.NextPageOrdinal != 0
+            || move.LastPageDigest is null
+            || move.LastPageDigest.Length != 0
+            || move.ImportedRecordCount != 0
+            || move.ImportedByteCount != 0
+            || move.DeletedRecordCount != 0
+            || move.DeletedByteCount != 0
+            || move.LastPageRequestAfterRecordKey is not null
+            || move.LastPageItemLimit != 0
+            || move.LastPageByteTarget != 0
+            || move.LastPageEncodedByteCount != 0)
+        {
+            throw new InvalidOperationException("An absent partition move control contains persisted data.");
+        }
+    }
+
+    private static void ValidateMoveCursor(byte[]? cursor, string parameterName)
+    {
+        if (cursor is null)
+        {
+            return;
+        }
+
+        var decoded = StorageMoveRecordCodec.DecodeText(cursor, parameterName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(decoded, parameterName);
+    }
+
+    private static void ValidateSnapshotDescriptors(
+        StoragePartitionManifestState state,
+        bool isPreviousFormat)
     {
         ArgumentNullException.ThrowIfNull(state.ActiveSnapshot);
         ArgumentNullException.ThrowIfNull(state.PendingSnapshot);
@@ -666,7 +1050,10 @@ internal sealed class StoragePartitionPersistence
 
         if (state.ActiveSnapshot.IsPresent)
         {
-            ValidateDescriptor(state.ActiveSnapshot, nameof(state.ActiveSnapshot));
+            ValidateDescriptor(
+                state.ActiveSnapshot,
+                nameof(state.ActiveSnapshot),
+                isPreviousFormat);
             if (state.ActiveSnapshot.Sequence != state.SnapshotSequence
                 || state.ActiveSnapshot.Generation > state.SnapshotGenerationHighWatermark
                 || state.ActiveSnapshot.NextVersion > state.NextVersion
@@ -684,7 +1071,10 @@ internal sealed class StoragePartitionPersistence
 
         if (state.PendingSnapshot.IsPresent)
         {
-            ValidateDescriptor(state.PendingSnapshot, nameof(state.PendingSnapshot));
+            ValidateDescriptor(
+                state.PendingSnapshot,
+                nameof(state.PendingSnapshot),
+                isPreviousFormat);
             if (state.PendingSnapshot.Generation != state.SnapshotGenerationHighWatermark
                 || state.PendingSnapshot.Sequence != state.CommittedSequence
                 || state.PendingSnapshot.OperationId != state.CommittedOperationId
@@ -706,7 +1096,10 @@ internal sealed class StoragePartitionPersistence
 
         if (state.RetiringSnapshot.IsPresent)
         {
-            ValidateDescriptor(state.RetiringSnapshot, nameof(state.RetiringSnapshot));
+            ValidateDescriptor(
+                state.RetiringSnapshot,
+                nameof(state.RetiringSnapshot),
+                isPreviousFormat);
             if (!state.ActiveSnapshot.IsPresent
                 || state.RetiringSnapshot.Slot == state.ActiveSnapshot.Slot
                 || state.ActiveSnapshot.Generation <= 1
@@ -732,7 +1125,10 @@ internal sealed class StoragePartitionPersistence
         }
     }
 
-    private static void ValidateDescriptor(StorageSnapshotDescriptor descriptor, string name)
+    private static void ValidateDescriptor(
+        StorageSnapshotDescriptor descriptor,
+        string name,
+        bool isPreviousFormat)
     {
         StoragePersistence.ValidateSnapshotSlot(descriptor.Slot, name);
         if (descriptor.Generation <= 0
@@ -741,8 +1137,8 @@ internal sealed class StoragePartitionPersistence
             || descriptor.Sequence <= 0
             || descriptor.Generation > descriptor.Sequence
             || descriptor.OperationId == Guid.Empty
-            || descriptor.NextVersion < 2
-            || descriptor.NextVersion - 1 > descriptor.Sequence)
+            || descriptor.NextVersion < (isPreviousFormat ? 2 : 1)
+            || (isPreviousFormat && descriptor.NextVersion - 1 > descriptor.Sequence))
         {
             throw new InvalidOperationException($"Snapshot descriptor '{name}' is invalid.");
         }
@@ -762,9 +1158,10 @@ internal sealed class StoragePartitionPersistence
         }
     }
 
-    private static void ValidateActiveSnapshot(
+    private static Dictionary<string, StoredRecord> ValidateActiveSnapshot(
         StorageSnapshotDescriptor descriptor,
-        StorageSnapshotState snapshot)
+        StorageSnapshotState snapshot,
+        int persistenceFormatVersion)
     {
         if (!snapshot.Initialized
             || snapshot.Tombstoned
@@ -774,12 +1171,13 @@ internal sealed class StoragePartitionPersistence
                 $"Committed snapshot generation {descriptor.Generation} is missing, retired, or has mismatched identity.");
         }
 
-        foreach (var (recordKey, record) in snapshot.Records)
+        var records = StorageSnapshotFactory.DecodeRecords(snapshot, persistenceFormatVersion);
+        foreach (var record in records.Values)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
-            StoragePersistenceStateValidation.ValidateRecord(record, nameof(snapshot));
             ValidateRecordVersion(record, snapshot.NextVersion, descriptor.Generation);
         }
+
+        return records;
     }
 
     private static void ValidateJournalSegment(
@@ -787,7 +1185,8 @@ internal sealed class StoragePartitionPersistence
         long absoluteSegmentIndex,
         int capacity,
         long maximumWriterEpoch,
-        long committedSequence)
+        long committedSequence,
+        int persistenceFormatVersion)
     {
         if (!segment.Initialized
             || segment.Tombstoned
@@ -831,6 +1230,15 @@ internal sealed class StoragePartitionPersistence
             {
                 throw new InvalidOperationException(
                     $"Committed journal segment {absoluteSegmentIndex} contains invalid entry boundaries.");
+            }
+
+
+            if (persistenceFormatVersion == StoragePersistence.PreviousPersistenceFormatVersion
+                && entry.Operation is not StorageJournalOperation.Upsert
+                    and not StorageJournalOperation.Delete)
+            {
+                throw new InvalidOperationException(
+                    $"Persistence-v3 journal segment {absoluteSegmentIndex} contains a movement operation.");
             }
 
             if (entry.Sequence > committedSequence

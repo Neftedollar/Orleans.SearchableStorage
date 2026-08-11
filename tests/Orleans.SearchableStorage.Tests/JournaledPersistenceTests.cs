@@ -20,6 +20,12 @@ public abstract class JournaledPersistenceContractTests<TFixture>
     }
 
     [SkippableFact]
+    public Task LiveSlotMoveUnderRoutedWritesSurvivesReactivationWithSingleAuthority()
+    {
+        return StorageMovementProviderContract.AssertMoveUnderLoadAsync(Fixture);
+    }
+
+    [SkippableFact]
     public async Task FacetsRebuildFromDurableRecordsAfterPartitionReactivation()
     {
         var providerName = CreateProviderName();

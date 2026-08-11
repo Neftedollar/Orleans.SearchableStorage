@@ -1,5 +1,6 @@
 using AwesomeAssertions;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
@@ -45,6 +46,82 @@ public sealed class StorageSnapshotProtocolTests
         await retire.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*cannot be reused after an ambiguous persistence write*");
         state.WriteCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task LosslessSnapshotLostAcknowledgementRecoversAsAnExactBinaryRetry()
+    {
+        var injected = new InvalidOperationException("Lost lossless snapshot acknowledgement.");
+        var snapshot = CreateLosslessSnapshot();
+        var state = new TestPersistentState<StorageSnapshotState>
+        {
+            WriteException = injected,
+        };
+        var firstActivation = new StorageSnapshotGrain(
+            state,
+            requestDeactivation: static () => { });
+        var reverseInsertion = StorageSnapshotFactory.DecodeRecords(
+                snapshot,
+                StoragePersistence.CurrentPersistenceFormatVersion)
+            .Reverse()
+            .ToDictionary(
+                static pair => pair.Key,
+                static pair => pair.Value,
+                StringComparer.Ordinal);
+        var regenerated = StorageSnapshotFactory.Create(
+            StorageSnapshotDescriptor.FromSnapshot(snapshot),
+            reverseInsertion,
+            StoragePersistence.CurrentPersistenceFormatVersion);
+        StoragePersistenceStateEquality.SnapshotEquals(snapshot, regenerated).Should().BeTrue();
+
+        Func<Task> firstStore = () => firstActivation.StoreAsync(snapshot);
+        await firstStore.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage(injected.Message);
+        state.LastWriteState.Should().NotBeNull();
+
+        state.State = state.LastWriteState!;
+        state.WriteException = null;
+        var recoveredActivation = new StorageSnapshotGrain(state);
+        await recoveredActivation.StoreAsync(snapshot.Copy());
+        state.WriteCount.Should().Be(1);
+        StoragePersistenceStateEquality.SnapshotEquals(state.State, snapshot).Should().BeTrue();
+
+        var conflict = snapshot.Copy();
+        conflict.LosslessRecords[0].Record.Payload[0]++;
+        Func<Task> conflictingStore = () => recoveredActivation.StoreAsync(conflict);
+        await conflictingStore.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*different metadata or payload*");
+        state.WriteCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void SnapshotRecordEncodingRejectsUnknownMixedUnorderedAndV3BinaryPayloads()
+    {
+        var lossless = CreateLosslessSnapshot();
+        var unknown = lossless.Copy();
+        unknown.RecordEncodingVersion = 2;
+        var mixed = lossless.Copy();
+        mixed.Records["legacy"] = StoragePersistenceStateCopy.CopyRecord(
+            CreateSnapshot(generation: 2, sequence: 2).Records["record"])!;
+        var unordered = lossless.Copy();
+        unordered.LosslessRecords.Reverse();
+        var impossibleLegacy = CreateSnapshot(generation: 2, sequence: 2);
+        impossibleLegacy.NextVersion = 10;
+
+        Action validateUnknown = () => StorageSnapshotFactory.ValidatePayload(unknown);
+        Action validateMixed = () => StorageSnapshotFactory.ValidatePayload(mixed);
+        Action validateUnordered = () => StorageSnapshotFactory.ValidatePayload(unordered);
+        Action validateImpossibleLegacy = () =>
+            StorageSnapshotFactory.ValidatePayload(impossibleLegacy);
+        Action recoverBinaryFromV3 = () => StorageSnapshotFactory.DecodeRecords(
+            lossless,
+            StoragePersistence.PreviousPersistenceFormatVersion);
+
+        validateUnknown.Should().Throw<InvalidOperationException>();
+        validateMixed.Should().Throw<InvalidOperationException>();
+        validateUnordered.Should().Throw<InvalidOperationException>();
+        validateImpossibleLegacy.Should().Throw<InvalidOperationException>();
+        recoverBinaryFromV3.Should().Throw<InvalidOperationException>();
     }
 
     [Theory]
@@ -142,6 +219,47 @@ public sealed class StorageSnapshotProtocolTests
         state.State.Tombstoned.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task LosslessRetirementResetsTheTombstoneAndAllowsHigherGenerationReuse()
+    {
+        var state = new TestPersistentState<StorageSnapshotState>();
+        var grain = new StorageSnapshotGrain(state);
+        var current = CreateLosslessSnapshot();
+        await grain.StoreAsync(current);
+
+        await grain.RetireAsync(StorageSnapshotDescriptor.FromSnapshot(current));
+        state.State.Tombstoned.Should().BeTrue();
+        state.State.RecordEncodingVersion.Should()
+            .Be(StorageSnapshotFactory.LegacyRecordEncodingVersion);
+        state.State.Records.Should().BeEmpty();
+        state.State.LosslessRecords.Should().BeEmpty();
+
+        var nextDescriptor = new StorageSnapshotDescriptor
+        {
+            IsPresent = true,
+            Slot = current.Slot,
+            Generation = checked(current.Generation + 1),
+            SnapshotId = Guid.NewGuid(),
+            Sequence = checked(current.Sequence + 1),
+            OperationId = Guid.NewGuid(),
+            NextVersion = current.NextVersion,
+        };
+        var next = StorageSnapshotFactory.Create(
+            nextDescriptor,
+            StorageSnapshotFactory.DecodeRecords(
+                current,
+                StoragePersistence.CurrentPersistenceFormatVersion),
+            StoragePersistence.CurrentPersistenceFormatVersion);
+        await grain.StoreAsync(next);
+
+        state.State.Tombstoned.Should().BeFalse();
+        state.State.Generation.Should().Be(nextDescriptor.Generation);
+        state.State.RecordEncodingVersion.Should()
+            .Be(StorageSnapshotFactory.LosslessRecordEncodingVersion);
+        state.State.LosslessRecords.Should().HaveCount(2);
+        state.WriteCount.Should().Be(3);
+    }
+
     private static StorageSnapshotState CreateSnapshot(long generation, long sequence)
     {
         return new StorageSnapshotState
@@ -164,5 +282,50 @@ public sealed class StorageSnapshotProtocolTests
                 },
             },
         };
+    }
+
+    private static StorageSnapshotState CreateLosslessSnapshot()
+    {
+        var identity = CreateSnapshot(generation: 2, sequence: 2);
+        var descriptor = StorageSnapshotDescriptor.FromSnapshot(identity);
+        var seed = identity.Records["record"];
+        var first = new StoredRecord
+        {
+            GrainId = seed.GrainId,
+            Payload = [.. seed.Payload],
+            ETag = "1",
+            IndexEntries =
+            [
+                new IndexEntry
+                {
+                    Scope = "scope/\ud800",
+                    Kind = SearchableIndexKind.Hash,
+                    Value = IndexValue.Create("value/\udc00"),
+                },
+            ],
+        };
+        var second = new StoredRecord
+        {
+            GrainId = seed.GrainId,
+            Payload = [.. seed.Payload],
+            ETag = "2",
+            IndexEntries =
+            [
+                new IndexEntry
+                {
+                    Scope = "scope/\ud800",
+                    Kind = SearchableIndexKind.Hash,
+                    Value = IndexValue.Create("value/\udc00"),
+                },
+            ],
+        };
+        return StorageSnapshotFactory.Create(
+            descriptor,
+            new Dictionary<string, StoredRecord>(StringComparer.Ordinal)
+            {
+                ["a-\ud800"] = first,
+                ["b-\udc00"] = second,
+            },
+            StoragePersistence.CurrentPersistenceFormatVersion);
     }
 }

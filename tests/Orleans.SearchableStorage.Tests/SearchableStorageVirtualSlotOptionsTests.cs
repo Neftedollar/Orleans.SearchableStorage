@@ -218,7 +218,7 @@ public sealed class SearchableStorageVirtualSlotOptionsTests
         }
     }
 
-    private sealed class RecordingLayoutGrain : IStorageLayoutGrain
+    private sealed class RecordingLayoutGrain : StorageLayoutGrainMovementTestDouble, IStorageLayoutGrain
     {
         private readonly string _providerName;
 

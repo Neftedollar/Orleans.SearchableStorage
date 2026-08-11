@@ -120,6 +120,8 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
         var candidate = _state.State.Copy();
         candidate.Tombstoned = true;
         candidate.Records.Clear();
+        candidate.RecordEncodingVersion = StorageSnapshotFactory.LegacyRecordEncodingVersion;
+        candidate.LosslessRecords.Clear();
         await PersistAsync(candidate);
     }
 
@@ -160,12 +162,12 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
         StoragePersistence.ValidateSnapshotSlot(snapshot.Slot, nameof(snapshot));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(snapshot.Generation, nameof(snapshot));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(snapshot.Sequence, nameof(snapshot));
-        if (snapshot.NextVersion < 2 || snapshot.NextVersion - 1 > snapshot.Sequence)
+        if (snapshot.NextVersion < 1)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(snapshot),
                 snapshot.NextVersion,
-                "A snapshot next version must be representable by its positive committed sequence.");
+                "A snapshot next version must be positive.");
         }
 
         if (snapshot.SnapshotId == Guid.Empty)
@@ -180,17 +182,7 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
                 nameof(snapshot));
         }
 
-        ArgumentNullException.ThrowIfNull(snapshot.Records, nameof(snapshot));
-        foreach (var (recordKey, record) in snapshot.Records)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(recordKey, nameof(snapshot));
-            if (record is null)
-            {
-                throw new ArgumentException("A snapshot cannot contain a null record.", nameof(snapshot));
-            }
-
-            StoragePersistenceStateValidation.ValidateRecord(record, nameof(snapshot));
-        }
+        StorageSnapshotFactory.ValidatePayload(snapshot);
     }
 
     private static void ValidateDescriptor(StorageSnapshotDescriptor descriptor)
@@ -204,12 +196,12 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
         StoragePersistence.ValidateSnapshotSlot(descriptor.Slot, nameof(descriptor));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(descriptor.Generation, nameof(descriptor));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(descriptor.Sequence, nameof(descriptor));
-        if (descriptor.NextVersion < 2 || descriptor.NextVersion - 1 > descriptor.Sequence)
+        if (descriptor.NextVersion < 1)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(descriptor),
                 descriptor.NextVersion,
-                "A snapshot next version must be representable by its positive committed sequence.");
+                "A snapshot next version must be positive.");
         }
 
         if (descriptor.SnapshotId == Guid.Empty)

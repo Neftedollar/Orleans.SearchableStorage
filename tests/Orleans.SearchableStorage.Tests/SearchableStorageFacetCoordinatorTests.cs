@@ -141,6 +141,43 @@ public sealed class SearchableStorageFacetCoordinatorTests
     }
 
     [Fact]
+    public async Task DistinctFacetExactProbeRejectsStaleSourceValueAfterTargetMutation()
+    {
+        var fixture = CreateFixture(ownerCount: 2);
+        var authoritative = fixture.Partitions[0].AddRow("current", included: true);
+        var staleSourceCopy = new StoredRecord
+        {
+            GrainId = authoritative.Record.GrainId,
+            Payload = [.. authoritative.Record.Payload],
+            ETag = authoritative.Record.ETag,
+            IndexEntries =
+            [
+                new IndexEntry
+                {
+                    Scope = authoritative.Record.IndexEntries[0].Scope,
+                    Kind = authoritative.Record.IndexEntries[0].Kind,
+                    Value = IndexValue.Create("stale"),
+                },
+                .. authoritative.Record.IndexEntries.Skip(1),
+            ],
+        };
+        fixture.Partitions[1].AddCopiedRecord(
+            authoritative.RecordKey,
+            staleSourceCopy);
+
+        var result = await fixture.Client.Query<FacetState>(StateName)
+            .ToDistinctFacetValuePageAsync(
+                state => state.Category,
+                new SearchableStorageFacetPageRequest(10));
+
+        result.Items.Should().Equal("current");
+        result.ContinuationToken.Should().BeNull();
+        fixture.Partitions.SelectMany(static partition => partition.CountRequests)
+            .Count(request => request.Value.Equals(IndexValue.Create("stale")))
+            .Should().Be(2, "the raw stale source value must be nominated and rejected by every ownership-filtered exact probe");
+    }
+
+    [Fact]
     public async Task DistinctPagingCanReturnEmptyNonterminalPagesAndResumesWeaklyByValue()
     {
         var fixture = CreateFixture(ownerCount: 2);
@@ -927,7 +964,7 @@ public sealed class SearchableStorageFacetCoordinatorTests
         public string Description { get; init; } = string.Empty;
     }
 
-    private sealed class FacetPartition : IStoragePartitionGrain
+    private sealed class FacetPartition : StoragePartitionGrainMovementTestDouble, IStoragePartitionGrain
     {
         private static readonly SelectedIndex CategoryIndex =
             IndexMetadataProvider.GetSelectedIndex<FacetState, string>(StateName, state => state.Category);
