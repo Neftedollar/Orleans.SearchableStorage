@@ -4,6 +4,12 @@ Orleans-native persistent grain storage with secondary indexes.
 
 The project is an early vertical slice. It implements an `IGrainStorage` provider whose records and local index entries are owned by Orleans grains and persisted through another Orleans storage provider. Applications continue to use `IPersistentState<T>` and add searchable semantics by marking state properties.
 
+The [1.0 product and query contract](docs/one-zero-contract.md) is the concise matrix of the
+implemented product boundary, supported CLR/index/query surface, terminal semantics, failure model,
+and current runtime/backend evidence. It separately identifies the narrow bounded-membership slice
+accepted but not yet implemented before the intended 1.0 freeze, without claiming that version 1.0
+or its SemVer guarantees have already shipped.
+
 ## Current semantics
 
 - Hash indexes support exact-value lookup.
@@ -266,10 +272,11 @@ retry rounds independently from legacy result collection. External LINQ provider
 `ISearchableStorageFacetQueryProvider`; the existing async and paging provider interfaces remain
 source and binary independent.
 
-The [bounded query and paging contract](docs/bounded-query-contract.md) is the normative description
-of the implemented work accounting, ordered partition prefix, coordinator merge, continuation
-protection, weak consistency, and rollout rules. Continuations contain no activation-local cursor or
-buffered result state.
+The [1.0 product and query contract](docs/one-zero-contract.md) defines the public product boundary.
+The [bounded query and paging contract](docs/bounded-query-contract.md) provides the normative
+protocol detail for implemented work accounting, ordered partition prefixes, coordinator merge,
+continuation protection, weak consistency, and rollout rules. Continuations contain no
+activation-local cursor or buffered result state.
 
 `FindAsync`, `RangeAsync`, and `ToGrainIdsAsync` remain available as all-results compatibility APIs
 for known-small results. The built-in client implements them by collecting the same bounded pages
