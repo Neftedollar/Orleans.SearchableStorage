@@ -277,6 +277,36 @@ public sealed class VirtualSlotLayoutTests
         state.State.FormatVersion.Should().Be(StorageLayout.PreviousFormatVersion);
     }
 
+    [Fact]
+    public async Task TerminalMoveReceiptCannotClaimAnEpochBeyondThePersistedLayout()
+    {
+        const string providerName = "invalid-terminal-receipt-epoch";
+        var persisted = CreateVersionFourState(
+            providerName,
+            partitionCount: 2,
+            virtualSlotCount: 2);
+        persisted.MovementProtocolVersion = StorageLayout.CurrentMovementProtocolVersion;
+        persisted.Epoch = 2;
+        persisted.LastMoveReceipt = new StorageSlotMoveReceipt
+        {
+            MoveId = Guid.NewGuid(),
+            Slot = 0,
+            SourceOwner = 0,
+            TargetOwner = 1,
+            SourceEpoch = 5,
+            CompletionEpoch = 6,
+            TerminalPhase = SearchableStorageSlotMovePhase.Completed,
+        };
+        var state = new TestPersistentState<StorageLayoutState> { State = persisted };
+        var grain = CreateGrain(state, providerName);
+
+        Func<Task> read = () => grain.GetCurrentLayoutAsync();
+
+        await read.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*terminal slot-move receipt*");
+        state.WriteCount.Should().Be(0);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

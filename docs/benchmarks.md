@@ -18,7 +18,8 @@ serialization costs. Its cases invoke the same internal production helpers as th
 - facet candidate metadata pages and resumable filtered exact-count slices;
 - Orleans serialization of query plans and journal segments;
 - bounded journal-segment append using an in-memory `IPersistentState` test double;
-- validated journal replay and compaction snapshot construction.
+- validated journal replay and compaction snapshot construction;
+- activation-local virtual-slot catalog rebuild and bounded movement export/import/delete helpers.
 
 The journal-append case measures the state machine and allocations. It does not measure a physical
 provider, network, or durable write. End-to-end provider latency belongs to the load driver.
@@ -193,7 +194,7 @@ comparable.
 - Pull requests validate all specifications, run unit/golden tests, execute the microbenchmark
   self-test, and run small deterministic searchable closed-loop, searchable open-loop, and plain
   closed-loop Memory scenarios. The self-test reflects the built benchmark assembly and requires
-  the reviewed set of exactly 18 `[Benchmark]` methods, the exact `[Params]` vectors, the semantic
+  the reviewed set of exactly 22 `[Benchmark]` methods, the exact `[Params]` vectors, the semantic
   fixture results, and the real BenchmarkDotNet config (one .NET 10 server/concurrent-GC job,
   memory diagnostics, p95, full JSON plus GitHub Markdown exporters, and retained benchmark files).
   The benchmark-smoke job also generates the 62-entry quick ordered-work matrix and four-cell
@@ -324,6 +325,38 @@ They also do not introduce or imply a count-ranked tree or additional retained-m
 behaviors remain correctness tests or future load-driver evidence; shared-runner timing is not a
 facet performance claim.
 
+### Slot-movement matrix
+
+`SlotMovementBenchmarks` adds four production-path identities: rebuild the activation-local slot
+catalog, export one bounded record page, apply one import page, and apply one movement-delete page.
+Each identity covers 4,096 and 65,536 partition records across uniform, 50%-hot skewed-slot, and
+oversize-singleton distributions. That is six cases per identity and 24 movement cases across the
+four identities.
+
+The page fixtures use a 16-record ceiling and 64-KiB canonical movement-encoding target. Uniform and
+skewed pages must contain the exact stable ordinal prefix without exceeding either multi-record
+bound. The oversize fixture places one accepted record larger than the byte target at the selected
+cursor and requires a one-record page; it proves the documented
+`O(target + largest accepted record)` in-memory page/transfer shape rather than claiming an absolute
+wire-byte cap. Setup independently computes target-slot membership and expected record-key order,
+canonical encoded bytes, cursor, and exhaustion. It recomputes the production digest to prove
+deterministic replay; frozen core-test golden vectors separately protect that digest's protocol
+identity across compatible binaries.
+
+Rebuild invokes the same slot-catalog constructor used after durable recovery. Export invokes the
+same page builder used by the source RPC. Import and delete invoke the same committed-page application
+helpers used after the target/source WAL manifest commit, with fresh views outside the measured
+iteration; validation requires exact records plus hash/range/ordered/slot indexes and idempotent page
+identity. Benchmark copies of page selection or view mutation are forbidden.
+
+These process-local cases measure neither the layout coordinator nor Orleans serialization/RPC,
+physical-provider writes, source freeze duration, a complete move, or concurrent query retry. More
+importantly, they do not label current persistence as structurally per-slot: activation recovery
+still loads the active whole-partition snapshot and rebuilds all derived indexes/catalogs, while
+compaction can still serialize the complete physical partition. A movement capacity result must
+report those retained boundaries, slot skew, largest accepted record, canonical page counts/bytes,
+actual transport/provider telemetry, and their distinct units separately.
+
 ### Interpreting query policy constants
 
 The default 128-item page and 64-round compatibility window are internally aligned with the default
@@ -366,7 +399,8 @@ in issue #8 includes
 dedicated nightly artifacts and a same-workload one-million-record plain/searchable provider baseline,
 provider-native bytes and resource telemetry, a persistence-safe bulk seeder, previous-protocol
 baselines, fault/chaos histories, 10M/100M/1B qualification, a real coordinator/public paged
-workload for #5, #7 live-movement workloads, and protected-topology attestation of the
+distributed workload for #5, distributed #7 live-movement workloads beyond the process-local page
+matrix, and protected-topology attestation of the
 external silo build/configuration plus an out-of-process cleanup fallback or provider TTL. Thresholds
 become enforceable only after a stable same-hardware history exists.
 

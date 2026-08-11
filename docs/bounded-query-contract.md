@@ -24,9 +24,10 @@ The bounded protocol must provide all of these properties together:
 - internal posting-list representation and evaluator choice do not leak into tokens;
 - distinct-value and count-probe payloads cannot be confused with a `GrainId` page or each other.
 
-This protocol does not create a distributed snapshot, add text search, or define live slot movement.
-It also does not change persistence format 3 or layout format 4. A later slot-movement protocol must
-increment the layout epoch and therefore invalidate continuations created under the previous map.
+This protocol does not create a distributed snapshot or add text search. Live slot movement is a
+separate persistence-format-4 state machine documented in [live-movement.md](live-movement.md). Its
+ownership commit increments the layout-format-4 epoch and therefore invalidates continuations created
+under the previous map; every first-page retry still discards the complete old-epoch attempt.
 
 ## Logical work accounting
 
@@ -579,6 +580,12 @@ protocol or response family cannot cross the upgrade. The earlier version-3 to v
 adoption rules
 remain a separate concern: PR15 does not repeat that migration for an already valid format-4
 namespace.
+
+Movement enablement is a later, independent compatibility gate. Once enabled, every query/facet RPC
+is routed and ownership-filtered, a durable source minimum-epoch fence rejects stale fan-out, and
+target mutations remain frozen until that fence is acknowledged. Operators follow the quiesced
+movement rollout rather than treating the query-only upgrade above as permission for a mixed-version
+move.
 
 ## Acceptance evidence
 

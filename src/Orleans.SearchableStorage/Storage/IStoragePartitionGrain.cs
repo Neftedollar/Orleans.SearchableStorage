@@ -39,6 +39,32 @@ internal interface IStoragePartitionGrain : IGrainWithStringKey
     Task<PartitionFacetCountSliceResult> QueryFacetCountSliceRoutedAsync(
         RoutedPartitionFacetCountSliceRequest request);
 
+    Task<StoragePartitionProtocolState> EnableMovementProtocolAsync(
+        StoragePartitionProtocolRequest request);
+
+    Task<StoragePartitionProtocolState> GetMovementStateAsync();
+
+    Task<StoragePartitionProtocolState> FreezeMoveSourceAsync(StorageMoveIdentity move);
+
+    Task<StoragePartitionProtocolState> PrepareMoveTargetAsync(
+        StorageMoveTargetPrepareRequest request);
+
+    Task<StorageMoveExportPage> ExportMovePageAsync(StorageMovePageRequest request);
+
+    Task<StorageMovePageCommitResult> ImportMovePageAsync(
+        StorageMoveImportPageRequest request);
+
+    Task<StoragePartitionProtocolState> HideMoveSourceAsync(
+        StorageMoveVisibilityFenceRequest request);
+
+    Task<StoragePartitionProtocolState> EnableMoveTargetAsync(StorageMoveIdentity move);
+
+    Task<StorageMovePageCommitResult> DeleteMovePageAsync(
+        StorageMoveDeletePageRequest request);
+
+    Task<StoragePartitionProtocolState> RetireMoveParticipantAsync(
+        StorageMoveRetireRequest request);
+
     Task CompactAsync();
 
     Task<StoragePartitionPersistenceInfo> GetPersistenceInfoAsync();

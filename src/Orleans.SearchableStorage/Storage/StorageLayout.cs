@@ -6,6 +6,7 @@ internal static class StorageLayout
 {
     public const int CurrentFormatVersion = 4;
     public const int PreviousFormatVersion = 3;
+    public const int CurrentMovementProtocolVersion = 1;
     public const int DefaultVirtualSlotTargetCount = 16_384;
     public const int MaximumVirtualSlotCount = 262_144;
 
@@ -117,8 +118,19 @@ internal static class StorageLayout
     public static string CreatePartitionKey(string providerName, int partitionIndex)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
-        ArgumentOutOfRangeException.ThrowIfNegative(partitionIndex);
+        ValidateOwnerIndex(partitionIndex, nameof(partitionIndex));
         return $"{providerName}:{partitionIndex:D8}";
+    }
+
+    public static void ValidateOwnerIndex(int owner, string parameterName)
+    {
+        if (owner < 0 || owner >= MaximumVirtualSlotCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                owner,
+                $"A physical partition index must be between 0 and {MaximumVirtualSlotCount - 1}.");
+        }
     }
 }
 
@@ -188,6 +200,24 @@ internal sealed class StorageLayoutSnapshot
     [Id(5)]
     private int[] SlotAssignments { get; set; } = [];
 
+    [Id(6)]
+    public int MovementProtocolVersion { get; private set; }
+
+    [Id(7)]
+    private StorageMovementEnableIntent? MovementEnablement { get; set; }
+
+    [Id(8)]
+    private StorageSlotMoveIntent? MoveIntent { get; set; }
+
+    [Id(9)]
+    private StorageSlotMoveReceipt? LastMoveReceipt { get; set; }
+
+    public SearchableStorageMovementState MovementState => MovementEnablement is not null
+        ? SearchableStorageMovementState.Enabling
+        : MovementProtocolVersion == StorageLayout.CurrentMovementProtocolVersion
+            ? SearchableStorageMovementState.Enabled
+            : SearchableStorageMovementState.Disabled;
+
     public int GetOwner(int slot)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(slot);
@@ -217,6 +247,21 @@ internal sealed class StorageLayoutSnapshot
         return Array.BinarySearch(GetOrCreateDistinctOwners(), owner) >= 0;
     }
 
+    public StorageMovementEnableIntent? CopyMovementEnablement()
+    {
+        return MovementEnablement?.Copy();
+    }
+
+    public StorageSlotMoveIntent? CopyMoveIntent()
+    {
+        return MoveIntent?.Copy();
+    }
+
+    public StorageSlotMoveReceipt? CopyLastMoveReceipt()
+    {
+        return LastMoveReceipt?.Copy();
+    }
+
     internal static StorageLayoutSnapshot FromState(StorageLayoutState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -229,6 +274,10 @@ internal sealed class StorageLayoutSnapshot
             VirtualSlotCount = state.VirtualSlotCount,
             Epoch = state.Epoch,
             SlotAssignments = [.. state.SlotAssignments],
+            MovementProtocolVersion = state.MovementProtocolVersion,
+            MovementEnablement = state.MovementEnablement?.Copy(),
+            MoveIntent = state.MoveIntent?.Copy(),
+            LastMoveReceipt = state.LastMoveReceipt?.Copy(),
         };
     }
 
@@ -275,4 +324,253 @@ internal sealed class StorageLayoutState
 
     [Id(8)]
     public long Epoch { get; set; }
+
+    [Id(9)]
+    public int MovementProtocolVersion { get; set; }
+
+    [Id(10)]
+    public StorageMovementEnableIntent? MovementEnablement { get; set; }
+
+    [Id(11)]
+    public StorageSlotMoveIntent? MoveIntent { get; set; }
+
+    [Id(12)]
+    public StorageSlotMoveReceipt? LastMoveReceipt { get; set; }
+
+    public StorageLayoutState Copy()
+    {
+        return new StorageLayoutState
+        {
+            Initialized = Initialized,
+            FormatVersion = FormatVersion,
+            ProviderName = ProviderName,
+            PartitionCount = PartitionCount,
+            JournalSegmentCapacity = JournalSegmentCapacity,
+            MaximumJournalReplayEntries = MaximumJournalReplayEntries,
+            VirtualSlotCount = VirtualSlotCount,
+            SlotAssignments = [.. SlotAssignments],
+            Epoch = Epoch,
+            MovementProtocolVersion = MovementProtocolVersion,
+            MovementEnablement = MovementEnablement?.Copy(),
+            MoveIntent = MoveIntent?.Copy(),
+            LastMoveReceipt = LastMoveReceipt?.Copy(),
+        };
+    }
+}
+
+/// <summary>
+/// Persists resumable progress while every current owner is upgraded and pre-fenced under the
+/// operator-enforced quiescence gate.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageMovementEnableIntent
+{
+    [Id(0)]
+    public Guid EnablementId { get; set; }
+
+    [Id(1)]
+    public long SourceEpoch { get; set; }
+
+    [Id(2)]
+    public long PlannedEpoch { get; set; }
+
+    [Id(3)]
+    public int[] Owners { get; set; } = [];
+
+    [Id(4)]
+    public int NextOwnerIndex { get; set; }
+
+    public StorageMovementEnableIntent Copy()
+    {
+        return new StorageMovementEnableIntent
+        {
+            EnablementId = EnablementId,
+            SourceEpoch = SourceEpoch,
+            PlannedEpoch = PlannedEpoch,
+            Owners = [.. Owners],
+            NextOwnerIndex = NextOwnerIndex,
+        };
+    }
+}
+
+/// <summary>
+/// Persists the provider's sole slot-move intent. Partition controls own detailed page cursors and
+/// replay identities; the layout owns phase and the atomic assignment commit.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageSlotMoveIntent
+{
+    [Id(0)]
+    public Guid MoveId { get; set; }
+
+    [Id(1)]
+    public int Slot { get; set; }
+
+    [Id(2)]
+    public int SourceOwner { get; set; }
+
+    [Id(3)]
+    public int TargetOwner { get; set; }
+
+    [Id(4)]
+    public long SourceEpoch { get; set; }
+
+    [Id(5)]
+    public SearchableStorageSlotMovePhase Phase { get; set; }
+
+    [Id(6)]
+    public int TransferPageRecordLimit { get; set; }
+
+    [Id(7)]
+    public int TransferPageByteTarget { get; set; }
+
+    [Id(8)]
+    public long ExportedRecordCount { get; set; }
+
+    [Id(9)]
+    public long ExportedByteCount { get; set; }
+
+    [Id(10)]
+    public long DeletedRecordCount { get; set; }
+
+    [Id(11)]
+    public long DeletedByteCount { get; set; }
+
+    public StorageSlotMoveIntent Copy()
+    {
+        return new StorageSlotMoveIntent
+        {
+            MoveId = MoveId,
+            Slot = Slot,
+            SourceOwner = SourceOwner,
+            TargetOwner = TargetOwner,
+            SourceEpoch = SourceEpoch,
+            Phase = Phase,
+            TransferPageRecordLimit = TransferPageRecordLimit,
+            TransferPageByteTarget = TransferPageByteTarget,
+            ExportedRecordCount = ExportedRecordCount,
+            ExportedByteCount = ExportedByteCount,
+            DeletedRecordCount = DeletedRecordCount,
+            DeletedByteCount = DeletedByteCount,
+        };
+    }
+}
+
+/// <summary>
+/// Retains one constant-size terminal receipt so a final lost acknowledgement can be retried by
+/// move id after the active intent and all participant controls have been cleared.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageSlotMoveReceipt
+{
+    [Id(0)]
+    public Guid MoveId { get; set; }
+
+    [Id(1)]
+    public int Slot { get; set; }
+
+    [Id(2)]
+    public int SourceOwner { get; set; }
+
+    [Id(3)]
+    public int TargetOwner { get; set; }
+
+    [Id(4)]
+    public long SourceEpoch { get; set; }
+
+    [Id(5)]
+    public long CompletionEpoch { get; set; }
+
+    [Id(6)]
+    public SearchableStorageSlotMovePhase TerminalPhase { get; set; }
+
+    [Id(7)]
+    public long ExportedRecordCount { get; set; }
+
+    [Id(8)]
+    public long ExportedByteCount { get; set; }
+
+    [Id(9)]
+    public long DeletedRecordCount { get; set; }
+
+    [Id(10)]
+    public long DeletedByteCount { get; set; }
+
+    public StorageSlotMoveReceipt Copy()
+    {
+        return new StorageSlotMoveReceipt
+        {
+            MoveId = MoveId,
+            Slot = Slot,
+            SourceOwner = SourceOwner,
+            TargetOwner = TargetOwner,
+            SourceEpoch = SourceEpoch,
+            CompletionEpoch = CompletionEpoch,
+            TerminalPhase = TerminalPhase,
+            ExportedRecordCount = ExportedRecordCount,
+            ExportedByteCount = ExportedByteCount,
+            DeletedRecordCount = DeletedRecordCount,
+            DeletedByteCount = DeletedByteCount,
+        };
+    }
+}
+
+/// <summary>
+/// Supplies immutable, validated transfer limits when planning one move.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageSlotMovePlanRequest
+{
+    [Id(0)]
+    public int Slot { get; init; }
+
+    [Id(1)]
+    public int TargetOwner { get; init; }
+
+    [Id(2)]
+    public int MovementProtocolVersion { get; init; }
+
+    [Id(3)]
+    public int TransferPageRecordLimit { get; init; }
+
+    [Id(4)]
+    public int TransferPageByteTarget { get; init; }
+}
+
+/// <summary>
+/// Binds a bounded advance or abort request to one stable move identity.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageSlotMoveCommand
+{
+    [Id(0)]
+    public Guid MoveId { get; init; }
+
+    [Id(1)]
+    public int MovementProtocolVersion { get; init; }
+}
+
+/// <summary>
+/// Returns layout-owned move state together with durable participant counters.
+/// </summary>
+[GenerateSerializer]
+internal sealed class StorageSlotMoveProgressSnapshot
+{
+    [Id(0)]
+    public required StorageSlotMoveIntent Intent { get; init; }
+
+    [Id(1)]
+    public long CurrentEpoch { get; init; }
+
+    [Id(2)]
+    public long ExportedRecordCount { get; init; }
+
+    [Id(3)]
+    public long ExportedByteCount { get; init; }
+
+    [Id(4)]
+    public long DeletedRecordCount { get; init; }
+
+    [Id(5)]
+    public long DeletedByteCount { get; init; }
 }

@@ -16,6 +16,8 @@ siloBuilder.AddSearchableGrainStorage(
         options.JournalSegmentCapacity = 64;
         options.MaximumJournalReplayEntries = 4_096;
         options.CompactionThreshold = 1_024;
+        options.Movement.TransferPageRecordLimit = 128;
+        options.Movement.TransferPageByteTarget = 256 * 1_024;
         options.Query.ContinuationProtection.CurrentKey =
             new SearchableStorageContinuationKey(
                 "searchable-v1",
@@ -34,28 +36,40 @@ response-family-bound continuation.
 These are the defaults. `VirtualSlotTargetCount` seeds the exact persisted map for that provider
 namespace by rounding upward to a multiple of `PartitionCount`; it does not change an existing
 version-4 map, although it must remain a valid configured value. The exact per-layout map is capped
-at 262,144 owner integers. `PartitionCount`, `JournalSegmentCapacity`, and
-`MaximumJournalReplayEntries` are persisted choices and require migration to change.
-`CompactionThreshold` is operational, must be positive, and cannot exceed the replay limit.
+at 262,144 owner integers. `PartitionCount` remains the persisted initial owner count; live
+rebalancing changes assignments and may introduce higher owner indices without changing that
+identity field. `JournalSegmentCapacity` and `MaximumJournalReplayEntries` are persisted choices and
+require migration to change. `CompactionThreshold` and the movement page settings are operational.
+Movement pages accept 1–1,024 records and a 1-byte–4-MiB canonical movement-encoding target. That
+measure is deterministic replay/page accounting, not actual Orleans wire or physical-provider bytes.
 
 A valid version-3 layout upgrades with one physical layout CAS. The migration does not write any
 partition manifest, journal segment, or snapshot. Every supported backend must therefore preserve
 the same stale-ETag and lost-acknowledgement behavior for the layout document as it does for the
 partition manifest. The project uses JSON physical serialization; durable C# property names in the
 layout state are retained across the version change in addition to Orleans serializer field IDs.
-Partition manifests, journal segments, and snapshots remain persistence format 3 after layout
-adoption.
+Layout adoption itself leaves partition manifests, journal segments, and snapshots untouched.
+Only the later explicit, quiesced movement-enablement owner sweep upgrades a format-3 partition
+manifest to persistence format 4; ordinary activation and mutation remain format 3 until that gate.
+The upgrade retains the bounded journal ring and two snapshot slots.
 
 The v3-to-v4 transition requires a traffic pause rather than an online mixed-version rollout.
 Quiesce searchable storage and query traffic, update every silo and Orleans client, verify that no
 version-3 process remains, and keep traffic paused while one normal grain-state storage operation
-adopts each provider namespace. Verify that the admin read succeeds and reports epoch 1 before
-resuming traffic; the admin path returns a snapshot only for format 4, and it does not perform
+adopts each provider namespace. Verify that the admin read succeeds and reports epoch 1; the admin
+path returns a snapshot only for format 4, and it does not perform
 adoption. A new storage activation immediately uses routed methods which an old silo does not
-implement, and an old activation cannot read the adopted format-4 layout. This release retains
-legacy methods for updated consumers and its epoch-1 identity map preserves old modulo placement,
-but it does not expose `MoveSlot`. Future ownership changes require a separate coordinated all-v4
-protocol gate.
+implement, and an old activation cannot read the adopted format-4 layout. Updated consumers retain
+legacy methods while the epoch-1 identity map preserves old modulo placement. At this point either
+resume traffic with movement disabled, or keep it paused if the second gate follows immediately.
+
+Live movement has a second gate. Quiesce searchable traffic if it was resumed, deploy/restart the
+movement-capable package on every silo and client, and call `EnableMovementAsync` for each namespace.
+The resumable enablement intent upgrades and fences one current owner at a time; only its final layout
+CAS publishes movement protocol version 1 and the new epoch. Verify `MovementState == Enabled` before
+resuming traffic. Legacy placement-only calls are rejected thereafter, so binary rollback is not
+supported. The complete procedure and recovery rules are in the
+[live-movement runbook](live-movement.md).
 
 The bounded query protocol has a separate mixed-version rule and no persistence migration. Before
 upgrading from a release which lacks the page RPC, quiesce searchable query traffic, deploy every
@@ -68,7 +82,11 @@ canonical hash-value projection is rebuilt from the same durable records/index e
 The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, and snapshot states is required; the manifest is the searchable-storage commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, or snapshot state.
 
 Journal segments are bounded by operation count, not serialized bytes, and each snapshot contains
-the whole partition. The two snapshot slots bound object count, not object size. The virtual map adds
+the whole partition. The two snapshot slots bound object count, not object size. Movement export,
+import, and source-deletion page payloads are record-count-bounded and byte-targeted, but an accepted
+oversize record is transferred alone. Compaction can still rewrite the whole partition during a
+move, and activation still loads a whole snapshot and rebuilds the derived slot index;
+provider-native write and latency telemetry must preserve those costs. The virtual map adds
 approximately four raw bytes per slot before serializer overhead and is read as one layout value.
 Partition activations share one retained map per provider and silo instead of cloning it per
 partition. The keyed storage provider and query/admin clients retain a bounded constant number of
@@ -81,6 +99,14 @@ slices. No facet candidate, count, cursor, or owner data version is persisted in
 Choose the initial partition count, virtual-slot target, and journal capacity with the provider's
 row/value/blob limits, serialization cost, and activation memory in mind. Repeatable capacity
 benchmarks are tracked in [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8).
+
+Back up a provider namespace before enabling movement using the physical backend's documented
+consistent backup procedure. Never edit layout, manifest, journal, or snapshot values manually.
+Movement uses normal conditional whole-state provider writes and therefore inherits each backend's
+ETag, lost-acknowledgement, maximum-value-size, retry, and backup behavior. The shared provider
+contract executes a live move under concurrent routed writes and continuous exact query/facet reads,
+then reactivates both participants against Memory, PostgreSQL, Redis, and Azure Blob/Azurite; this
+proves the storage protocol, not equivalent service availability or performance.
 
 ## PostgreSQL
 

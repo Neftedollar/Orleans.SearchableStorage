@@ -6,6 +6,35 @@ namespace Orleans.SearchableStorage.Tests;
 public sealed class SearchableStorageAdminClientTests
 {
     [Fact]
+    public async Task ExistingReadOnlyAdminImplementationsGetAnExplicitMovementFailure()
+    {
+        ISearchableStorageAdminClient client = new ReadOnlyAdminClient();
+
+        var faulted = client.EnableMovementAsync();
+        Func<Task> call = async () => await faulted;
+
+        faulted.IsFaulted.Should().BeTrue();
+        await call.Should().ThrowAsync<NotSupportedException>()
+            .WithMessage("*AddSearchableGrainStorage*");
+    }
+
+    [Fact]
+    public void AdditiveLayoutMovementPropertiesDoNotBecomeRequiredMembers()
+    {
+        var required = typeof(System.Runtime.CompilerServices.RequiredMemberAttribute);
+
+        typeof(SearchableStorageLayout)
+            .GetProperty(nameof(SearchableStorageLayout.MovementProtocolVersion))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+        typeof(SearchableStorageLayout)
+            .GetProperty(nameof(SearchableStorageLayout.MovementState))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+        typeof(SearchableStorageLayout)
+            .GetProperty(nameof(SearchableStorageLayout.ActiveMove))!
+            .GetCustomAttributes(required, inherit: false).Should().BeEmpty();
+    }
+
+    [Fact]
     public void ConstructorRejectsNullLayoutCache()
     {
         Action create = () => _ = new SearchableStorageAdminClient(layoutCache: null!);
@@ -134,6 +163,183 @@ public sealed class SearchableStorageAdminClientTests
             .Should().NotContain(property => property.Name.Contains("Assignment", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task RebalancePlanUsesDeterministicMinimumMoveQuotas()
+    {
+        var snapshot = CreateMovementLayout([0, 0, 0, 0, 1, 1, 2, 3]);
+        var client = CreateCachedClient(snapshot);
+
+        var plan = await client.PlanRebalanceAsync(targetPartitionCount: 3);
+
+        plan.RequiredMoveCount.Should().Be(2);
+        plan.ActiveMove.Should().BeNull();
+        plan.NextMove.Should().NotBeNull();
+        plan.NextMove!.Slot.Should().Be(3);
+        plan.NextMove.SourcePartitionIndex.Should().Be(0);
+        plan.NextMove.TargetPartitionIndex.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RebalanceKeepsAValidRemainderOnTheOwnerWhichAlreadyHasIt()
+    {
+        var snapshot = CreateMovementLayout([0, 0, 1, 1, 1]);
+        var client = CreateCachedClient(snapshot);
+
+        var plan = await client.PlanRebalanceAsync(targetPartitionCount: 2);
+
+        plan.RequiredMoveCount.Should().Be(0,
+            "the existing 2/3 split is already balanced and requires no ownership churn");
+        plan.NextMove.Should().BeNull();
+        plan.ActiveMove.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RebalanceTargetIsBoundedByThePersistedVirtualSlotCount()
+    {
+        var client = CreateCachedClient(CreateMovementLayout([0, 0, 1, 1]));
+
+        var maximum = await client.PlanRebalanceAsync(targetPartitionCount: 4);
+        Func<Task> aboveMaximum = async () => await client.PlanRebalanceAsync(
+            targetPartitionCount: 5);
+
+        maximum.TargetPartitionCount.Should().Be(4);
+        await aboveMaximum.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithParameterName("targetPartitionCount");
+    }
+
+    [Fact]
+    public async Task LayoutSummaryProjectsItsActiveMoveFromTheSameImmutableSnapshot()
+    {
+        var snapshot = CreateMovementLayout(
+            [0, 0, 1, 1],
+            new StorageSlotMoveIntent
+            {
+                MoveId = Guid.NewGuid(),
+                Slot = 0,
+                SourceOwner = 0,
+                TargetOwner = 1,
+                SourceEpoch = 2,
+                Phase = SearchableStorageSlotMovePhase.Copying,
+                TransferPageRecordLimit = 16,
+                TransferPageByteTarget = 4_096,
+                ExportedRecordCount = 7,
+                ExportedByteCount = 700,
+            });
+        var client = CreateCachedClient(snapshot);
+
+        var layout = await client.GetLayoutAsync();
+
+        layout.Should().NotBeNull();
+        layout!.Epoch.Should().Be(2);
+        layout.ActiveMove.Should().NotBeNull();
+        layout.ActiveMove!.CurrentEpoch.Should().Be(layout.Epoch);
+        layout.ActiveMove.ExportedRecordCount.Should().Be(7);
+    }
+
+    [Fact]
+    public async Task RebalancePlanSimulatesAPlannedOwnershipCommitWithoutOfferingASecondPlan()
+    {
+        var snapshot = CreateMovementLayout(
+            [0, 0, 1, 1],
+            new StorageSlotMoveIntent
+            {
+                MoveId = Guid.NewGuid(),
+                Slot = 0,
+                SourceOwner = 0,
+                TargetOwner = 2,
+                SourceEpoch = 2,
+                Phase = SearchableStorageSlotMovePhase.Planned,
+                TransferPageRecordLimit = 16,
+                TransferPageByteTarget = 4_096,
+            });
+        var client = CreateCachedClient(snapshot);
+
+        var plan = await client.PlanRebalanceAsync(targetPartitionCount: 2);
+
+        plan.ActiveMove.Should().NotBeNull();
+        plan.NextMove.Should().BeNull();
+        plan.RequiredMoveCount.Should().Be(2,
+            "the active commit moves outside the target owner range and one corrective commit remains");
+    }
+
+    [Fact]
+    public async Task RebalancePlanDoesNotCountAnAlreadyCommittedOrAbortingOwnershipAgain()
+    {
+        var moveId = Guid.NewGuid();
+        var committed = CreateMovementLayout(
+            [1, 0, 1, 1],
+            new StorageSlotMoveIntent
+            {
+                MoveId = moveId,
+                Slot = 0,
+                SourceOwner = 0,
+                TargetOwner = 1,
+                SourceEpoch = 2,
+                Phase = SearchableStorageSlotMovePhase.OwnershipCommitted,
+                TransferPageRecordLimit = 16,
+                TransferPageByteTarget = 4_096,
+            },
+            epoch: 3);
+        var aborting = CreateMovementLayout(
+            [0, 0, 1, 1],
+            new StorageSlotMoveIntent
+            {
+                MoveId = Guid.NewGuid(),
+                Slot = 0,
+                SourceOwner = 0,
+                TargetOwner = 1,
+                SourceEpoch = 2,
+                Phase = SearchableStorageSlotMovePhase.Aborting,
+                TransferPageRecordLimit = 16,
+                TransferPageByteTarget = 4_096,
+            });
+
+        var committedPlan = await CreateCachedClient(committed).PlanRebalanceAsync(2);
+        var abortingPlan = await CreateCachedClient(aborting).PlanRebalanceAsync(2);
+
+        committedPlan.RequiredMoveCount.Should().Be(1);
+        abortingPlan.RequiredMoveCount.Should().Be(0);
+        committedPlan.NextMove.Should().BeNull();
+        abortingPlan.NextMove.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(SearchableStorageMovementState.Disabled)]
+    [InlineData(SearchableStorageMovementState.Enabling)]
+    public async Task RebalancePlanRejectsAProtocolWhichIsNotEnabled(
+        SearchableStorageMovementState movementState)
+    {
+        var state = new StorageLayoutState
+        {
+            Initialized = true,
+            FormatVersion = StorageLayout.CurrentFormatVersion,
+            ProviderName = "admin-tests",
+            PartitionCount = 2,
+            JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
+            MaximumJournalReplayEntries = StoragePersistence.DefaultMaximumJournalReplayEntries,
+            VirtualSlotCount = 4,
+            SlotAssignments = [0, 1, 0, 1],
+            Epoch = 1,
+        };
+        if (movementState == SearchableStorageMovementState.Enabling)
+        {
+            state.MovementEnablement = new StorageMovementEnableIntent
+            {
+                EnablementId = Guid.NewGuid(),
+                SourceEpoch = 1,
+                PlannedEpoch = 2,
+                Owners = [0, 1],
+            };
+        }
+
+        var client = CreateCachedClient(StorageLayoutSnapshot.FromState(state));
+
+        var plan = () => client.PlanRebalanceAsync(2);
+
+        await plan.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*EnableMovementAsync*");
+    }
+
     private static StorageLayoutSnapshot CreateLayout(
         int[] assignments,
         long epoch,
@@ -151,5 +357,38 @@ public sealed class SearchableStorageAdminClientTests
             SlotAssignments = assignments,
             Epoch = epoch,
         });
+    }
+
+    private static StorageLayoutSnapshot CreateMovementLayout(
+        int[] assignments,
+        StorageSlotMoveIntent? move = null,
+        long epoch = 2)
+    {
+        return StorageLayoutSnapshot.FromState(new StorageLayoutState
+        {
+            Initialized = true,
+            FormatVersion = StorageLayout.CurrentFormatVersion,
+            ProviderName = "admin-tests",
+            PartitionCount = 2,
+            JournalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
+            MaximumJournalReplayEntries = StoragePersistence.DefaultMaximumJournalReplayEntries,
+            VirtualSlotCount = assignments.Length,
+            SlotAssignments = assignments,
+            Epoch = epoch,
+            MovementProtocolVersion = StorageLayout.CurrentMovementProtocolVersion,
+            MoveIntent = move,
+        });
+    }
+
+    private static SearchableStorageAdminClient CreateCachedClient(StorageLayoutSnapshot snapshot)
+    {
+        return new SearchableStorageAdminClient(new StorageLayoutCache(
+            () => Task.FromResult<StorageLayoutSnapshot?>(snapshot)));
+    }
+
+    private sealed class ReadOnlyAdminClient : ISearchableStorageAdminClient
+    {
+        public Task<SearchableStorageLayout?> GetLayoutAsync(
+            CancellationToken cancellationToken = default) => Task.FromResult<SearchableStorageLayout?>(null);
     }
 }

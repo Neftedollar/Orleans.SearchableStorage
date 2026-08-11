@@ -545,7 +545,7 @@ public sealed class SearchableStorageClientExecutionTests
         public int? Optional { get; init; }
     }
 
-    private sealed class ControlledPartition : IStoragePartitionGrain
+    private sealed class ControlledPartition : StoragePartitionGrainMovementTestDouble, IStoragePartitionGrain
     {
         private static readonly Func<ExactIndexQuery, Task<GrainId[]>> EmptyFind =
             static _ => Task.FromResult(Array.Empty<GrainId>());

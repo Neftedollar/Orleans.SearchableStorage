@@ -78,6 +78,16 @@ public static class SearchableStorageSiloBuilderExtensions
             .Validate(
                 static value => value.CompactionThreshold <= value.MaximumJournalReplayEntries,
                 "CompactionThreshold must not exceed MaximumJournalReplayEntries.")
+            .Validate(
+                static value => value.Movement.TransferPageRecordLimit > 0
+                    && value.Movement.TransferPageRecordLimit
+                        <= SearchableStorageMovementOptions.MaximumTransferPageRecordLimit,
+                $"Movement.TransferPageRecordLimit must be between 1 and {SearchableStorageMovementOptions.MaximumTransferPageRecordLimit}.")
+            .Validate(
+                static value => value.Movement.TransferPageByteTarget > 0
+                    && value.Movement.TransferPageByteTarget
+                        <= SearchableStorageMovementOptions.MaximumTransferPageByteTarget,
+                $"Movement.TransferPageByteTarget must be between 1 and {SearchableStorageMovementOptions.MaximumTransferPageByteTarget}.")
             .ValidateOnStart();
 
         services.TryAddEnumerable(
@@ -122,7 +132,8 @@ public static class SearchableStorageSiloBuilderExtensions
                 return new SearchableStorageAdminClient(
                     serviceProvider.GetRequiredService<IGrainFactory>(),
                     providerName,
-                    configuredOptions.PartitionCount);
+                    configuredOptions.PartitionCount,
+                    configuredOptions.Movement);
             });
 
         return services;

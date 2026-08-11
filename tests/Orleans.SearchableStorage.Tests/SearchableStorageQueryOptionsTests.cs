@@ -313,7 +313,7 @@ public sealed class SearchableStorageQueryOptionsTests
         public int Value { get; init; }
     }
 
-    private sealed class SnapshotPartition : IStoragePartitionGrain
+    private sealed class SnapshotPartition : StoragePartitionGrainMovementTestDouble, IStoragePartitionGrain
     {
         public Task<PartitionQueryPageResult> QueryPageRoutedAsync(
             RoutedPartitionQueryPageRequest request)

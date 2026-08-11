@@ -43,6 +43,79 @@ Content-Type: application/json
 GET {{host}}/storage/layout
 Accept: application/json
 
+###
+### Explicit admin workflow. In production, quiesce all searchable traffic and restart every
+### participant on the movement-capable package before this one-time enablement call.
+
+POST {{host}}/storage/movement/enable
+Accept: application/json
+
+### No active move returns 204 No Content
+
+GET {{host}}/storage/moves/active
+Accept: application/json
+
+### Ask for one deterministic next move toward nine physical owners.
+### Copy nextMove.slot and nextMove.targetPartitionIndex into the planning request below.
+
+GET {{host}}/storage/rebalance/plan?targetPartitionCount=9
+Accept: application/json
+
+### Persist exactly one move intent (replace the placeholders from the rebalance response).
+
+POST {{host}}/storage/moves/plan
+Content-Type: application/json
+
+{
+  "slot": {{slot}},
+  "targetPartitionIndex": {{targetPartitionIndex}}
+}
+
+### Advance exactly one durable transition or bounded page payload; copy moveId from the plan response.
+### A target or source whose protocol/epoch floor needs reconciliation can still report Planned;
+### repeat this request until you observe SourceFrozen before trying the abort below.
+
+POST {{host}}/storage/moves/{{moveId}}/advance
+Accept: application/json
+
+### Before ownership commits, abort runs/resumes bounded rollback pages.
+
+POST {{host}}/storage/moves/{{moveId}}/abort
+Accept: application/json
+
+### Plan the same current rebalance nextMove again, then execute it through cleanup.
+
+POST {{host}}/storage/moves/plan
+Content-Type: application/json
+
+{
+  "slot": {{slot}},
+  "targetPartitionIndex": {{targetPartitionIndex}}
+}
+
+### Replace moveId with the new plan response.
+
+POST {{host}}/storage/moves/{{moveId}}/execute
+Accept: application/json
+
+### Complete the remaining deterministic single moves. Core storage has no automatic policy.
+
+POST {{host}}/storage/rebalance/execute
+Content-Type: application/json
+
+{
+  "targetPartitionCount": 9
+}
+
+### Restore the sample's original balanced eight-owner shape.
+
+POST {{host}}/storage/rebalance/execute
+Content-Type: application/json
+
+{
+  "targetPartitionCount": 8
+}
+
 ### Read one vacancy
 
 GET {{host}}/vacancies/helsinki-6

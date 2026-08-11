@@ -8,7 +8,7 @@ This document describes the maintainer-facing design of the first Orleans.Search
 
 Each searchable provider owns one `StorageLayoutGrain` and a set of
 `StoragePartitionGrain` instances addressed by physical owner index. Layout format 4 holds an
-immutable virtual-slot assignment map and routing epoch. A partition keeps its records and derived hash and range buckets
+immutable virtual-slot space, a movement-capable assignment map, and a routing epoch. A partition keeps its records and derived hash and range buckets
 in the activation. Its durable representation is split into one constant-size manifest, a fixed ring
 of bounded journal-segment grains, and two reusable snapshot-slot grains. All four grain kinds write
 through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
@@ -37,7 +37,9 @@ record plus extracted index entries to one storage-partition grain. HTTP search 
 `Query<TState>` and `Where` on the named `ISearchableStorageQueryClient`; one endpoint demonstrates
 `ToGrainIdPageAsync`, compatibility endpoints demonstrate bounded all-results collection, and three
 facet endpoints demonstrate distinct values, explicit exact/approximate top-N counts, and filtered
-extrema. ASP.NET Core supplies `HttpContext.RequestAborted` as the endpoint cancellation token.
+extrema. Explicit admin endpoints demonstrate enablement, planning, one-step advancement, execution,
+pre-commit abort, and deterministic rebalance planning; there is no automatic core policy. ASP.NET
+Core supplies `HttpContext.RequestAborted` as the endpoint cancellation token.
 
 This co-hosting is not an architectural constraint. An API can run in another process as an Orleans client and construct a `SearchableStorageClient` with the same provider namespace and partition count. The sample deliberately uses in-memory physical persistence, so process termination removes its data; backend durability is covered by the reusable provider contract rather than by the sample.
 
@@ -58,8 +60,11 @@ For initial count `P0`, the provider derives `V` as the smallest checked multipl
 the configured target, capped at 262,144. It seeds `assignment[s] = s % P0`. Since `P0` divides `V`,
 `assignment[hash % V]` is exactly `hash % P0`; migration does not move records even for non-power-of-two
 counts. A valid version-3 layout becomes version 4 through one layout CAS. Partition manifests,
-journal segments, snapshots, records, and index buckets remain untouched, and partition persistence
-stays at format 3.
+journal segments, snapshots, records, and index buckets remain untouched by layout adoption.
+The explicit quiesced movement-enablement owner sweep upgrades partition manifests to persistence
+format 4; merely activating or mutating through a movement-capable binary leaves format 3 intact.
+Format 4 retains those physical structures and appends durable capability, minimum-epoch,
+source/target-control, and movement-WAL fields.
 
 `StorageLayoutCache` shares one immutable, defensively copied snapshot between concurrent callers.
 All partition activations on one silo obtain their provider's cache from a singleton registry, so a
@@ -79,9 +84,67 @@ read-only admin client likewise returns no layout. A persisted version-3 namespa
 adoption through `SearchableGrainStorage`, which has the full provider and journal descriptor; query
 and admin clients never invent or migrate a virtual map.
 
-Assignments remain the epoch-1 identity map in this release. Live slot movement and a changed
-physical owner count are intentionally not exposed. The future move protocol needs a coordinated
-all-v4 rollout because an already-running v3 provider can have cached successful validation.
+Before movement is enabled, assignments remain the epoch-1 identity map. Enablement requires a
+quiesced, coordinated restart because an already-running older provider can retain successful layout
+validation. It durably upgrades/fences each current owner, then publishes movement protocol version 1
+and a new routing epoch. After publication, legacy placement-only calls are rejected.
+
+## Live movement protocol
+
+`ISearchableStorageAdminClient` is the only public ownership-mutation surface. It persists at most one
+move intent per provider and can advance exactly one phase or transfer-page payload, loop over those
+turns to completion, or request rollback before ownership commit. Cancellation stops the client loop
+between turns without canceling or reversing durable progress. A stable move id makes a later call
+resumable. A protocol mutation can still cross the retained whole-partition compaction/recovery
+boundary, so this is a payload/state-machine guarantee rather than a strict per-call work or time
+bound.
+
+While the public phase is `Planned`, one advance may reconcile the target's movement capability and
+routing-epoch floor and another may reconcile a lagging source floor. A newly introduced target plus
+a source last used at an earlier epoch can therefore leave `Planned` visible for up to two
+participant-only calls before the next call freezes the source.
+
+Each partition derives an activation-local map from virtual slot to ordinal record-key set while
+rebuilding its normal indexes. Source export and source deletion use that stable ordinal set rather
+than scanning every partition record on every page. Import updates records, lookup/ordered indexes,
+and the slot map together only after the corresponding journal entry commits.
+
+The state machine preserves these load-bearing fences:
+
+1. The layout persists the sole move identity, source epoch/owner, target owner, phase, and scalar
+   progress.
+2. The source manifest freezes mutations for the slot and captures `NextVersion`.
+3. The target commits a replayable `AdvanceVersion` WAL operation which raises `NextVersion` to at
+   least the frozen source value, including for an empty slot.
+4. Source export and target import proceed in record-count-bounded, byte-targeted pages. The target
+   remains mutation-inactive and non-authoritative for the source epoch.
+5. One layout CAS changes the assignment and increments the routing epoch.
+6. The source durably raises its minimum routing epoch and becomes query-invisible for the slot. Only
+   after that acknowledgement may the target accept mutations.
+7. Obsolete source records are removed by record-count-bounded, byte-targeted `MoveDelete` WAL page
+   payloads, both controls retire, and the layout clears the intent.
+
+Target enablement after the durable source-visibility acknowledgement is essential: a caller with a
+stale pre-commit layout can otherwise query the source while target writes change predicate
+membership. `.Distinct()` cannot repair that ghost membership. The minimum routing epoch survives
+source reactivation, and the target's version high-water mark survives snapshot+journal recovery.
+
+Move pages use a stable ordinal record-key cursor and a SHA-256 digest over the complete canonical
+identity, limits, progress, and payload. A lost acknowledgement can repeat the exact page
+idempotently; another payload at the same ordinal is rejected. The page record limit is absolute.
+The byte target is evaluated with the deterministic canonical movement encoding used for replay
+accounting, not an Orleans serializer or a physical provider. Movement-only wire records carry text
+as explicit big-endian UTF-16 code units, preserving the full persisted string domain—including
+unpaired surrogates—which Orleans string transport would otherwise normalize. An accepted record
+larger than the target is emitted alone, so the in-memory page/transfer shape is
+`O(byte target + largest accepted record)`; actual wire and provider byte counts are not bounded by
+or reported as this value.
+
+Pre-commit abort changes the target to an abort-delete phase, removes imported records in bounded
+pages, retires target control, and finally unfreezes the still-authoritative source. Once assignment
+and epoch commit, abort is illegal and recovery converges forward. Deterministic rebalance planning
+computes a minimal-churn quota and returns one next move; it never stores an unbounded bulk plan and
+does not implement a load policy. See the operator [live-movement runbook](live-movement.md).
 
 ## Journal commit protocol
 
@@ -281,15 +344,25 @@ namespace unless the old identity is migrated.
 
 Layout format and partition persistence format are independent compatibility axes. Layout format 4
 adds the exact virtual-slot count, assignment array, and routing epoch to the existing layout state;
-partition persistence remains format 3 and continues to use the manifest, bounded journal ring, and
-two snapshot slots described above. The layout state's existing C# property names and Orleans field
-IDs remain durable, including the `PartitionCount` JSON property at field ID 3. New routing fields
-use new IDs and absent fields are interpreted only through the explicit version-3 adoption path.
+partition persistence format 4 continues to use the manifest, bounded journal ring, and two snapshot
+slots described above. It appends movement protocol/minimum-epoch/control fields and WAL operations
+for version advance, import, and movement delete. Existing upsert/delete values and every prior field
+ID remain unchanged. The layout state's existing C# property names and Orleans field IDs remain
+durable, including the `PartitionCount` JSON property at field ID 3. New routing and movement fields
+use appended IDs and absent fields are interpreted only through explicit compatibility paths.
 
-Persistence format 3 retains the recursive, assembly-version-independent type identity introduced
-in format 2. Version 1 and version 2 partitions are intentionally not interpreted as version 3
-persistence. This release provides no in-place persistence migration tool; an older namespace is
-rejected and must be migrated or completely rewritten before it can be opened.
+Persistence format 4 retains the recursive, assembly-version-independent type identity introduced
+in format 2 and can read every format-3 record, journal, and snapshot representation. It appends a
+snapshot record-encoding marker at field ID 9 and a lossless record list at field ID 10; newly
+published format-4 snapshots leave the legacy string dictionary at field ID 8 empty and encode
+persisted text as explicit UTF-16 code units. A format-3 active snapshot remains readable after
+explicit enablement. The next format-4 compaction writes the lossless representation to the inactive
+snapshot slot and publishes it through the existing manifest fence, without rewriting the active
+child in place. A format-3 manifest is upgraded only when the explicit movement-enablement owner
+sweep reaches that movement-capable activation; ordinary activation and mutation leave it at format
+3. The same enablement step durably fences every current owner before publishing the layout
+capability. Version 1 and version 2 partitions are intentionally not interpreted as format 4 and
+still require an explicit migration or complete rewrite.
 
 Orleans serializer `[Id]` values on persisted layout, manifest, journal, snapshot, record,
 index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or
@@ -306,8 +379,8 @@ remain frozen for compatibility on updated processes, while the current client c
 additive routed envelopes.
 
 Facet request/result messages are likewise non-persisted but wire-frozen. Adding them and changing
-the activation-derived hash value projection do not change layout format 4, partition persistence
-format 3, record/index entries, snapshots, journals, manifests, or the write protocol. Mixed-version
+the activation-derived hash value projection did not change layout format 4, the then-current
+partition persistence format 3, record/index entries, snapshots, journals, manifests, or the write protocol. Mixed-version
 facet traffic is unsupported: query traffic remains quiesced until every partition host and built-in
 query client understands all typed response families.
 
@@ -318,12 +391,16 @@ grain activation on an old silo which does not implement them, and an old activa
 format-4 layout. Operators must quiesce searchable storage and query traffic, update every silo and
 Orleans client, and verify that no version-3 process remains. While traffic is still paused, one
 normal grain-state storage operation must adopt each provider namespace as the epoch-1 identity map;
-operators should verify that the admin read succeeds and reports epoch 1 before resuming traffic.
+operators should verify that the admin read succeeds and reports epoch 1.
 The admin path returns a snapshot only for format 4. Adoption performs one layout CAS and no
 partition-persistence write. Query and admin reads do not perform adoption. Legacy calls remain
 available on updated processes, and the identity map preserves their modulo placement, but this is
-not an online rolling upgrade guarantee. This release exposes no `MoveSlot` operation; future
-assignment changes require a separate coordinated all-v4 protocol gate.
+not an online rolling upgrade guarantee. Operators may then resume traffic with movement disabled,
+or keep it paused if they are enabling movement in the same maintenance window. Live movement has a
+second explicit gate: quiesce traffic again if it was resumed, restart every participant on the
+movement-capable package, call `EnableMovementAsync`, and
+require the enabled protocol from the admin read. The owner-by-owner enablement intent is resumable,
+but quiescence remains an operator precondition until its final capability/epoch CAS commits.
 
 Physical providers can use serializers other than Orleans' binary serializer. With JSON persistence, CLR type and property names plus configured JSON converters are part of the compatibility surface; Orleans `[Id]` values do not rename JSON members. The memory contract suite explicitly uses `JsonGrainStorageSerializer` so partition and layout reactivation exercise that representation.
 
@@ -333,7 +410,8 @@ Backend tests must exercise the same public storage contract instead of backend-
 behavior. The contract covers partition rehydration, exact and range lookup, incremental index
 replacement and removal, optimistic-concurrency rejection, persisted-layout mismatch, bounded
 journal replay, snapshot compaction, and before/after-commit failure boundaries for mutation and
-maintenance transitions.
+maintenance transitions. It also covers one live move under routed writes, point/index/facet
+membership during and after the epoch change, source/target reactivation, and single authority.
 
 The contract runs unchanged against Orleans memory, ADO.NET/PostgreSQL, Redis, and Azure Blob
 providers. A compatible physical provider must offer atomic whole-state writes, authoritative point
@@ -363,7 +441,10 @@ The benchmark projects are outside the shipping package. Process-local cases cal
 helpers which are also called by `StoragePartitionGrain` and `StoragePartitionPersistence`; benchmark
 copies of query evaluation, replay, or snapshot construction are forbidden because they can drift
 from the durability and query contracts. The journal-append microcase substitutes only the physical
-`IPersistentState` boundary and is labelled as a state-machine measurement.
+`IPersistentState` boundary and is labelled as a state-machine measurement. Movement microcases call
+the production slot-index rebuild and export/import/delete helpers with uniform, skewed, and
+oversize-singleton fixtures. They report page work honestly and do not erase retained
+whole-partition snapshot/recovery boundaries.
 
 Distributed measurements keep scenario, dataset, and workload inputs independently versioned and
 content-addressed. Each client owns raw compatible HDR histograms; aggregation unions recordings
@@ -407,7 +488,7 @@ activation's retained whole-partition state, and following a broad traversal sti
 across many pages. The benchmark and capacity plan is tracked in repository
 [issue #8](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/8); results must report
 both total records and records per physical partition instead of extrapolating from one aggregate
-count.
-
-A production-scale layout still needs online ownership movement. Slot-based repartitioning remains
-a separate fenced persistence protocol rather than being hidden inside query paging.
+count. Live movement can redistribute fixed virtual slots across a changed owner set, but move cost
+and write unavailability remain proportional to the selected slot's records and bytes, including
+skew. It does not change the whole-partition activation/compaction model or justify a capacity claim
+without representative end-to-end evidence.

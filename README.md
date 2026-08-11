@@ -13,7 +13,9 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - A fixed journal ring and a hard replay limit bound recovery work; a mutation is backpressured when compaction cannot make room.
 - Compaction publishes immutable whole-partition snapshots through two generation-fenced physical slots.
 - Mutations within a partition are serialized by one Orleans grain activation.
-- Layout format 4 maps an immutable per-namespace virtual-slot space to physical partitions. Version-3 layouts adopt the identity map in one layout write without moving records or rewriting partition persistence.
+- Layout format 4 maps a fixed per-namespace virtual-slot space to physical owners. Version-3 layouts
+  adopt the identity map without moving records; a separately enabled protocol can then move one
+  slot at a time under durable epoch and visibility fences.
 - Routed point operations carry their virtual slot and layout epoch. Each bounded query page fans out
   to every distinct current owner and returns a sorted, distinct `GrainId` prefix.
 - A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
@@ -22,6 +24,9 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - Indexed-only facet terminals provide value-ordered distinct pages, explicit exact or bounded-
   approximate top-N counts, and exact minimum/maximum values without loading record payloads into
   the caller.
+- The keyed admin client explicitly enables movement, plans/advances/executes/aborts one durable
+  slot move, and computes deterministic minimal-churn rebalance steps. Core storage never starts an
+  automatic balancing policy.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
 The journal removes partition-sized writes from the mutation path, but it does not make the current
@@ -30,13 +35,11 @@ memory, compaction still serializes that whole partition, and a configured segme
 operations rather than bytes: one large record can still produce a large segment. Range indexes now
 use logarithmic bucket seeks and incremental bucket updates. Paging adds activation-local ordered
 catalogs/postings, so retained index memory is higher even though live updates remain logarithmic.
-Every query page still contacts every
-distinct current owner—all initial partitions in this identity-map release. Increasing the initial
-`PartitionCount` spreads ownership, snapshots, and writes but does not reduce read fan-out. Queries
-do not provide a snapshot across partitions. Text search, including `StartsWith`, composite indexes,
-arbitrary LINQ beyond the documented focused subset, and live virtual-slot movement are not
-implemented yet. This release establishes zero-movement virtual routing; its assignment map remains
-the identity map until the separately reviewed move protocol lands.
+Every query page still contacts every distinct current owner. Moving slots can change that owner set,
+but it does not make a query local or provide a snapshot across partitions. Text search, including
+`StartsWith`, composite indexes, and arbitrary LINQ beyond the documented focused subset are not
+implemented. Movement pages are count-bounded and byte-targeted, but activation recovery and
+compaction still have honest whole-partition boundaries.
 
 ## Example
 
@@ -55,6 +58,8 @@ siloBuilder.AddSearchableGrainStorage(
         options.JournalSegmentCapacity = 64;
         options.MaximumJournalReplayEntries = 4_096;
         options.CompactionThreshold = 1_024;
+        options.Movement.TransferPageRecordLimit = 128;
+        options.Movement.TransferPageByteTarget = 256 * 1_024;
         options.Query.ContinuationProtection.CurrentKey =
             new SearchableStorageContinuationKey(
                 "searchable-v1",
@@ -72,9 +77,10 @@ each process. See [key rotation and rollout](docs/bounded-query-contract.md#cont
 rounds `VirtualSlotTargetCount` up to the smallest multiple of that count and persists the exact
 virtual-slot count plus its identity assignment. The target is an initialization seed: changing it
 later cannot change an existing map, although it must remain a valid configured value. The exact map
-is capped at 262,144 slots. `PartitionCount`, `JournalSegmentCapacity`, and
-`MaximumJournalReplayEntries` still require migration to change. `CompactionThreshold` is operational
-and can be tuned between deployments, but must remain positive and no greater than the replay limit.
+is capped at 262,144 slots. `PartitionCount` remains the immutable initial owner count even after a
+rebalance introduces higher owner indices. `JournalSegmentCapacity` and
+`MaximumJournalReplayEntries` still require migration to change. `CompactionThreshold` and movement
+page limits are operational settings within their documented bounds.
 
 The memory provider is only an example. PostgreSQL, Redis, Azure Blob Storage, or another Orleans persistence provider can be registered under `SearchableStorageConstants.PhysicalStorageProviderName` without changing application grains. See [physical backend configuration](docs/backends.md) for complete provider examples and operational prerequisites.
 
@@ -177,8 +183,30 @@ var admin = services.GetRequiredKeyedService<ISearchableStorageAdminClient>("Sea
 var layout = await admin.GetLayoutAsync(cancellationToken);
 ```
 
-The result reports the routing epoch, exact virtual-slot count, initial physical count, and slot
-count per current owner. It is `null` until a storage operation initializes the provider namespace.
+The result reports the routing epoch, exact virtual-slot count, initial physical count, movement
+state, active move summary, and slot count per current owner. It is `null` until a storage operation
+initializes the provider namespace. Movement is explicit and resumable:
+
+```csharp
+var enabled = await admin.EnableMovementAsync(cancellationToken);
+var move = await admin.PlanMoveAsync(slot: 17, targetPartitionIndex: 40, cancellationToken);
+
+// Exactly one durable transition or bounded record-page payload:
+move = await admin.AdvanceMoveAsync(move.MoveId, cancellationToken);
+
+// Client-side loop over the same resumable turns:
+move = await admin.ExecuteMoveAsync(move.MoveId, cancellationToken);
+```
+
+`AbortMoveAsync` rolls back only before ownership commits. `PlanRebalanceAsync` reports one next
+minimal-churn move without persisting an unbounded bulk plan, and `ExecuteRebalanceAsync` repeats
+those explicit single moves. See the [live-movement runbook](docs/live-movement.md) before enabling
+the protocol; it requires quiescence and a coordinated restart of every participant.
+
+Movement byte targets and progress counters use the protocol's deterministic canonical encoding.
+They shape page construction (with the documented oversize-singleton exception) and make replay
+accounting stable; they are not measurements or limits of Orleans wire frames, network traffic, or
+physical-provider bytes.
 
 The focused query layer accepts direct indexed-property comparisons using `==`, `<`, `<=`, `>`,
 and `>=`. Comparisons can be combined with `&&` and `||`, and additional `Where` calls are treated
@@ -246,13 +274,17 @@ Separately, adopting a version-3 layout into format 4 is not an online mixed-ver
 Quiesce searchable storage and query traffic, deploy this package to every silo and Orleans client,
 verify that no version-3 process
 remains, and keep traffic paused while one normal grain-state storage operation adopts each provider
-namespace. Verify that the admin read succeeds for every persisted layout and reports epoch 1, then
-resume traffic; the admin path returns a snapshot only for format 4. Query and admin reads
-deliberately do not perform migration themselves. New
-routed methods are additive and legacy calls remain placement-compatible with the epoch-1 identity
-map on updated processes, but a new storage activation can otherwise reach an old silo which does
-not implement those methods. Live ownership movement is not exposed by this release and requires a
-separate coordinated all-v4 protocol gate.
+namespace. Verify that the admin read succeeds for every persisted layout and reports epoch 1; the
+admin path returns a snapshot only for format 4. At that point either resume traffic with movement
+still disabled, or, if movement is being enabled in the same maintenance window, keep traffic
+paused through the second gate. Query and admin reads
+deliberately do not perform migration themselves. New routed methods are additive and legacy calls
+remain placement-compatible with the epoch-1 identity map on updated processes, but a new storage
+activation can otherwise reach an old silo which does not implement those methods. For the second
+gate, quiesce traffic if it was resumed, deploy/restart the movement-capable package everywhere, call
+`EnableMovementAsync`, require movement protocol version 1 from the admin read, and only then resume.
+Once enabled, old placement-only calls are rejected and rolling an older binary back into that
+namespace is unsupported.
 
 The provider name identifies a storage namespace. Using another name selects a separate, initially
 empty namespace, so renaming a provider requires an explicit migration. The initial
@@ -266,13 +298,16 @@ UTF-8. The write path does not impose that newer wire constraint, so application
 values; a facet which reaches one throws `SearchableStorageQueryLimitExceededException` without a
 partial result rather than truncating or skipping it.
 
-Layout format version 4 stores virtual routing independently from partition persistence format 3.
+Layout format version 4 stores virtual routing independently from partition persistence format 4.
 A valid format-3 layout is upgraded in place with one layout compare-and-swap; the seeded identity
 map is mathematically equivalent to the old modulo placement for every supported initial partition
 count, including non-powers-of-two. No partition manifest, journal segment, snapshot, record, or index
-is rewritten. Partition persistence format 3 continues to use a small manifest, bounded journal ring,
-and two snapshot slots. Existing format-1 and format-2 namespaces still require an explicit migration
-or complete rewrite and are rejected rather than read as a fresh or partial namespace.
+is rewritten by layout adoption. Partition persistence format 4 retains the small manifest, bounded
+journal ring, and two whole-partition snapshot slots, and appends movement capability/visibility
+fences plus replayable high-watermark/import/delete WAL operations. Existing format-3 manifests are
+upgraded only by the explicit owner sweep inside the quiesced movement-enablement gate; ordinary
+activation and mutation leave them at format 3. Older persistence formats still require an explicit
+migration or complete rewrite and are rejected rather than read as fresh state.
 
 Facet support does not change a durable record, journal, manifest, snapshot, layout, or write-path
 format. On activation, hash scopes now derive the same balanced, canonical value projection already
@@ -292,8 +327,8 @@ dotnet run --project samples/Orleans.SearchableStorage.ApiSample
 ```
 
 Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies,
-read one by id, execute the `IQueryable` layer, inspect the persisted virtual routing summary, and
-remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md)
+read one by id, execute the `IQueryable` layer, inspect/enable movement, manually plan or advance a
+move/rebalance, and remove a record. The [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md)
 follows each request from HTTP through the application grain, query plan, searchable provider,
 storage-partition grain, and physical provider.
 
@@ -316,8 +351,10 @@ capacity runs rather than extrapolation from a small test.
 The test suite defines one reusable storage contract. It runs through a two-silo `TestCluster`,
 forces storage-partition reactivation, and injects failures before commit and after commit but before
 acknowledgement across journal, manifest, snapshot publication, and cleanup transitions. Recovery is
-checked immediately without manually deactivating the failed grain first. The API sample is also
-exercised through an in-process HTTP server.
+checked immediately without manually deactivating the failed grain first. The same Memory,
+PostgreSQL, Redis, and Azure Blob contract performs a live move under concurrent routed writes and
+continuous exact query/facet reads, then verifies final point, index, facet, authority, and
+reactivation state. The API sample is also exercised through an in-process HTTP server.
 
 - In-memory: Orleans `Microsoft.Orleans.Persistence.Memory`.
 - PostgreSQL: Orleans `Microsoft.Orleans.Persistence.AdoNet` with Npgsql and the official Orleans schema.

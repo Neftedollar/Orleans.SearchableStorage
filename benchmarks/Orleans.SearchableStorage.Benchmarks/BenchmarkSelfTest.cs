@@ -31,6 +31,7 @@ internal static class BenchmarkSelfTest
         ValidateJournalAppend();
         ValidateJournalReplay();
         ValidateSnapshotConstruction();
+        ValidateSlotMovement();
     }
 
     private static void ValidateBenchmarkContract()
@@ -56,6 +57,10 @@ internal static class BenchmarkSelfTest
             $"{prefix}QueryPlanSerializationBenchmarks.SerializePartitionQueryPlan",
             $"{prefix}RangeQueryBenchmarks.BoundedRangeQuery",
             $"{prefix}SnapshotConstructionBenchmarks.ConstructCompactionSnapshot",
+            $"{prefix}SlotMovementBenchmarks.DeleteBoundedSlotPage",
+            $"{prefix}SlotMovementBenchmarks.ExportBoundedSlotPage",
+            $"{prefix}SlotMovementBenchmarks.ImportBoundedSlotPage",
+            $"{prefix}SlotMovementBenchmarks.RebuildSlotCatalog",
         ];
         Array.Sort(expectedBenchmarks, StringComparer.Ordinal);
 
@@ -95,6 +100,8 @@ internal static class BenchmarkSelfTest
             [$"{prefix}RangeQueryBenchmarks.MatchCount"] = [1, 256],
             [$"{prefix}SnapshotConstructionBenchmarks.PayloadSize"] = [64, 1_024],
             [$"{prefix}SnapshotConstructionBenchmarks.RecordCount"] = [1_024, 16_384],
+            [$"{prefix}SlotMovementBenchmarks.Distribution"] = [0, 1, 2],
+            [$"{prefix}SlotMovementBenchmarks.RecordCount"] = [4_096, 65_536],
         };
         var actualParameters = assembly.GetTypes()
             .SelectMany(type => type.GetMembers(
@@ -374,6 +381,29 @@ internal static class BenchmarkSelfTest
                 && snapshot.Records.Count == benchmark.RecordCount,
             "snapshot construction");
         benchmark.ValidateFixture();
+    }
+
+    private static void ValidateSlotMovement()
+    {
+        foreach (var distribution in Enum.GetValues<SlotMovementDistribution>())
+        {
+            var benchmark = new SlotMovementBenchmarks
+            {
+                RecordCount = 4_096,
+                Distribution = distribution,
+            };
+            benchmark.GlobalSetup();
+            var rebuiltTargetRecordCount = benchmark.RebuildSlotCatalog();
+            var exportResult = benchmark.ExportBoundedSlotPage();
+            benchmark.IterationSetup();
+            var importedRecordCount = benchmark.ImportBoundedSlotPage();
+            var remainingRecordCount = benchmark.DeleteBoundedSlotPage();
+            benchmark.ValidateBenchmarkResults(
+                rebuiltTargetRecordCount,
+                exportResult,
+                importedRecordCount,
+                remainingRecordCount);
+        }
     }
 
     private static void Ensure(bool condition, string invariant)

@@ -78,7 +78,9 @@ internal sealed class TestPersistentState<T> : IPersistentState<T>
 
     public int WriteCount { get; private set; }
 
-    public Exception? WriteException { get; init; }
+    public Exception? WriteException { get; set; }
+
+    public T? LastWriteState { get; private set; }
 
     public Task ClearStateAsync()
     {
@@ -98,6 +100,7 @@ internal sealed class TestPersistentState<T> : IPersistentState<T>
         WriteCount++;
         RecordExists = true;
         Etag = WriteCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        LastWriteState = State;
         return WriteException is null ? Task.CompletedTask : Task.FromException(WriteException);
     }
 }

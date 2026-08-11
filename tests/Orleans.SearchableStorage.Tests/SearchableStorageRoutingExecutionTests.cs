@@ -375,7 +375,7 @@ public sealed class SearchableStorageRoutingExecutionTests
         public string Value { get; init; } = string.Empty;
     }
 
-    private sealed class ControlledPartition : IStoragePartitionGrain
+    private sealed class ControlledPartition : StoragePartitionGrainMovementTestDouble, IStoragePartitionGrain
     {
         private readonly Func<RoutedPartitionQueryPageRequest, Task<GrainId[]>> _find;
         private readonly ConcurrentQueue<long> _observedEpochs = new();

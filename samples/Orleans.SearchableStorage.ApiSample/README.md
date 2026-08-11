@@ -25,6 +25,14 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 | `GET` | `/vacancies/facets/cities/top?topN=1&accuracy=Approximate&minimumSalary=7` | Stop after one bounded candidate turn and expose its omitted-count certificate. |
 | `GET` | `/vacancies/facets/salaries/min-max?city=Helsinki` | Compute exact filtered salary extrema. |
 | `GET` | `/storage/layout` | Read the persisted virtual-routing summary. |
+| `POST` | `/storage/movement/enable` | Explicitly run/resume the quiesced movement-capability gate. |
+| `GET` | `/storage/moves/active` | Read the sole active move, or `204` when none exists. |
+| `POST` | `/storage/moves/plan` | Persist one explicit `{ slot, targetPartitionIndex }` move. |
+| `POST` | `/storage/moves/{moveId}/advance` | Commit exactly one phase transition or transfer page. |
+| `POST` | `/storage/moves/{moveId}/execute` | Resume the same move through completion. |
+| `POST` | `/storage/moves/{moveId}/abort` | Roll back an active move before ownership commits. |
+| `GET` | `/storage/rebalance/plan?targetPartitionCount=9` | Compute one deterministic minimal-churn next move. |
+| `POST` | `/storage/rebalance/execute` | Execute/resume explicit single moves until balanced. |
 
 ## What happens on a write
 
@@ -63,13 +71,57 @@ The sample starts with eight physical partitions and a virtual-slot target of 64
 persists exactly 64 slots because the target is already a multiple of eight. Layout format 4 assigns
 those slots with the zero-movement identity rule `slot % 8`, so every initial owner has eight slots
 at epoch 1. `VirtualSlotTargetCount` is only a seed for a new or version-3 layout: the exact `V` is
-persisted per provider namespace and is not recomputed from a later default. Partition manifests,
-journals, and snapshots remain persistence format 3.
+persisted per provider namespace and is not recomputed from a later default. The explicit movement-
+enablement owner sweep upgrades partition manifests to persistence format 4 while retaining the
+bounded journal ring and two whole-partition snapshot slots; ordinary activation does not.
 
 `GET /storage/layout` uses the keyed `ISearchableStorageAdminClient`. It is read-only and returns
 `404 Not Found` before a storage operation initializes the namespace. After the first vacancy write,
 it returns the epoch, initial partition count, exact virtual-slot count, and the slot count for each
-current owner. The public response deliberately does not expose the mutable assignment array.
+current owner. It also reports movement protocol/state and an active move summary. The public
+response deliberately does not expose the mutable assignment array or record-key cursors.
+
+## Manual movement walkthrough
+
+The sample exposes every admin primitive directly so its resumable state machine is observable. These
+routes are intentionally unauthenticated only because the sample binds a local development host.
+Production applications must put equivalent endpoints behind strong authorization, auditing, rate
+limits, and provider-scoped serialization—or avoid exposing them over HTTP at all.
+
+Movement enablement is not a normal online request. Before calling it in production, quiesce every
+searchable read/write/query, deploy and restart all silos and Orleans clients on the same
+movement-capable package, and verify that no old process remains. The one-process sample satisfies
+that topology precondition after a fresh start; `requests.http` still initializes the namespace and
+invokes enablement as an explicit step.
+
+`POST /storage/moves/plan` persists the provider's sole intent. Save its `moveId`. The `advance`
+route performs exactly one phase or page, making it useful for an operator-controlled loop. The
+`execute` route is a client-side convenience loop over the same resumable turns. Request cancellation
+is observed between turns and leaves durable progress resumable through the same move id. Page
+payloads are bounded, but a protocol mutation can still trigger retained whole-partition compaction,
+so an advance is not a strict work or wall-time budget. `abort` is valid only before the ownership
+commit and uses bounded cleanup-page payloads; after commit, finish the move and plan a reverse move
+if needed.
+
+While phase is `Planned`, an `advance` can first reconcile a participant's movement capability and
+routing-epoch floor. A previously unused target and a source whose durable floor lags after an
+unrelated move can each consume one participant-only call, so repeat `advance` until the source is
+frozen. Persistent `Planned` during those reconciliation calls is not a stalled move.
+
+The rebalance plan never materializes or persists every move. For a requested contiguous owner
+count it reports the current epoch, minimum remaining ownership commits, an active move if present,
+and at most one deterministic minimal-churn next move. `ExecuteRebalanceAsync` repeatedly recomputes
+that summary and executes one explicit slot move. Core storage does not choose a target count or run
+a background policy; a production policy belongs in a host-owned service with operator controls.
+
+The sample config uses 128 records and 256 KiB as each transfer page's count ceiling and canonical
+movement-encoding target. One accepted record larger than the target is sent alone, yielding the
+documented `O(target + largest accepted record)` in-memory page/transfer shape. This deterministic
+measure is used for replay accounting; it is not actual Orleans wire, network, or physical-provider
+bytes. Movement therefore scales with the selected slot's records and canonical encoded size,
+including skew. Compaction and activation recovery still operate on a whole physical partition. See
+the complete
+[live-movement runbook](../../docs/live-movement.md) before using the admin API outside this sample.
 
 The city endpoint demonstrates an exact hash-index comparison. Its `/page` variant returns ids plus
 an opaque continuation and deliberately uses a page size of one in `requests.http`. Follow the token
@@ -78,8 +130,7 @@ until it is null: a non-terminal page is allowed to be short or empty. The salar
 query surface. This `IQueryable` is deliberately focused: it returns grain ids and does not load
 state objects or support synchronous enumeration, projections, grouping, joins, or caller-defined
 ordering. Every page fans out to all distinct current owners. The current identity map has every
-initial partition as an owner; a future moved layout would still receive only one query call per
-distinct owner.
+initial partition as an owner; a moved layout still receives only one query call per distinct owner.
 
 The [bounded query and paging contract](../../docs/bounded-query-contract.md) defines the implemented
 logical-work accounting, global frontier, continuation, and weak-consistency semantics. With no
@@ -124,13 +175,12 @@ Production processes must instead load the same stable 32-byte provider-scoped s
 configuration. Rotation distributes the new key as decrypt-only first, switches every participant
 to it as current, and removes the old key only after outstanding tokens may be invalidated safely.
 
-This release does not expose `MoveSlot` or change physical ownership. The v3-to-v4 transition is not
-an online mixed-version rollout: pause searchable storage and query traffic, update every silo and
-Orleans client, verify that no version-3 process remains, and keep traffic paused while one normal
-grain-state storage operation adopts each provider namespace. Verify that `GET /storage/layout`
-succeeds and reports epoch 1, then resume traffic; the endpoint returns a layout only for format 4.
-Query and admin reads do not perform adoption. Updated legacy calls remain placement-compatible with
-the epoch-1 identity map, but any future movement protocol requires a separate coordinated all-v4
-gate.
+The v3-to-v4 layout transition is not an online mixed-version rollout: pause searchable storage and
+query traffic, update every silo and Orleans client, verify that no version-3 process remains, and
+keep traffic paused while one normal grain-state storage operation adopts each provider namespace.
+Query and admin reads do not perform adoption. Keep traffic paused through movement enablement, then
+require `movementState=Enabled` and `movementProtocolVersion=1` before resuming. Updated legacy calls
+remain placement-compatible only before enablement; placement-only entry points reject calls once
+ownership can move.
 
 The sample state needs no PolyType-specific annotations. Orleans.SearchableStorage uses PolyType's runtime reflection provider internally; Native AOT and trimming are outside the supported deployment model.
