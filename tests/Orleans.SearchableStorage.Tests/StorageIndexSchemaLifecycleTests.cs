@@ -271,7 +271,7 @@ public sealed class StorageIndexSchemaLifecycleTests
     }
 
     [Fact]
-    public async Task ApplicationSchemaVersionReplacesAnOldActiveGeneration()
+    public async Task ApplicationSchemaVersionRebuildFailsDuringMovementAndConvergesAfterRescan()
     {
         var providerName = MemoryStorageFixture.VersionedSchemaProviderName;
         var stateName = MemoryStorageFixture.VersionedSchemaStateName;
@@ -326,20 +326,107 @@ public sealed class StorageIndexSchemaLifecycleTests
 
         await admin.EnableMovementAsync(CancellationToken.None);
 
-        var restarted = await control.AdvanceRebuildAsync(new StorageIndexSchemaCommand
+        var resetAfterMovementEnablement = await control.AdvanceRebuildAsync(
+            new StorageIndexSchemaCommand
+            {
+                Schema = request,
+                RebuildId = rebuildId,
+            });
+        resetAfterMovementEnablement.Rebuild.Should().NotBeNull();
+        resetAfterMovementEnablement.Rebuild!.RebuildId.Should().Be(rebuildId);
+        resetAfterMovementEnablement.Rebuild.LayoutEpoch.Should()
+            .BeGreaterThan(originalLayoutEpoch);
+        resetAfterMovementEnablement.Rebuild.ProcessedRecordCount.Should().Be(0);
+        resetAfterMovementEnablement.Rebuild.NextProtocolOwnerIndex.Should().Be(0);
+        resetAfterMovementEnablement.Rebuild.LayoutProtocolPublished.Should().BeFalse();
+        resetAfterMovementEnablement.Rebuild.NextOwnerIndex.Should().Be(0);
+        resetAfterMovementEnablement.Rebuild.OwnerCount.Should().Be(1);
+        resetAfterMovementEnablement.Rebuild.HasAfter.Should().BeFalse(
+            "a completed movement-enablement epoch change restarts the durable owner scan");
+
+        var ownersEnabled = await control.AdvanceRebuildAsync(new StorageIndexSchemaCommand
         {
             Schema = request,
             RebuildId = rebuildId,
         });
-        restarted.Rebuild.Should().NotBeNull();
-        restarted.Rebuild!.RebuildId.Should().Be(rebuildId);
-        restarted.Rebuild.LayoutEpoch.Should().BeGreaterThan(originalLayoutEpoch);
-        restarted.Rebuild.ProcessedRecordCount.Should().Be(0);
-        restarted.Rebuild.NextProtocolOwnerIndex.Should().Be(0);
-        restarted.Rebuild.LayoutProtocolPublished.Should().BeFalse();
-        restarted.Rebuild.NextOwnerIndex.Should().Be(0);
-        restarted.Rebuild.HasAfter.Should().BeFalse(
-            "a completed movement-enablement epoch change restarts the durable owner scan");
+        ownersEnabled.Rebuild.Should().NotBeNull();
+        ownersEnabled.Rebuild!.NextProtocolOwnerIndex.Should()
+            .Be(ownersEnabled.Rebuild.OwnerCount);
+        ownersEnabled.Rebuild.NextOwnerIndex.Should().Be(0);
+        ownersEnabled.Rebuild.LayoutProtocolPublished.Should().BeFalse();
+
+        // This call publishes the provider capability after the scan, then deliberately stops
+        // before the separate control commit which activates the target generation.
+        var published = await control.AdvanceRebuildAsync(new StorageIndexSchemaCommand
+        {
+            Schema = request,
+            RebuildId = rebuildId,
+        });
+
+        published.Rebuild.Should().NotBeNull(
+            "the final activation is a separate durable control commit");
+        published.Rebuild!.ProcessedRecordCount.Should().Be(1);
+        published.Rebuild.NextOwnerIndex.Should().Be(published.Rebuild.OwnerCount);
+        published.Rebuild.LayoutProtocolPublished.Should().BeTrue();
+        published.ActiveFingerprint.Should().NotBeNull();
+        published.ActiveFingerprint!.Should().Equal(versionOne.Fingerprint);
+
+        var record = seeded.Records.Single();
+        record.Owner.Should().Be(0);
+        const int targetOwner = 1;
+        var move = await admin.PlanMoveAsync(
+            record.Slot,
+            targetOwner,
+            CancellationToken.None);
+
+        Func<Task> resumeDuringMovement = async () => await admin
+            .RebuildIndexSchemaAsync<VacancyState>(
+                stateName,
+                applicationSchemaVersion: 2,
+                CancellationToken.None);
+        await resumeDuringMovement.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*cannot run at the same time*");
+
+        await _fixture.Cluster.DeactivateAsync(control);
+        var durableDuringMovement = await control.GetAsync(request);
+        durableDuringMovement.Rebuild.Should().NotBeNull();
+        durableDuringMovement.Rebuild!.RebuildId.Should().Be(rebuildId);
+        durableDuringMovement.Rebuild.ProcessedRecordCount.Should().Be(1);
+        durableDuringMovement.Rebuild.LayoutProtocolPublished.Should().BeTrue();
+
+        var completedMove = await admin.ExecuteMoveAsync(move.MoveId, CancellationToken.None);
+        completedMove.IsComplete.Should().BeTrue();
+        completedMove.Phase.Should().Be(SearchableStorageSlotMovePhase.Completed);
+        var movedLayout = await _fixture.Cluster.GrainFactory
+            .GetGrain<IStorageLayoutGrain>(providerName)
+            .GetCurrentLayoutAsync();
+        movedLayout.Should().NotBeNull();
+        movedLayout!.Epoch.Should().BeGreaterThan(published.Rebuild.LayoutEpoch);
+        movedLayout.GetOwner(record.Slot).Should().Be(targetOwner);
+        movedLayout.CopyMoveIntent().Should().BeNull();
+        var target = _fixture.Cluster.GrainFactory.GetGrain<IStoragePartitionGrain>(
+            StorageLayout.CreatePartitionKey(providerName, targetOwner));
+        var targetAfterMove = await target.GetMovementStateAsync();
+
+        // The target was activated while the move intent existed at this epoch. Retiring that
+        // intent does not advance the epoch, so its ordinary layout cache still contains a stale
+        // same-epoch intent. Protocol enablement must bypass that cache with an authoritative read.
+        var restartedAfterMove = await control.AdvanceRebuildAsync(new StorageIndexSchemaCommand
+        {
+            Schema = request,
+            RebuildId = rebuildId,
+        });
+        restartedAfterMove.Rebuild.Should().NotBeNull();
+        restartedAfterMove.Rebuild!.RebuildId.Should().Be(rebuildId);
+        restartedAfterMove.Rebuild.LayoutEpoch.Should().Be(movedLayout.Epoch);
+        restartedAfterMove.Rebuild.OwnerCount.Should()
+            .Be(movedLayout.GetDistinctOwners().Length);
+        restartedAfterMove.Rebuild.ProcessedRecordCount.Should().Be(0);
+        restartedAfterMove.Rebuild.NextProtocolOwnerIndex.Should().Be(0);
+        restartedAfterMove.Rebuild.LayoutProtocolPublished.Should().BeFalse();
+        restartedAfterMove.Rebuild.NextOwnerIndex.Should().Be(0);
+        restartedAfterMove.Rebuild.HasAfter.Should().BeFalse(
+            "a completed slot move changes the routing boundary and restarts the durable owner scan");
 
         var active = await admin.RebuildIndexSchemaAsync<VacancyState>(
             stateName,
@@ -347,23 +434,23 @@ public sealed class StorageIndexSchemaLifecycleTests
             CancellationToken.None);
         active.State.Should().Be(SearchableStorageIndexSchemaState.Active);
         active.ProcessedRecordCount.Should().Be(1);
-        active.Fingerprint.Should().NotBe(Convert.ToHexString(versionOne.Fingerprint));
+        active.Fingerprint.Should().Be(Convert.ToHexString(versionTwo.Fingerprint));
+        var targetAfterRescan = await target.GetMovementStateAsync();
+        targetAfterRescan.CommittedSequence.Should().Be(
+            targetAfterMove.CommittedSequence,
+            "the moved record already carries the target fingerprint and must not be reindexed again");
         var found = await query.FindAsync<VacancyState, string>(
             stateName,
             state => state.City,
             "Oslo");
         found.Should().ContainSingle().Which.Should().Be(seeded.Records.Single().GrainId);
 
-        var record = seeded.Records.Single();
-        var currentLayout = await _fixture.Cluster.GrainFactory
-            .GetGrain<IStorageLayoutGrain>(providerName)
-            .GetCurrentLayoutAsync();
-        var read = await record.Partition.ReadRoutedAsync(new RoutedStorageReadRequest
+        var read = await target.ReadRoutedAsync(new RoutedStorageReadRequest
         {
             RecordKey = record.RecordKey,
             GrainId = record.GrainId,
             Slot = record.Slot,
-            Epoch = currentLayout!.Epoch,
+            Epoch = movedLayout.Epoch,
         });
         read.ETag.Should().Be(record.ETag);
     }

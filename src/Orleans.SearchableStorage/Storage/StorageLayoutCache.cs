@@ -4,8 +4,8 @@ namespace Orleans.SearchableStorage.Storage;
 
 /// <summary>
 /// Shares ordinary routing-layout reads between concurrent callers without coupling the shared
-/// operation to any caller's cancellation token. Capability checks can request an explicit
-/// caller-owned fresh read without replacing that routing cache.
+/// operation to any caller's cancellation token. Authoritative capability and maintenance checks
+/// can request an explicit caller-owned fresh read without replacing that routing cache.
 /// </summary>
 internal sealed class StorageLayoutCache
 {
@@ -53,7 +53,7 @@ internal sealed class StorageLayoutCache
 
     /// <summary>
     /// Reads a snapshot through a load started by this caller, without consulting or replacing the
-    /// shared routing cache. This is reserved for capability checks which must not inherit a read
+    /// shared routing cache. This is reserved for authoritative checks which must not inherit a read
     /// initiated before the current operation.
     /// </summary>
     public async Task<StorageLayoutSnapshot?> ReadFreshAsync(

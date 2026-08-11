@@ -150,6 +150,18 @@ fields are `null` outside a rebuild. They make empty and no-index state scans ob
 the processed-record count remains zero; they are checkpoints, not an estimate of remaining
 wall-clock time.
 
+The control advances owners and record pages sequentially; the 64-record page limit does not batch
+physical writes. For every record whose fingerprint changes, the owning partition sequentially
+persists the whole bounded journal-segment state and then advances the small authoritative manifest
+with a compare-and-swap. The first mutation on an activation can also persist its writer epoch, and
+normal retained compaction can add a whole-partition snapshot cycle. A useful first-order maintenance
+budget is therefore the changed-record count multiplied by the observed journal-segment-write plus
+manifest-CAS latency, with measured owner/control turns and compaction cost added. There is no
+portable records-per-second estimate. Rehearse against the same physical provider, topology,
+persistence settings, record-size/data shape, and representative owner skew; use the rehearsal's
+changed-record count, write latency, and compaction frequency and duration to size the maintenance
+window.
+
 Each changed record receives a replayable `Reindex` journal entry. It preserves the serialized
 payload, `GrainId`, ETag, and object-version allocator while replacing only derived index entries and
 the record's schema fingerprint. A retry skips records already carrying the target fingerprint.
@@ -158,12 +170,23 @@ scan. A partially executed page can have reindexed records while the visible cou
 the retry covers those records again safely. The final active count describes the completed scan,
 not the number of records whose bytes changed.
 
-Virtual-slot movement and schema rebuild cannot execute at the same time once the layout maintenance
+Virtual-slot movement and schema rebuild cannot execute at the same time while the layout maintenance
 intent is held. If a completed layout change is observed before that fence is acquired—including
 recovery of a durable control intent whose first advance never committed the fence—the control pins
 the new layout and restarts the owner scan from zero. Already rebuilt records remain valid and are
 skipped. The processed count also restarts from zero, so keep traffic quiesced until the restarted
 scan reaches `Active`.
+
+There is one narrow race after the layout publishes the provider capability and clears its
+maintenance intent but before the separate control commit activates the fingerprint. Movement can
+start in that gap. If the control observes movement before its final turn, the current
+`RebuildIndexSchemaAsync` call fails; it does not wait for movement, and the rebuild intent and
+completed scan remain durable. After movement completes or aborts, retry the same rebuild call. An
+abort which preserves the layout lets activation continue. A completed layout change makes the
+control pin the new layout and reset its owner scan and processed count; records already carrying the
+target fingerprint are skipped during that restarted scan. Movement which starts after the control's
+last stable-layout read can overlap the final control commit: the protocol does not hold a durable
+layout fence through activation. The mandatory operator quiescence excludes that later race.
 
 ## Failure and recovery
 

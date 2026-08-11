@@ -473,7 +473,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 nameof(request));
         }
 
-        var routing = await ValidateQueryRouteAsync(request.LayoutEpoch);
+        // Movement intents can start and retire without changing the routing epoch. Schema
+        // maintenance therefore needs an authoritative read instead of a same-epoch cached
+        // snapshot, otherwise a completed move can remain falsely visible until cache eviction.
+        var routing = await ValidateFreshQueryRouteAsync(request.LayoutEpoch);
         var layoutFingerprint = StorageLayoutFingerprint.Compute(routing);
         if (!IndexSchemaIdentity.FixedTimeEquals(
                 layoutFingerprint,
@@ -2258,6 +2261,23 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         EnsureRoutingEpochAccepted(expectedEpoch);
         var snapshot = await GetRoutingSnapshotAsync(expectedEpoch);
+        return ValidateQueryRoute(snapshot, expectedEpoch);
+    }
+
+    private async Task<StorageLayoutSnapshot> ValidateFreshQueryRouteAsync(long expectedEpoch)
+    {
+        EnsureRoutingEpochAccepted(expectedEpoch);
+        var snapshot = await RoutingCache.ReadFreshAsync()
+            ?? throw new InvalidOperationException(
+                $"Searchable storage provider '{_providerName}' has no initialized routing layout.");
+        ValidateRoutingSnapshot(snapshot);
+        return ValidateQueryRoute(snapshot, expectedEpoch);
+    }
+
+    private StorageLayoutSnapshot ValidateQueryRoute(
+        StorageLayoutSnapshot snapshot,
+        long expectedEpoch)
+    {
         var isCurrentOwner = snapshot.ContainsOwner(_partitionIndex);
         if (snapshot.Epoch != expectedEpoch || !isCurrentOwner)
         {

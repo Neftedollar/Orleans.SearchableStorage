@@ -57,7 +57,7 @@ internal static class IndexSchemaIdentity
                 index.Kind,
                 index.ValueTypeIdentity,
                 index.Converter.CodecId,
-                IndexValueConverter.CodecVersion,
+                index.Converter.CodecVersion,
                 index.Converter.SupportsRange))
             .OrderBy(static definition => definition.Name, StringComparer.Ordinal)
             .ToArray();

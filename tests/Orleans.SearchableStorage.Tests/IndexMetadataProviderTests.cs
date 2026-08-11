@@ -5,6 +5,27 @@ namespace Orleans.SearchableStorage.Tests;
 
 public sealed class IndexMetadataProviderTests
 {
+    public static IEnumerable<object[]> BuiltInLeafCodecCases()
+    {
+        yield return [typeof(string), (int)IndexKeyCodecId.String];
+        yield return [typeof(char), (int)IndexKeyCodecId.String];
+        yield return [typeof(sbyte), (int)IndexKeyCodecId.SignedInteger];
+        yield return [typeof(short), (int)IndexKeyCodecId.SignedInteger];
+        yield return [typeof(int), (int)IndexKeyCodecId.SignedInteger];
+        yield return [typeof(long), (int)IndexKeyCodecId.SignedInteger];
+        yield return [typeof(byte), (int)IndexKeyCodecId.UnsignedInteger];
+        yield return [typeof(ushort), (int)IndexKeyCodecId.UnsignedInteger];
+        yield return [typeof(uint), (int)IndexKeyCodecId.UnsignedInteger];
+        yield return [typeof(ulong), (int)IndexKeyCodecId.UnsignedInteger];
+        yield return [typeof(decimal), (int)IndexKeyCodecId.Decimal];
+        yield return [typeof(float), (int)IndexKeyCodecId.FloatingPoint];
+        yield return [typeof(double), (int)IndexKeyCodecId.FloatingPoint];
+        yield return [typeof(DateTime), (int)IndexKeyCodecId.Timestamp];
+        yield return [typeof(DateTimeOffset), (int)IndexKeyCodecId.Timestamp];
+        yield return [typeof(Guid), (int)IndexKeyCodecId.Guid];
+        yield return [typeof(bool), (int)IndexKeyCodecId.Boolean];
+    }
+
     [Fact]
     public void IndexScopeUsesUnambiguousLengthPrefixedComponents()
     {
@@ -266,7 +287,7 @@ public sealed class IndexMetadataProviderTests
     }
 
     [Fact]
-    public void ManagedIndexCodecIdentifiersAndVersionRemainFrozen()
+    public void ManagedIndexCodecIdentifiersRemainFrozen()
     {
         Enum.GetValues<IndexKeyCodecId>().Should().Equal(
             IndexKeyCodecId.String,
@@ -285,7 +306,88 @@ public sealed class IndexMetadataProviderTests
         ((int)IndexKeyCodecId.Timestamp).Should().Be(6);
         ((int)IndexKeyCodecId.Guid).Should().Be(7);
         ((int)IndexKeyCodecId.Boolean).Should().Be(8);
-        IndexValueConverter.CodecVersion.Should().Be(1);
+    }
+
+    [Theory]
+    [MemberData(nameof(BuiltInLeafCodecCases))]
+    public void BuiltInLeafConvertersDeclareTheirFrozenCodecVersion(
+        Type valueType,
+        int expectedCodecId)
+    {
+        var found = IndexValueConverterProvider.TryGetConverter(valueType, out var converter);
+
+        found.Should().BeTrue();
+        converter.Should().NotBeNull();
+        ((int)converter!.CodecId).Should().Be(expectedCodecId);
+        converter.CodecVersion.Should().Be(1);
+    }
+
+    [Fact]
+    public void EnumAndOptionalConvertersPropagateTheElementCodecIdentity()
+    {
+        var signedInteger = GetRequiredConverter(typeof(short));
+        var enumConverter = GetRequiredConverter(typeof(SignedSample));
+        var optionalConverter = GetRequiredConverter(typeof(short?));
+        var optionalEnumConverter = GetRequiredConverter(typeof(SignedSample?));
+
+        enumConverter.CodecId.Should().Be(signedInteger.CodecId);
+        enumConverter.CodecVersion.Should().Be(signedInteger.CodecVersion);
+        optionalConverter.CodecId.Should().Be(signedInteger.CodecId);
+        optionalConverter.CodecVersion.Should().Be(signedInteger.CodecVersion);
+        optionalEnumConverter.CodecId.Should().Be(enumConverter.CodecId);
+        optionalEnumConverter.CodecVersion.Should().Be(enumConverter.CodecVersion);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ConverterRejectsNonPositiveCodecVersions(int codecVersion)
+    {
+        var action = () => new IndexValueConverter<int>(
+            static value => IndexValue.FromSignedInteger(value),
+            supportsRange: true,
+            IndexKeyCodecId.SignedInteger,
+            codecVersion);
+
+        action.Should().Throw<ArgumentOutOfRangeException>()
+            .WithParameterName(nameof(codecVersion));
+    }
+
+    [Fact]
+    public void ManagedSchemaIdentityUsesThePropertyConverterVersion()
+    {
+        var baselineModel = IndexMetadataProvider.GetTypeModel<CodecVersionState>();
+        var baselineIndex = baselineModel.Indexes.Single();
+
+        SearchableTypeModel<CodecVersionState> CreateModel(int codecVersion)
+        {
+            var converter = new IndexValueConverter<int>(
+                static value => IndexValue.FromSignedInteger(value),
+                baselineIndex.Converter.SupportsRange,
+                baselineIndex.Converter.CodecId,
+                codecVersion,
+                queryValueDomain: baselineIndex.Converter.QueryValueDomain);
+            var index = new PropertyIndexMetadata<CodecVersionState, int>(
+                baselineModel.TypeIdentity,
+                baselineIndex.MemberInfo,
+                baselineIndex.Name,
+                baselineIndex.Kind,
+                baselineIndex.ValueTypeIdentity,
+                static (ref CodecVersionState state) => state.Value,
+                converter);
+
+            return baselineModel with { Indexes = [index] };
+        }
+
+        var baseline = IndexSchemaIdentity.Create("state", 1, baselineModel);
+        var explicitVersionOne = IndexSchemaIdentity.Create("state", 1, CreateModel(1));
+        var versionTwo = IndexSchemaIdentity.Create("state", 1, CreateModel(2));
+
+        explicitVersionOne.Fingerprint.Should().Equal(baseline.Fingerprint);
+        versionTwo.SchemaKey.Should().Equal(baseline.SchemaKey);
+        versionTwo.Indexes.Should().ContainSingle();
+        versionTwo.Indexes[0].CodecVersion.Should().Be(2);
+        versionTwo.Fingerprint.Should().NotEqual(baseline.Fingerprint);
     }
 
     [Fact]
@@ -314,6 +416,12 @@ public sealed class IndexMetadataProviderTests
 
         action.Should().Throw<InvalidOperationException>()
             .WithMessage("*registered*more than once*");
+    }
+
+    private static IndexValueConverter GetRequiredConverter(Type valueType)
+    {
+        IndexValueConverterProvider.TryGetConverter(valueType, out var converter).Should().BeTrue();
+        return converter!;
     }
 
     private sealed class DelimiterState
@@ -368,6 +476,12 @@ public sealed class IndexMetadataProviderTests
     {
         [SearchableIndex(SearchableIndexKind.Range)]
         public SignedSample? Optional { get; init; }
+    }
+
+    private sealed class CodecVersionState
+    {
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public int Value { get; init; }
     }
 
     private sealed class SelectorState
