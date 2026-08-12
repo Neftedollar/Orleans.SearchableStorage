@@ -25,6 +25,7 @@ public sealed class ApiCancellationTests : IClassFixture<CancellationWebApplicat
     [Theory]
     [InlineData("/vacancies/search/by-city?city=Helsinki")]
     [InlineData("/vacancies/search/by-city/page?city=Helsinki&pageSize=1")]
+    [InlineData("/vacancies/search/by-city/hydrated-page?city=Helsinki&pageSize=1")]
     [InlineData("/vacancies/search/by-salary?lower=5&upper=8")]
     [InlineData("/vacancies/facets/cities?pageSize=1")]
     [InlineData("/vacancies/facets/cities/top?topN=1&accuracy=Exact")]

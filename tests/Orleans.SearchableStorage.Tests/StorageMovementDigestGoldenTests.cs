@@ -2,6 +2,7 @@ using AwesomeAssertions;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
+using Orleans.SearchableStorage.Tests.Infrastructure;
 
 namespace Orleans.SearchableStorage.Tests;
 
@@ -86,10 +87,14 @@ public sealed class StorageMovementDigestGoldenTests
         var deleteHex = Convert.ToHexString(StorageMovePageDigest.Compute(
             StorageJournalOperation.MoveDelete,
             deletePayload));
-        importHex.Should().Be(
-            "A51829C81A8F95DDC26FCED1B6B133C2A308EC366878E480EEB9E55946D1A400");
-        deleteHex.Should().Be(
-            "D7755D53836AFD00625BAC6052E93EE6009FAABA6F1B35D2F273AB8BDFF099D6");
+        importHex.Should().Be(CompatibilityManifest.GetString(
+            "goldens",
+            "movementPageDigest",
+            "import"));
+        deleteHex.Should().Be(CompatibilityManifest.GetString(
+            "goldens",
+            "movementPageDigest",
+            "delete"));
     }
 
     [Fact]
@@ -144,8 +149,10 @@ public sealed class StorageMovementDigestGoldenTests
             "managed encoding appends one presence-domain byte and the fixed 32-byte fingerprint");
         var managedHex = Convert.ToHexString(
             StorageMovePageDigest.Compute(StorageJournalOperation.Import, payload));
-        managedHex.Should().Be(
-            "BB8A7C94A7214D04E02D7EE5DEC3F9D30A18768831E88BBC0F350423A9C727A3");
+        managedHex.Should().Be(CompatibilityManifest.GetString(
+            "goldens",
+            "movementPageDigest",
+            "managedImport"));
 
         byte[] changedFingerprint = [.. fingerprint];
         changedFingerprint[^1] ^= 0xff;

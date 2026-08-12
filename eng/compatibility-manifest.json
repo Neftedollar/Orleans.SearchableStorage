@@ -1,0 +1,127 @@
+{
+  "manifestVersion": 1,
+  "reviewPolicy": "Change an expected value only with an explicit compatibility decision, migration or rejection plan, and executable golden-vector coverage.",
+  "protocols": {
+    "layout": {
+      "legacyFormat": 3,
+      "movementFormat": 4,
+      "managedSchemaFormat": 5,
+      "movementProtocol": 1,
+      "managedSchemaProtocol": 1
+    },
+    "partitionPersistence": {
+      "legacyFormat": 3,
+      "movementFormat": 4,
+      "currentFormat": 5
+    },
+    "query": {
+      "paging": 1,
+      "ordering": 1,
+      "workPolicy": 2,
+      "continuationPayload": 1,
+      "facetValueOrdering": 1,
+      "facetWorkPolicy": 1
+    },
+    "continuationToken": {
+      "envelope": 1
+    },
+    "managedIndexSchema": {
+      "protocol": 1,
+      "definition": 1,
+      "membershipFingerprintFormat": 2,
+      "membershipExtractor": 1,
+      "rebuildPageSize": 64
+    },
+    "movement": {
+      "protocol": 1
+    },
+    "snapshotRecordEncoding": {
+      "legacy": 0,
+      "lossless": 1
+    }
+  },
+  "wireContracts": {
+    "indexKeyCodec": {
+      "version": 1,
+      "ids": {
+        "String": 1,
+        "SignedInteger": 2,
+        "UnsignedInteger": 3,
+        "Decimal": 4,
+        "FloatingPoint": 5,
+        "Timestamp": 6,
+        "Guid": 7,
+        "Boolean": 8
+      }
+    },
+    "partitionQueryOperation": {
+      "Empty": 0,
+      "Exact": 1,
+      "Range": 2,
+      "And": 3,
+      "Or": 4,
+      "All": 5
+    },
+    "partitionQueryAccessPath": {
+      "None": 0,
+      "Empty": 1,
+      "ExactPosting": 2,
+      "RangeMerge": 3,
+      "Union": 4,
+      "Catalog": 5
+    },
+    "partitionQueryResponseFamily": {
+      "GrainIdPage": 1,
+      "DistinctFacetValuePage": 2,
+      "FacetValueCountCandidates": 3,
+      "FacetValueCountProbe": 4
+    },
+    "partitionQueryPageStopReason": {
+      "Exhausted": 0,
+      "WorkBudget": 1,
+      "ItemLimit": 2,
+      "ByteLimit": 3
+    },
+    "movementState": {
+      "Disabled": 0,
+      "Enabling": 1,
+      "Enabled": 2
+    },
+    "movementPhase": {
+      "Planned": 0,
+      "SourceFrozen": 1,
+      "TargetVersionFenced": 2,
+      "Copying": 3,
+      "CopyComplete": 4,
+      "OwnershipCommitted": 5,
+      "SourceVisibilityFenced": 6,
+      "TargetEnabled": 7,
+      "DeletingSource": 8,
+      "Retiring": 9,
+      "Aborting": 10,
+      "Completed": 11,
+      "Aborted": 12
+    }
+  },
+  "fieldIdContractTests": [
+    "Orleans.SearchableStorage.Tests.QueryApiContractTests.BoundedRangeWireMessageKeepsRequiredNonNullableBounds",
+    "Orleans.SearchableStorage.Tests.QueryApiContractTests.PartitionQueryWireMessageKeepsStableFieldsAndNullableOpenBounds",
+    "Orleans.SearchableStorage.Tests.QueryApiContractTests.VirtualRoutingWireAndLayoutMessagesKeepStableFieldIds",
+    "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.DurableManifestAndWalFieldsAreExactlyContiguousAndAppendOnly",
+    "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.ManagedIndexSchemaMessagesKeepExactContiguousFieldIds",
+    "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.PartitionMovementMessagesKeepExactContiguousFieldIds"
+  ],
+  "goldens": {
+    "movementPageDigest": {
+      "import": "A51829C81A8F95DDC26FCED1B6B133C2A308EC366878E480EEB9E55946D1A400",
+      "delete": "D7755D53836AFD00625BAC6052E93EE6009FAABA6F1B35D2F273AB8BDFF099D6",
+      "managedImport": "BB8A7C94A7214D04E02D7EE5DEC3F9D30A18768831E88BBC0F350423A9C727A3"
+    },
+    "indexSchema": {
+      "scalarSchemaKeyV1": "C1588F71DE04B0864E7D6107EFB6EB105796EF06D9A69FF05C544DA59FF057CB",
+      "scalarFingerprintV1": "BB8DA5199A3F440547BE5BCBC3E4303C7A7D53B9DA63452B0A77C29D774F9162",
+      "membershipSchemaKeyV1": "B38B58BC85BA47E7203197BC1083AB196081B5FB1E1DB8B0CE0C6D8DC37C80C3",
+      "membershipFingerprintV2": "729B8BAF6B90944161C1ED084A275B368E237F67D20E8BF9C26F9EDD4E134DA6"
+    }
+  }
+}

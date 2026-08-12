@@ -1,0 +1,26 @@
+# One package entry per pattern. Only the NuGet-generated core-properties name is variable.
+[Content_Types].xml
+_rels/.rels
+Orleans.SearchableStorage.nuspec
+lib/net10.0/Orleans.SearchableStorage.dll
+lib/net10.0/Orleans.SearchableStorage.xml
+README.md
+CONTRIBUTING.md
+LICENSE
+docs/architecture.md
+docs/backends.md
+docs/benchmarks.md
+docs/bounded-query-contract.md
+docs/index-schema-lifecycle.md
+docs/live-movement.md
+docs/maintainers.md
+docs/one-zero-contract.md
+docs/operations.md
+docs/release.md
+docs/storage-capacity-limits.md
+docs/testing.md
+eng/compatibility-manifest.json
+eng/public-api.txt
+samples/Orleans.SearchableStorage.ApiSample/README.md
+samples/Orleans.SearchableStorage.ApiSample/requests.http
+package/services/metadata/core-properties/*.psmdcp

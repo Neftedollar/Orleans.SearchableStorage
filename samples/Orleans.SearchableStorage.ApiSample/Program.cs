@@ -29,7 +29,7 @@ builder.Host.UseOrleans(siloBuilder =>
     siloBuilder.AddSearchableStorageState<VacancyState>(
         VacancyGrain.StorageProviderName,
         VacancyGrain.StateName,
-        applicationSchemaVersion: 1);
+        VacancyGrain.ApplicationSchemaVersion);
 });
 builder.Services.AddHostedService<VacancyIndexSchemaBootstrapService>();
 
@@ -42,6 +42,9 @@ app.MapGet("/vacancies/{id}", GetVacancyAsync);
 app.MapDelete("/vacancies/{id}", DeleteVacancyAsync);
 app.MapGet("/vacancies/search/by-city", VacancySearchEndpoints.FindByCityAsync);
 app.MapGet("/vacancies/search/by-city/page", VacancySearchEndpoints.FindByCityPageAsync);
+app.MapGet(
+    "/vacancies/search/by-city/hydrated-page",
+    VacancySearchEndpoints.FindHydratedByCityPageAsync);
 app.MapGet("/vacancies/search/by-salary", VacancySearchEndpoints.FindBySalaryAsync);
 app.MapGet("/vacancies/facets/cities", VacancySearchEndpoints.GetDistinctCitiesAsync);
 app.MapGet("/vacancies/facets/cities/top", VacancySearchEndpoints.GetTopCitiesAsync);
@@ -264,6 +267,12 @@ internal sealed record SearchResponse(IReadOnlyList<string> Ids);
 
 internal sealed record SearchPageResponse(IReadOnlyList<string> Ids, string? ContinuationToken);
 
+internal sealed record HydratedSearchPageItemResponse(string Id, VacancyResponse? Vacancy);
+
+internal sealed record HydratedSearchPageResponse(
+    IReadOnlyList<HydratedSearchPageItemResponse> Items,
+    string? ContinuationToken);
+
 internal sealed record DistinctCityFacetResponse(
     IReadOnlyList<string> Values,
     string? ContinuationToken);
@@ -308,6 +317,7 @@ internal static class SampleMetadata
             "DELETE /vacancies/{id}",
             "GET /vacancies/search/by-city?city={city}",
             "GET /vacancies/search/by-city/page?city={city}&pageSize={size}",
+            "GET /vacancies/search/by-city/hydrated-page?city={city}&pageSize={size}",
             "GET /vacancies/search/by-salary?lower={value}&upper={value}",
             "GET /vacancies/facets/cities?pageSize={size}",
             "GET /vacancies/facets/cities/top?topN={count}&accuracy={Exact|Approximate}",

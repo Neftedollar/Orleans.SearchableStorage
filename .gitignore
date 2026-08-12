@@ -6,6 +6,9 @@ obj/
 TestResults/
 coverage/
 BenchmarkDotNet.Artifacts/
+artifacts/
+__pycache__/
+*.py[cod]
 *.user
 *.suo
 *.nupkg

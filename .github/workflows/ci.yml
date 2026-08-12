@@ -16,7 +16,7 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
@@ -30,11 +30,28 @@ jobs:
       - name: Verify vendored Orleans SQL
         run: sha256sum --check eng/orleans-sql.sha256
 
+      - name: Validate documentation links
+        run: python3 eng/validate-doc-links.py
+
+      - name: Test static release tooling
+        run: python3 -m unittest discover --start-directory eng/tests --verbose
+
       - name: Restore
         run: dotnet restore Orleans.SearchableStorage.slnx
 
       - name: Build
         run: dotnet build Orleans.SearchableStorage.slnx --configuration Release --no-restore
+
+      - name: Verify reviewed public API
+        run: |
+          mkdir -p artifacts/release
+          dotnet run \
+            --project eng/public-api-generator/PublicApiGenerator.csproj \
+            --configuration Release \
+            --no-build \
+            --no-restore \
+            -- artifacts/release/public-api.actual.txt
+          diff --unified eng/public-api.txt artifacts/release/public-api.actual.txt
 
       - name: Test
         run: dotnet test Orleans.SearchableStorage.slnx --configuration Release --no-build --no-restore --collect "XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx"
@@ -56,7 +73,37 @@ jobs:
           "$((SHARED_STORAGE_CONTRACT_TEST_COUNT + 1))"
 
       - name: Pack
-        run: dotnet pack src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj --configuration Release --no-build --no-restore --output artifacts/packages
+        run: >-
+          dotnet pack src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --output artifacts/packages
+          -p:ContinuousIntegrationBuild=true
+          -p:RepositoryCommit="$GITHUB_SHA"
+
+      - name: Validate package contents and provenance
+        shell: bash
+        run: |
+          mapfile -t packages < <(
+            find artifacts/packages -maxdepth 1 -type f \
+              -name 'Orleans.SearchableStorage.*.nupkg' \
+              ! -name '*.symbols.nupkg' \
+              -print
+          )
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            echo "Expected exactly one package, found ${#packages[@]}." >&2
+            exit 1
+          fi
+          python3 eng/validate-package.py "${packages[0]}" \
+            --expected-commit "$GITHUB_SHA" \
+            --canonical-output artifacts/release/package.canonical.json
+
+      - name: Run release dry-run and local package consumer smoke
+        env:
+          OSS_RELEASE_NO_BUILD: "true"
+          OSS_RELEASE_GIT_COMMIT: ${{ github.sha }}
+        run: bash eng/release-dry-run.sh
 
       - name: Upload test results
         if: always()
@@ -66,6 +113,8 @@ jobs:
           path: |
             **/TestResults/**
             artifacts/memory-test-results
+            artifacts/packages
+            artifacts/release
           if-no-files-found: ignore
 
   backend-contract:

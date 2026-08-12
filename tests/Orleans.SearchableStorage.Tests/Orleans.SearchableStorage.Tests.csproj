@@ -20,6 +20,14 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Infrastructure/PostgreSql/*.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../eng/compatibility-manifest.json"
+          Link="compatibility-manifest.json"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../eng/public-api.txt"
+          Link="public-api.txt"
+          CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="../../eng/public-api/PublicApiManifest.cs"
+             Link="Infrastructure/PublicApiManifest.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj" />

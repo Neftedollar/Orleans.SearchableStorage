@@ -4,6 +4,8 @@ namespace Orleans.SearchableStorage.ApiSample;
 
 internal static class VacancySearchEndpoints
 {
+    internal const int HydrationConcurrencyLimit = 16;
+
     public static async Task<IResult> FindByCityAsync(
         string city,
         [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageQueryClient search,
@@ -53,6 +55,81 @@ internal static class VacancySearchEndpoints
         return Results.Ok(new SearchPageResponse(
             page.Items.Select(static grainId => grainId.Key.ToString()).ToArray(),
             page.ContinuationToken));
+    }
+
+    public static async Task<IResult> FindHydratedByCityPageAsync(
+        string city,
+        int? pageSize,
+        string? continuation,
+        [FromKeyedServices(VacancyGrain.StorageProviderName)] ISearchableStorageQueryClient search,
+        IGrainFactory grainFactory,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(city))
+        {
+            return ValidationError(nameof(city), "A city is required.");
+        }
+
+        var effectivePageSize = pageSize ?? SearchableStorageQueryOptions.DefaultPageSize;
+        if (effectivePageSize <= 0
+            || effectivePageSize > SearchableStorageQueryOptions.MaximumPageSize)
+        {
+            return ValidationError(
+                nameof(pageSize),
+                $"Page size must be between 1 and {SearchableStorageQueryOptions.MaximumPageSize}.");
+        }
+
+        var normalizedCity = city.Trim();
+        var page = await search
+            .Query<VacancyState>(VacancyGrain.StateName)
+            .Where(state => state.City == normalizedCity)
+            .ToGrainIdPageAsync(
+                new SearchableStorageQueryPageRequest(effectivePageSize, continuation),
+                cancellationToken);
+
+        // Searchable storage deliberately returns identities, not application state. Hydrate only
+        // this bounded page through the owning grains so their normal authorization and domain
+        // behavior remain in the read path. A vacancy can change or disappear after index lookup;
+        // a null value exposes that race instead of pretending this is a distributed snapshot.
+        var items = await HydratePageAsync(
+            page.Items,
+            async (grainId, hydrationCancellation) =>
+            {
+                var id = grainId.Key.ToString();
+                var state = await grainFactory
+                    .GetGrain<IVacancyGrain>(id)
+                    .GetAsync()
+                    .WaitAsync(hydrationCancellation);
+                return new HydratedSearchPageItemResponse(
+                    id,
+                    state is null ? null : new VacancyResponse(id, state.City, state.Salary));
+            },
+            cancellationToken);
+
+        return Results.Ok(new HydratedSearchPageResponse(items, page.ContinuationToken));
+    }
+
+    internal static async Task<TResult[]> HydratePageAsync<TSource, TResult>(
+        IReadOnlyList<TSource> source,
+        Func<TSource, CancellationToken, ValueTask<TResult>> hydrate,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(hydrate);
+
+        var results = new TResult[source.Count];
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, source.Count),
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = HydrationConcurrencyLimit,
+                CancellationToken = cancellationToken,
+            },
+            async (index, itemCancellation) =>
+            {
+                results[index] = await hydrate(source[index], itemCancellation);
+            });
+        return results;
     }
 
     public static async Task<IResult> FindBySalaryAsync(
