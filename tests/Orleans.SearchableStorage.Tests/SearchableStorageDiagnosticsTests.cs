@@ -1,6 +1,10 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
+using System.Reflection;
 using Microsoft.Extensions.Logging;
 using Orleans.SearchableStorage.Diagnostics;
+using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
 
@@ -175,6 +179,118 @@ public sealed class SearchableStorageDiagnosticsTests
             "query.page");
     }
 
+    [Theory]
+    [InlineData(ObservedQueryTerminal.Find)]
+    [InlineData(ObservedQueryTerminal.Range)]
+    [InlineData(ObservedQueryTerminal.Linq)]
+    [InlineData(ObservedQueryTerminal.Page)]
+    public async Task ManagedSchemaGateFailureRecordsExactlyOneOuterQueryOutcome(
+        ObservedQueryTerminal terminal)
+    {
+        var provider = UniqueProvider();
+        using var measurements = new MeasurementCollector(provider);
+        var gate = new ControlledSchemaGrain();
+        gate.Response.SetException(new InvalidOperationException("managed schema gate failed"));
+        var (grainFactory, recording) = DiagnosticsGrainFactoryProxy.Create(gate);
+        var client = CreateManagedQueryClient(provider, grainFactory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ExecuteManagedQueryTerminalAsync(client, terminal, CancellationToken.None));
+
+        AssertSingleOperation(
+            measurements,
+            SearchableStorageDiagnostics.FailureOutcome,
+            expectedWork: null,
+            provider,
+            GetObservedOperation(terminal));
+        Assert.Equal(1, gate.GetCount);
+        Assert.Equal(0, recording.PartitionLookupCount);
+    }
+
+    [Theory]
+    [InlineData(ObservedQueryTerminal.Find)]
+    [InlineData(ObservedQueryTerminal.Range)]
+    [InlineData(ObservedQueryTerminal.Linq)]
+    [InlineData(ObservedQueryTerminal.Page)]
+    public async Task CancelledManagedSchemaGateRecordsOnceAndDetachesTheUnderlyingCall(
+        ObservedQueryTerminal terminal)
+    {
+        var provider = UniqueProvider();
+        using var measurements = new MeasurementCollector(provider);
+        var gate = new ControlledSchemaGrain();
+        var detached = new TaskCompletionSource<Task>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var (grainFactory, recording) = DiagnosticsGrainFactoryProxy.Create(gate);
+        var client = CreateManagedQueryClient(
+            provider,
+            grainFactory,
+            task => detached.TrySetResult(task));
+        using var cancellation = new CancellationTokenSource();
+
+        var query = ExecuteManagedQueryTerminalAsync(client, terminal, cancellation.Token);
+        var request = await gate.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => query);
+        Assert.Same(gate.Response.Task, await detached.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(gate.Response.Task.IsCompleted,
+            "canceling the caller must not cancel the shared Orleans schema-control call");
+        AssertSingleOperation(
+            measurements,
+            SearchableStorageDiagnostics.CancelledOutcome,
+            expectedWork: null,
+            provider,
+            GetObservedOperation(terminal));
+        Assert.Equal(1, gate.GetCount);
+        Assert.Equal(0, recording.PartitionLookupCount);
+
+        gate.Response.SetResult(new StorageIndexSchemaSnapshot
+        {
+            ProviderName = request.ProviderName,
+            StateName = request.StateName,
+            ActiveFingerprint = [.. request.Fingerprint],
+        });
+        _ = await gate.Response.Task;
+    }
+
+    [Theory]
+    [InlineData(ObservedQueryTerminal.Linq)]
+    [InlineData(ObservedQueryTerminal.Page)]
+    public async Task SuccessfulQueryTerminalHasNoNestedDuplicateObservation(
+        ObservedQueryTerminal terminal)
+    {
+        var provider = UniqueProvider();
+        using var measurements = new MeasurementCollector(provider);
+        var options = new SearchableStorageQueryOptions();
+        options.ContinuationProtection.CurrentKey = new SearchableStorageContinuationKey(
+            "diagnostics-tests",
+            Enumerable.Repeat((byte)0x5C, 32).ToArray());
+        var client = new SearchableStorageClient(
+            provider,
+            [new UnusedPartitionGrain()],
+            static () => Task.FromResult(true),
+            options);
+        var query = client.Query<ObservedQueryState>(ObservedStateName)
+            .Where(static state => state.City == "Haifa" && state.City == "Jerusalem");
+
+        if (terminal == ObservedQueryTerminal.Linq)
+        {
+            Assert.Empty(await query.ToGrainIdsAsync());
+        }
+        else
+        {
+            Assert.Empty((await query.ToGrainIdPageAsync(
+                new SearchableStorageQueryPageRequest(10))).Items);
+        }
+
+        AssertSingleOperation(
+            measurements,
+            SearchableStorageDiagnostics.SuccessOutcome,
+            expectedWork: 0,
+            provider,
+            GetObservedOperation(terminal));
+    }
+
     private static void AssertSingleOperation(
         MeasurementCollector measurements,
         string outcome,
@@ -343,4 +459,157 @@ public sealed class SearchableStorageDiagnosticsTests
     private sealed record Measurement<T>(
         T Value,
         IReadOnlyDictionary<string, object?> Tags);
+
+    private static SearchableStorageClient CreateManagedQueryClient(
+        string provider,
+        IGrainFactory grainFactory,
+        Action<Task>? detachedFanoutObserver = null)
+    {
+        var registry = new SearchableStorageSchemaRegistry()
+            .AddState<ObservedQueryState>(ObservedStateName)
+            .CreateRegistry(provider);
+        var options = new SearchableStorageQueryOptions();
+        options.ContinuationProtection.CurrentKey = new SearchableStorageContinuationKey(
+            "diagnostics-tests",
+            Enumerable.Repeat((byte)0x6D, 32).ToArray());
+        return new SearchableStorageClient(
+            grainFactory,
+            provider,
+            partitionCount: 1,
+            options,
+            registry,
+            logger: null,
+            detachedFanoutObserver);
+    }
+
+    private static Task ExecuteManagedQueryTerminalAsync(
+        SearchableStorageClient client,
+        ObservedQueryTerminal terminal,
+        CancellationToken cancellationToken)
+    {
+        var query = client.Query<ObservedQueryState>(ObservedStateName)
+            .Where(static state => state.City == "Haifa");
+        return terminal switch
+        {
+            ObservedQueryTerminal.Find => client.FindAsync<ObservedQueryState, string>(
+                ObservedStateName,
+                static state => state.City,
+                "Haifa",
+                cancellationToken),
+            ObservedQueryTerminal.Range => client.RangeAsync<ObservedQueryState, int>(
+                ObservedStateName,
+                static state => state.Score,
+                1,
+                10,
+                cancellationToken: cancellationToken),
+            ObservedQueryTerminal.Linq => query.ToGrainIdsAsync(cancellationToken),
+            ObservedQueryTerminal.Page => query.ToGrainIdPageAsync(
+                new SearchableStorageQueryPageRequest(10),
+                cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(terminal), terminal, null),
+        };
+    }
+
+    private static string GetObservedOperation(ObservedQueryTerminal terminal)
+    {
+        return terminal == ObservedQueryTerminal.Page ? "query.page" : "query.legacy";
+    }
+
+    private const string ObservedStateName = "diagnostics-state";
+
+    public enum ObservedQueryTerminal
+    {
+        Find,
+        Range,
+        Linq,
+        Page,
+    }
+
+    private sealed class ObservedQueryState
+    {
+        [SearchableIndex(SearchableIndexKind.Hash)]
+        public string City { get; init; } = string.Empty;
+
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public int Score { get; init; }
+    }
+
+    private sealed class ControlledSchemaGrain : IStorageIndexSchemaGrain
+    {
+        private int _getCount;
+
+        public TaskCompletionSource<StorageIndexSchemaSnapshot> Response { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<StorageIndexSchemaRequest> Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int GetCount => Volatile.Read(ref _getCount);
+
+        public Task<StorageIndexSchemaSnapshot> GetAsync(StorageIndexSchemaRequest request)
+        {
+            Interlocked.Increment(ref _getCount);
+            Started.TrySetResult(request);
+            return Response.Task;
+        }
+
+        public Task<StorageIndexSchemaSnapshot> BeginRebuildAsync(
+            StorageIndexSchemaRequest request) => throw new NotSupportedException();
+
+        public Task<StorageIndexSchemaSnapshot> AdvanceRebuildAsync(
+            StorageIndexSchemaCommand command) => throw new NotSupportedException();
+    }
+
+    [SuppressMessage(
+        "Performance",
+        "CA1852:Seal internal types",
+        Justification = "DispatchProxy generates a runtime subclass of this type.")]
+    private class DiagnosticsGrainFactoryProxy : DispatchProxy
+    {
+        private IStorageIndexSchemaGrain _schema = null!;
+
+        public int PartitionLookupCount { get; private set; }
+
+        public static (IGrainFactory GrainFactory, DiagnosticsGrainFactoryProxy Recording) Create(
+            IStorageIndexSchemaGrain schema)
+        {
+            var grainFactory = DispatchProxy.Create<IGrainFactory, DiagnosticsGrainFactoryProxy>();
+            var recording = (DiagnosticsGrainFactoryProxy)(object)grainFactory;
+            recording._schema = schema;
+            return (grainFactory, recording);
+        }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            ArgumentNullException.ThrowIfNull(targetMethod);
+            if (targetMethod.Name == nameof(IGrainFactory.GetGrain)
+                && targetMethod.IsGenericMethod)
+            {
+                var grainType = targetMethod.GetGenericArguments()[0];
+                if (grainType == typeof(IStorageLayoutGrain))
+                {
+                    return new UnusedLayoutGrain();
+                }
+
+                if (grainType == typeof(IStorageIndexSchemaGrain))
+                {
+                    return _schema;
+                }
+
+                if (grainType == typeof(IStoragePartitionGrain))
+                {
+                    PartitionLookupCount++;
+                    throw new InvalidOperationException(
+                        "A query blocked by its managed schema gate must not resolve a partition.");
+                }
+            }
+
+            throw new NotSupportedException(
+                $"Unexpected grain-factory call '{targetMethod.Name}'.");
+        }
+    }
+
+    private sealed class UnusedLayoutGrain : StorageLayoutGrainMovementTestDouble;
+
+    private sealed class UnusedPartitionGrain : StoragePartitionGrainMovementTestDouble;
 }

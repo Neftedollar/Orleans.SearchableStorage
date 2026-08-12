@@ -141,7 +141,7 @@ internal sealed class StoragePartitionPersistence
     {
         return SearchableStorageDiagnostics.ObserveAsync(
             _providerName,
-            "persistence.activation",
+            "persistence.recovery",
             "activation",
             _logger,
             lifecycle: true,
