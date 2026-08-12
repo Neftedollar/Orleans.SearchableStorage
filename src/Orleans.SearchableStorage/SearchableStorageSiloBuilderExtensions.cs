@@ -166,8 +166,9 @@ public static class SearchableStorageSiloBuilderExtensions
                 static value => value.MaximumJournalReplayEntries > 0,
                 "MaximumJournalReplayEntries must be greater than zero.")
             .Validate(
-                static value => IsJournalLayoutAddressable(value),
-                "JournalSegmentCapacity and MaximumJournalReplayEntries must produce an addressable journal ring.")
+                static value => IsJournalLayoutSupported(value),
+                "JournalSegmentCapacity and MaximumJournalReplayEntries must produce an addressable "
+                + "journal ring within the fixed searchable-storage capacity limits.")
             .Validate(
                 static value => value.CompactionThreshold > 0,
                 "CompactionThreshold must be greater than zero.")
@@ -237,7 +238,7 @@ public static class SearchableStorageSiloBuilderExtensions
         return services;
     }
 
-    private static bool IsJournalLayoutAddressable(SearchableStorageOptions options)
+    private static bool IsJournalLayoutSupported(SearchableStorageOptions options)
     {
         if (options.JournalSegmentCapacity <= 0 || options.MaximumJournalReplayEntries <= 0)
         {
@@ -250,6 +251,11 @@ public static class SearchableStorageSiloBuilderExtensions
             StoragePersistence.ValidateOptions(
                 options.JournalSegmentCapacity,
                 options.MaximumJournalReplayEntries);
+            StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+                options.JournalSegmentCapacity,
+                options.MaximumJournalReplayEntries,
+                nameof(options.JournalSegmentCapacity),
+                nameof(options.MaximumJournalReplayEntries));
             return true;
         }
         catch (ArgumentOutOfRangeException)

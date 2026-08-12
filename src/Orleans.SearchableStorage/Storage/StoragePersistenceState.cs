@@ -881,6 +881,8 @@ internal static class StoragePersistenceStateValidation
             throw new ArgumentException("A stored record must identify a grain.", parameterName);
         }
 
+        StorageGrainIdCapacity.Validate(record.GrainId, parameterName);
+
         ArgumentNullException.ThrowIfNull(record.Payload, parameterName);
         ArgumentException.ThrowIfNullOrWhiteSpace(record.ETag, parameterName);
         ArgumentNullException.ThrowIfNull(record.IndexEntries, parameterName);

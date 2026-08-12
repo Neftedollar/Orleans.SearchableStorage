@@ -341,7 +341,7 @@ internal sealed class StoragePartitionPersistence
     {
         EnsureCoordinatorUsable();
         ArgumentNullException.ThrowIfNull(entry);
-        StoragePersistenceStateValidation.ValidateJournalEntry(entry, nameof(entry));
+        _ = StorageCapacityGuardrails.ValidateJournalEntry(entry);
         ValidateJournalCapability(
             entry,
             _manifest.State.PersistenceFormatVersion,
@@ -476,6 +476,11 @@ internal sealed class StoragePartitionPersistence
         StoragePersistence.ValidateOptions(
             settings.JournalSegmentCapacity,
             settings.MaximumJournalReplayEntries);
+        StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+            settings.JournalSegmentCapacity,
+            settings.MaximumJournalReplayEntries,
+            nameof(settings.JournalSegmentCapacity),
+            nameof(settings.MaximumJournalReplayEntries));
         ValidateCompactionThreshold(
             settings.CompactionThreshold,
             settings.MaximumJournalReplayEntries);
@@ -527,6 +532,8 @@ internal sealed class StoragePartitionPersistence
         {
             return;
         }
+
+        _ = StorageCapacityGuardrails.ValidateSnapshotRecords(records);
 
         if (_manifest.State.PendingSnapshot.IsPresent)
         {
@@ -584,7 +591,9 @@ internal sealed class StoragePartitionPersistence
                 "The pending snapshot does not identify the current committed partition state.");
         }
 
-        var snapshot = StorageSnapshotFactory.Create(
+        // Live and recovered partition views are capacity-validated before a pending descriptor
+        // becomes authoritative. Avoid a second full record scan while encoding the same state.
+        var snapshot = StorageSnapshotFactory.CreatePrevalidated(
             pending,
             records,
             state.PersistenceFormatVersion);
@@ -649,6 +658,8 @@ internal sealed class StoragePartitionPersistence
             recoveredOperationIds.Add(snapshot.OperationId);
         }
 
+        var capacity = new StorageCapacityTracker(records);
+
         var sequence = checked(_manifest.State.SnapshotSequence + 1);
         while (sequence <= _manifest.State.CommittedSequence)
         {
@@ -708,7 +719,8 @@ internal sealed class StoragePartitionPersistence
                     _manifest.State.WriterEpoch,
                     recoveredOperationIds,
                     ref recoveredNextVersion,
-                    ref recoveredOperationId);
+                    ref recoveredOperationId,
+                    capacity);
                 sequence++;
             }
         }
@@ -880,6 +892,11 @@ internal sealed class StoragePartitionPersistence
         StoragePersistence.ValidateOptions(
             state.JournalSegmentCapacity,
             state.MaximumJournalReplayEntries);
+        StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+            state.JournalSegmentCapacity,
+            state.MaximumJournalReplayEntries,
+            nameof(state.JournalSegmentCapacity),
+            nameof(state.MaximumJournalReplayEntries));
         if (state.WriterEpoch < 0
             || state.CommittedSequence < 0
             || state.NextVersion <= 0
@@ -1130,6 +1147,7 @@ internal sealed class StoragePartitionPersistence
             return;
         }
 
+        StorageCapacityGuardrails.ValidateRecordKeyBytes(cursor);
         var decoded = StorageMoveRecordCodec.DecodeText(cursor, parameterName);
         ArgumentException.ThrowIfNullOrWhiteSpace(decoded, parameterName);
     }
@@ -1306,6 +1324,8 @@ internal sealed class StoragePartitionPersistence
             throw new InvalidOperationException(
                 $"Committed journal segment {absoluteSegmentIndex} is missing, retired, or invalid.");
         }
+
+        _ = StorageCapacityGuardrails.ValidateJournalSegment(segment);
 
         var startSequence = StoragePersistence.GetSegmentStartSequence(absoluteSegmentIndex, capacity);
         var endSequence = StoragePersistence.GetSegmentEndSequence(absoluteSegmentIndex, capacity);

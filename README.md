@@ -4,6 +4,12 @@ Orleans-native persistent grain storage with secondary indexes.
 
 The project is an early vertical slice. It implements an `IGrainStorage` provider whose records and local index entries are owned by Orleans grains and persisted through another Orleans storage provider. Applications continue to use `IPersistentState<T>` and add searchable semantics by marking state properties.
 
+The [1.0 product and query contract](docs/one-zero-contract.md) is the concise matrix of the
+implemented product boundary, supported CLR/index/query surface, terminal semantics, failure model,
+and current runtime/backend evidence. It separately identifies the narrow bounded-membership slice
+accepted but not yet implemented before the intended 1.0 freeze, without claiming that version 1.0
+or its SemVer guarantees have already shipped.
+
 ## Current semantics
 
 - Hash indexes support exact-value lookup.
@@ -36,11 +42,17 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 - The physical persistence provider remains replaceable through Orleans configuration.
 
 The journal removes partition-sized writes from the mutation path, but it does not make the current
-layout an unbounded database. A partition activation still loads its whole active snapshot into
-memory, compaction still serializes that whole partition, and a configured segment capacity bounds
-operations rather than bytes: one large record can still produce a large segment. Range indexes now
-use logarithmic bucket seeks and incremental bucket updates. Paging adds activation-local ordered
-catalogs/postings, so retained index memory is higher even though live updates remain logarithmic.
+layout an unbounded database. The fixed storage envelope caps individual records and index entries,
+one journal entry at 5 MiB of canonical data, and a segment at 64 entries and 320 MiB of aggregate
+canonical entry data. Canonical bytes are deterministic logical accounting, not Orleans transport
+or physical-provider bytes. A partition activation still loads its whole accepted snapshot into
+memory, and compaction still serializes that whole partition; the 1,000,000-record and 512 MiB
+canonical snapshot ceilings are safety boundaries, not small latency or transient-memory bounds.
+Range indexes now use logarithmic bucket seeks and incremental bucket updates. Paging adds
+activation-local ordered catalogs/postings, so retained index memory is higher even though live
+updates remain logarithmic.
+The exact accounting, failure behavior, and pre-1.0 rollout procedure are documented in the
+[storage capacity envelope](docs/storage-capacity-limits.md).
 Every query page still contacts every distinct current owner. Moving slots can change that owner set,
 but it does not make a query local or provide a snapshot across partitions. Text search, including
 `StartsWith`, composite indexes, and arbitrary LINQ beyond the documented focused subset are not
@@ -266,10 +278,11 @@ retry rounds independently from legacy result collection. External LINQ provider
 `ISearchableStorageFacetQueryProvider`; the existing async and paging provider interfaces remain
 source and binary independent.
 
-The [bounded query and paging contract](docs/bounded-query-contract.md) is the normative description
-of the implemented work accounting, ordered partition prefix, coordinator merge, continuation
-protection, weak consistency, and rollout rules. Continuations contain no activation-local cursor or
-buffered result state.
+The [1.0 product and query contract](docs/one-zero-contract.md) defines the public product boundary.
+The [bounded query and paging contract](docs/bounded-query-contract.md) provides the normative
+protocol detail for implemented work accounting, ordered partition prefixes, coordinator merge,
+continuation protection, weak consistency, and rollout rules. Continuations contain no
+activation-local cursor or buffered result state.
 
 `FindAsync`, `RangeAsync`, and `ToGrainIdsAsync` remain available as all-results compatibility APIs
 for known-small results. The built-in client implements them by collecting the same bounded pages

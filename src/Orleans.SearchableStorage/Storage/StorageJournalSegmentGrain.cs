@@ -10,6 +10,7 @@ internal sealed class StorageJournalSegmentGrain : Grain, IStorageJournalSegment
     private readonly IPersistentState<StorageJournalSegmentState> _state;
     private readonly Action _requestDeactivation;
     private bool _persistenceOutcomeAmbiguous;
+    private bool _loadedStateInvalid;
 
     public StorageJournalSegmentGrain(
         [PersistentState("journal", SearchableStorageConstants.PhysicalStorageProviderName)]
@@ -40,6 +41,7 @@ internal sealed class StorageJournalSegmentGrain : Grain, IStorageJournalSegment
             committedOperationId,
             absoluteSegmentIndex,
             segmentCapacity);
+        ValidateLoadedState();
 
         var expectedSequence = checked(committedSequence + 1);
         if (entry.Sequence != expectedSequence
@@ -107,12 +109,14 @@ internal sealed class StorageJournalSegmentGrain : Grain, IStorageJournalSegment
         }
 
         candidate.HighestWriterEpoch = Math.Max(candidate.HighestWriterEpoch, entry.WriterEpoch);
+        _ = StorageCapacityGuardrails.ValidateJournalSegment(candidate);
         await PersistAsync(candidate);
     }
 
     public Task<StorageJournalSegmentState> ReadAsync()
     {
         EnsureUsable();
+        ValidateLoadedState();
         return Task.FromResult(_state.State.Copy());
     }
 
@@ -120,6 +124,7 @@ internal sealed class StorageJournalSegmentGrain : Grain, IStorageJournalSegment
     {
         EnsureUsable();
         ArgumentOutOfRangeException.ThrowIfNegative(absoluteSegmentIndex);
+        ValidateLoadedState();
 
         if (!_state.State.Initialized)
         {
@@ -229,6 +234,9 @@ internal sealed class StorageJournalSegmentGrain : Grain, IStorageJournalSegment
         ArgumentOutOfRangeException.ThrowIfNegative(committedSequence);
         ArgumentOutOfRangeException.ThrowIfNegative(absoluteSegmentIndex);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(segmentCapacity);
+        StorageCapacityGuardrails.ValidateJournalSegmentCapacity(
+            segmentCapacity,
+            nameof(segmentCapacity));
 
         if ((committedSequence == 0) != (committedOperationId == Guid.Empty))
         {
@@ -237,7 +245,7 @@ internal sealed class StorageJournalSegmentGrain : Grain, IStorageJournalSegment
                 nameof(committedOperationId));
         }
 
-        StoragePersistenceStateValidation.ValidateJournalEntry(entry, nameof(entry));
+        _ = StorageCapacityGuardrails.ValidateJournalEntry(entry);
 
         var derivedSegmentIndex = StoragePersistence.GetAbsoluteSegmentIndex(entry.Sequence, segmentCapacity);
         if (derivedSegmentIndex != absoluteSegmentIndex)
@@ -267,12 +275,76 @@ internal sealed class StorageJournalSegmentGrain : Grain, IStorageJournalSegment
         }
     }
 
+    private void ValidateLoadedState()
+    {
+        try
+        {
+            ArgumentNullException.ThrowIfNull(_state.State.Entries);
+            _ = StorageCapacityGuardrails.ValidateJournalSegment(_state.State);
+            if (!_state.State.Initialized)
+            {
+                if (_state.State.Tombstoned
+                    || _state.State.Capacity != 0
+                    || _state.State.AbsoluteSegmentIndex != 0
+                    || _state.State.HighestWriterEpoch != 0
+                    || _state.State.Entries.Count != 0)
+                {
+                    throw new InvalidOperationException(
+                        "An uninitialized journal segment contains persisted metadata or entries.");
+                }
+
+                return;
+            }
+
+            if (_state.State.AbsoluteSegmentIndex < 0
+                || _state.State.Capacity < 0
+                || _state.State.HighestWriterEpoch < 0
+                || (_state.State.Capacity == 0) != (_state.State.HighestWriterEpoch == 0))
+            {
+                throw new InvalidOperationException(
+                    "A durable journal segment contains invalid slot metadata.");
+            }
+
+            if (_state.State.Tombstoned)
+            {
+                if (_state.State.Entries.Count != 0)
+                {
+                    throw new InvalidOperationException(
+                        "A retired journal segment cannot retain entries.");
+                }
+
+                return;
+            }
+
+            if (_state.State.Capacity <= 0
+                || _state.State.HighestWriterEpoch <= 0
+                || _state.State.Entries.Count == 0
+                || _state.State.Entries.Count > _state.State.Capacity)
+            {
+                throw new InvalidOperationException(
+                    "A live journal segment contains invalid capacity, epoch, or entries.");
+            }
+        }
+        catch
+        {
+            _loadedStateInvalid = true;
+            _requestDeactivation();
+            throw;
+        }
+    }
+
     private void EnsureUsable()
     {
         if (_persistenceOutcomeAmbiguous)
         {
             throw new InvalidOperationException(
                 "The journal slot activation cannot be reused after an ambiguous persistence write.");
+        }
+
+        if (_loadedStateInvalid)
+        {
+            throw new InvalidOperationException(
+                "The journal slot activation cannot be reused after invalid durable state was observed.");
         }
     }
 }

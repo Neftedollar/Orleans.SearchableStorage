@@ -26,6 +26,8 @@
     <None Include="../../docs/bounded-query-contract.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/live-movement.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/index-schema-lifecycle.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/one-zero-contract.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/storage-capacity-limits.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/testing.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/README.md" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/requests.http" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />

@@ -33,7 +33,7 @@
     "azureBlobContainer": "oss-benchmarks",
     "partitionCount": 4096,
     "virtualSlotTargetCount": 262144,
-    "journalSegmentCapacity": 256,
+    "journalSegmentCapacity": 64,
     "maximumJournalReplayEntries": 4096,
     "compactionThreshold": 2048
   },

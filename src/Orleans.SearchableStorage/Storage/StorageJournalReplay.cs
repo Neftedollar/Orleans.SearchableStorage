@@ -14,11 +14,13 @@ internal static class StorageJournalReplay
         long maximumWriterEpoch,
         HashSet<Guid> recoveredOperationIds,
         ref long nextVersion,
-        ref Guid operationId)
+        ref Guid operationId,
+        StorageCapacityTracker capacity)
     {
         ArgumentNullException.ThrowIfNull(records);
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentNullException.ThrowIfNull(recoveredOperationIds);
+        ArgumentNullException.ThrowIfNull(capacity);
         if (entry.Sequence != expectedSequence
             || entry.WriterEpoch <= 0
             || entry.WriterEpoch > maximumWriterEpoch
@@ -46,6 +48,8 @@ internal static class StorageJournalReplay
                         $"Journal entry {entry.Sequence} does not contain the next record version.");
                 }
 
+                capacity.ValidateProjectedUpsert(records, entry.RecordKey, entry.Record);
+                capacity.ApplyUpsert(records, entry.RecordKey, entry.Record);
                 records[entry.RecordKey] = StoragePersistenceStateCopy.CopyRecord(entry.Record)!;
                 break;
             case StorageJournalOperation.Delete when entry.Record is null:
@@ -63,6 +67,7 @@ internal static class StorageJournalReplay
                         $"Journal entry {entry.Sequence} changes the version during a delete.");
                 }
 
+                capacity.ApplyDelete(records, entry.RecordKey);
                 records.Remove(entry.RecordKey);
                 break;
             case StorageJournalOperation.Reindex when entry.Record is not null:
@@ -80,6 +85,8 @@ internal static class StorageJournalReplay
                         $"Journal entry {entry.Sequence} changes record identity or version during reindexing.");
                 }
 
+                capacity.ValidateProjectedUpsert(records, entry.RecordKey, entry.Record);
+                capacity.ApplyUpsert(records, entry.RecordKey, entry.Record);
                 records[entry.RecordKey] = StoragePersistenceStateCopy.CopyRecord(entry.Record)!;
                 break;
             case StorageJournalOperation.AdvanceVersion when entry.Move is not null:
@@ -91,10 +98,10 @@ internal static class StorageJournalReplay
 
                 break;
             case StorageJournalOperation.Import when entry.Move is not null:
-                ApplyImport(records, entry, nextVersion);
+                ApplyImport(records, entry, nextVersion, capacity);
                 break;
             case StorageJournalOperation.MoveDelete when entry.Move is not null:
-                ApplyMoveDelete(records, entry, nextVersion);
+                ApplyMoveDelete(records, entry, nextVersion, capacity);
                 break;
             default:
                 throw new InvalidOperationException(
@@ -108,7 +115,8 @@ internal static class StorageJournalReplay
     private static void ApplyImport(
         Dictionary<string, StoredRecord> records,
         StorageJournalEntry entry,
-        long nextVersion)
+        long nextVersion,
+        StorageCapacityTracker capacity)
     {
         var move = entry.Move!;
         if (entry.NextVersionAfter != nextVersion
@@ -117,6 +125,8 @@ internal static class StorageJournalReplay
             throw new InvalidOperationException(
                 $"Journal entry {entry.Sequence} imports records before its version fence.");
         }
+
+        capacity.ValidateProjectedImports(records, move.Imports);
 
         foreach (var item in move.Imports)
         {
@@ -135,16 +145,16 @@ internal static class StorageJournalReplay
                     $"Journal entry {entry.Sequence} contains an invalid imported record.");
             }
 
-            records.Add(
-                recordKey,
-                importedRecord);
+            capacity.ApplyUpsert(records, recordKey, importedRecord);
+            records.Add(recordKey, importedRecord);
         }
     }
 
     private static void ApplyMoveDelete(
         Dictionary<string, StoredRecord> records,
         StorageJournalEntry entry,
-        long nextVersion)
+        long nextVersion,
+        StorageCapacityTracker capacity)
     {
         if (entry.NextVersionAfter != nextVersion)
         {
@@ -165,6 +175,7 @@ internal static class StorageJournalReplay
                     $"Journal entry {entry.Sequence} does not match the frozen move record set.");
             }
 
+            capacity.ApplyDelete(records, recordKey);
             records.Remove(recordKey);
         }
     }

@@ -13,6 +13,23 @@ internal static class StorageSnapshotFactory
         IReadOnlyDictionary<string, StoredRecord> records,
         int persistenceFormatVersion = StoragePersistence.PreviousPersistenceFormatVersion)
     {
+        return CreateCore(descriptor, records, persistenceFormatVersion, validateCapacity: true);
+    }
+
+    internal static StorageSnapshotState CreatePrevalidated(
+        StorageSnapshotDescriptor descriptor,
+        IReadOnlyDictionary<string, StoredRecord> records,
+        int persistenceFormatVersion)
+    {
+        return CreateCore(descriptor, records, persistenceFormatVersion, validateCapacity: false);
+    }
+
+    private static StorageSnapshotState CreateCore(
+        StorageSnapshotDescriptor descriptor,
+        IReadOnlyDictionary<string, StoredRecord> records,
+        int persistenceFormatVersion,
+        bool validateCapacity)
+    {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(records);
         if (!StoragePersistence.IsSupportedFormat(persistenceFormatVersion))
@@ -21,6 +38,11 @@ internal static class StorageSnapshotFactory
                 nameof(persistenceFormatVersion),
                 persistenceFormatVersion,
                 "A snapshot can only be created for a supported persistence format.");
+        }
+
+        if (validateCapacity)
+        {
+            _ = StorageCapacityGuardrails.ValidateSnapshotRecords(records);
         }
 
         if (!StoragePersistence.SupportsIndexSchemas(persistenceFormatVersion)
@@ -120,12 +142,7 @@ internal static class StorageSnapshotFactory
                     "A legacy snapshot has mixed payloads or an invalid v3 version boundary.");
             }
 
-            foreach (var (recordKey, record) in snapshot.Records)
-            {
-                ArgumentException.ThrowIfNullOrWhiteSpace(recordKey, nameof(snapshot));
-                StoragePersistenceStateValidation.ValidateRecord(record, nameof(snapshot));
-            }
-
+            _ = StorageCapacityGuardrails.ValidateSnapshotPayload(snapshot);
             return;
         }
 
@@ -141,6 +158,8 @@ internal static class StorageSnapshotFactory
                 "A lossless snapshot cannot also contain legacy records.");
         }
 
+        _ = StorageCapacityGuardrails.ValidateSnapshotPayload(snapshot);
+
         byte[]? previousRecordKey = null;
         foreach (var item in snapshot.LosslessRecords)
         {
@@ -151,8 +170,6 @@ internal static class StorageSnapshotFactory
                 throw new InvalidOperationException(
                     "Lossless snapshot record keys must be strictly increasing in ordinal order.");
             }
-
-            _ = StorageMoveRecordCodec.Decode(item.Record);
             previousRecordKey = item.RecordKey;
         }
     }

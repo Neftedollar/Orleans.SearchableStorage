@@ -198,6 +198,7 @@ public class JournalReplayBenchmarks
         var nextVersion = _snapshot.NextVersion;
         var operationId = _snapshot.OperationId;
         var expectedSequence = checked(_snapshot.Sequence + 1);
+        var capacity = new StorageCapacityTracker(records);
         foreach (var entry in _entries)
         {
             StorageJournalReplay.ApplyEntry(
@@ -207,7 +208,8 @@ public class JournalReplayBenchmarks
                 maximumWriterEpoch: 1,
                 recoveredOperationIds,
                 ref nextVersion,
-                ref operationId);
+                ref operationId,
+                capacity);
             expectedSequence++;
         }
 

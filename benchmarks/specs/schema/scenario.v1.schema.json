@@ -84,8 +84,8 @@
         },
         "partitionCount": { "type": "integer", "minimum": 1, "maximum": 262144 },
         "virtualSlotTargetCount": { "type": "integer", "minimum": 1, "maximum": 262144 },
-        "journalSegmentCapacity": { "type": "integer", "minimum": 1 },
-        "maximumJournalReplayEntries": { "type": "integer", "minimum": 1 },
+        "journalSegmentCapacity": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "maximumJournalReplayEntries": { "type": "integer", "minimum": 1, "maximum": 65536 },
         "compactionThreshold": { "type": "integer", "minimum": 1 }
       }
     },

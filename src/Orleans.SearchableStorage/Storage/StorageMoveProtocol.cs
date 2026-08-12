@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 
 namespace Orleans.SearchableStorage.Storage;
 
@@ -112,6 +114,83 @@ internal static class StorageMovePageDigest
         return checked(GetTextByteCount(record.RecordKey) + GetRecordByteCount(record.Record));
     }
 
+    public static long GetEncodedByteCount(string recordKey, StoredRecord record)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        ArgumentNullException.ThrowIfNull(record);
+        StoragePersistenceStateValidation.ValidateRecord(record, nameof(record));
+        return checked(GetTextEncodedByteCount(recordKey) + GetStoredRecordEncodedByteCount(record));
+    }
+
+    public static long GetEncodedByteCount(
+        string recordKey,
+        GrainId grainId,
+        byte[] payload,
+        string etag,
+        IReadOnlyList<IndexEntry> indexEntries,
+        byte[]? indexSchemaFingerprint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentException.ThrowIfNullOrWhiteSpace(etag);
+        ArgumentNullException.ThrowIfNull(indexEntries);
+        return checked(
+            GetTextEncodedByteCount(recordKey)
+            + sizeof(int) + grainId.Type.AsSpan().Length
+            + sizeof(int) + grainId.Key.AsSpan().Length
+            + sizeof(int) + payload.LongLength
+            + GetTextEncodedByteCount(etag)
+            + sizeof(int)
+            + indexEntries.Sum(GetIndexEntryEncodedByteCount)
+            + (indexSchemaFingerprint is null
+                ? 0
+                : sizeof(byte) + indexSchemaFingerprint.LongLength));
+    }
+
+    public static long GetStoredRecordEncodedByteCount(StoredRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        StoragePersistenceStateValidation.ValidateRecord(record, nameof(record));
+        return checked(
+            sizeof(int) + record.GrainId.Type.AsSpan().Length
+            + sizeof(int) + record.GrainId.Key.AsSpan().Length
+            + sizeof(int) + record.Payload.LongLength
+            + GetTextEncodedByteCount(record.ETag)
+            + sizeof(int)
+            + record.IndexEntries.Sum(GetIndexEntryEncodedByteCount)
+            + (record.IndexSchemaFingerprint is null
+                ? 0
+                : sizeof(byte) + record.IndexSchemaFingerprint.LongLength));
+    }
+
+    public static long GetIndexEntryEncodedByteCount(IndexEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(entry.Scope);
+        ArgumentNullException.ThrowIfNull(entry.Value);
+        return checked(
+            GetTextEncodedByteCount(entry.Scope)
+            + sizeof(int)
+            + GetIndexValueByteCount(entry.Value));
+    }
+
+    public static long GetIndexEntryEncodedByteCount(StorageMoveIndexEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(entry.Scope);
+        ArgumentNullException.ThrowIfNull(entry.Value);
+        return checked(
+            GetTextByteCount(entry.Scope)
+            + sizeof(int)
+            + GetIndexValueByteCount(entry.Value));
+    }
+
+    public static long GetTextEncodedByteCount(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return checked(sizeof(int) + (long)value.Length * sizeof(char));
+    }
+
     public static long GetEncodedByteCount(StorageMoveDeleteRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -162,6 +241,24 @@ internal static class StorageMovePageDigest
             + sizeof(byte)
             + (value.Text is null ? 0 : GetTextByteCount(value.Text))
             + value.PrimitiveBits.LongLength);
+    }
+
+    private static long GetIndexValueByteCount(IndexValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        const int primitiveByteCount =
+            sizeof(long)
+            + sizeof(ulong)
+            + (4 * sizeof(int))
+            + sizeof(long)
+            + sizeof(long)
+            + 16
+            + sizeof(byte);
+        return checked(
+            sizeof(int)
+            + sizeof(byte)
+            + (value.Text is null ? 0 : GetTextEncodedByteCount(value.Text))
+            + primitiveByteCount);
     }
 
     private static long GetTextByteCount(byte[] value)
