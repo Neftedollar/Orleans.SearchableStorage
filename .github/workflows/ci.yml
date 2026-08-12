@@ -53,6 +53,9 @@ jobs:
             -- artifacts/release/public-api.actual.txt
           diff --unified eng/public-api.txt artifacts/release/public-api.actual.txt
 
+      - name: Verify C# source compatibility baselines
+        run: bash eng/validate-source-compat.sh --no-restore
+
       - name: Test
         run: dotnet test Orleans.SearchableStorage.slnx --configuration Release --no-build --no-restore --collect "XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx"
 
@@ -96,6 +99,7 @@ jobs:
             exit 1
           fi
           python3 eng/validate-package.py "${packages[0]}" \
+            --expected-version "1.0.0-rc.1" \
             --expected-commit "$GITHUB_SHA" \
             --canonical-output artifacts/release/package.canonical.json
 

@@ -23,12 +23,31 @@ fi
 release_version=${OSS_RELEASE_PACKAGE_VERSION:-$(python3 - <<'PY'
 import xml.etree.ElementTree as ET
 root = ET.parse("src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj").getroot()
-value = root.findtext(".//VersionPrefix")
-if not value:
-    raise SystemExit("VersionPrefix is missing")
-print(value)
+explicit_version = root.findtext(".//Version")
+if explicit_version:
+    print(explicit_version.strip())
+else:
+    prefix = root.findtext(".//VersionPrefix")
+    if not prefix:
+        raise SystemExit("Version or VersionPrefix is missing")
+    suffix = root.findtext(".//VersionSuffix")
+    print(f"{prefix.strip()}-{suffix.strip()}" if suffix and suffix.strip() else prefix.strip())
 PY
 )}
+
+release_output_directory=${OSS_RELEASE_OUTPUT_DIRECTORY:-}
+release_output_package=
+release_output_manifest=
+if [[ -n "$release_output_directory" ]]; then
+  mkdir -p -- "$release_output_directory"
+  release_output_directory=$(realpath --canonicalize-existing -- "$release_output_directory")
+  release_output_package="$release_output_directory/Orleans.SearchableStorage.$release_version.nupkg"
+  release_output_manifest="$release_output_directory/package.canonical.json"
+  if [[ -e "$release_output_package" || -e "$release_output_manifest" ]]; then
+    echo "Release output already exists; refusing to overwrite $release_output_directory." >&2
+    exit 1
+  fi
+fi
 
 release_temp_dir=$(mktemp -d)
 cleanup_release_temp_dir() {
@@ -74,6 +93,7 @@ if [[ "${OSS_RELEASE_NO_BUILD:-false}" != "true" ]]; then
   dotnet build src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj \
     --configuration Release \
     --no-restore
+  bash eng/validate-source-compat.sh --no-restore
 fi
 
 for ordinal in first second; do
@@ -150,5 +170,12 @@ dotnet build "$consumer" \
   -p:OutputPath="$release_temp_dir/consumer-bin/" \
   -p:RestorePackagesPath="$release_temp_dir/package-cache" \
   -p:SearchableStoragePackageVersion="$release_version"
+
+if [[ -n "$release_output_directory" ]]; then
+  cp -- "$release_input_package" "$release_output_package"
+  cp -- "$release_temp_dir/first.canonical.json" "$release_output_manifest"
+  chmod a-w -- "$release_output_package" "$release_output_manifest"
+  echo "Retained validated package and canonical manifest in $release_output_directory."
+fi
 
 echo "Release dry-run passed for Orleans.SearchableStorage $release_version at $release_commit."

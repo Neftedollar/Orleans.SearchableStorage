@@ -1,0 +1,3 @@
+#nullable enable
+Orleans.SearchableStorage.SourceCompatibility.SourceCompatibilityProbe<T>
+Orleans.SearchableStorage.SourceCompatibility.SourceCompatibilityProbe<T>.SourceCompatibilityProbe() -> void

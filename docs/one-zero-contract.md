@@ -318,6 +318,40 @@ erase a physical provider's ETag, retry, size, latency, backup, retention, or av
 See [physical backend configuration](backends.md) and the
 [testing strategy](testing.md) for the evidence boundary.
 
+## Stable 1.x compatibility and SemVer contract
+
+Stable packages use SemVer 2.0.0. Package, protocol, persistence, schema, codec, token, and work-policy
+versions are independent: a package version never authorizes changing another version or reusing an
+old identity. `1.0.0` establishes the first stable compatibility promise. A prerelease may still
+change the candidate only through an explicit review of every affected baseline and release note;
+there is no implicit waiver for a change made shortly before the stable tag.
+
+The checked-in C# source, compiled API, and compatibility manifests are normative review gates:
+
+- the standard Roslyn public-API baseline freezes public/protected declarations, nullability,
+  overloads, defaults, and constants;
+- the compiler-symbol constraint baseline freezes every generic parameter, including an explicit
+  unconstrained state, so source-only constraint changes cannot disappear from review;
+- the compiled reflection manifest independently freezes runtime/binary metadata;
+- `eng/compatibility-manifest.json` and executable wire/golden tests freeze protocol numbers,
+  numeric identities, and canonical bytes.
+
+The following rules apply after stable 1.0:
+
+| Contract | Patch release | Minor release | Major or new-identity requirement |
+| --- | --- | --- | --- |
+| Public C# API and exceptions | Implementation fixes with identical shipped source/compiled baselines and the same documented failure classification. Exception messages are diagnostic text, not a parsing contract. | Additive, opt-in API and exception types only. New declarations enter the unshipped baselines and must not change existing overload resolution. | Removing, renaming, or changing an existing declaration, constraint, nullability contract, default, public constant, return/result type, documented exception type/properties, or catch behavior is breaking. So is an overload which makes valid source ambiguous or selects another member. |
+| Orleans messages and wire values | No field-ID, numeric-value, or semantic-version change. | An optional append-only field or capability may be added only with a new explicit version/capability gate, old/new executable tests, fail-closed behavior, and documented homogeneous or mixed-version rollout. | Field IDs and enum/opcode numeric values are never reordered or reused. A change that an existing peer can misread requires a new protocol identity and, when same-major interoperation cannot be preserved, a major package version. |
+| Durable formats | Read and recover every acknowledged object written by an earlier 1.x patch/minor. | A new format requires a versioned reader, deterministic adoption/migration, crash/lost-ack coverage, and explicit rollback boundary while every supported prior 1.x object remains readable. | Removing a same-major reader, silently reinterpreting stored bytes, or requiring destructive out-of-band conversion is breaking. A package bump alone is not a storage migration. |
+| Schema fingerprints and codecs | Existing identity and canonical meaning are byte-for-byte unchanged. | A new built-in meaning receives a new schema/fingerprint/codec identity and the normal generation rebuild/adoption path. | An existing identity is never assigned new bytes or semantics, even in a major release; migration uses a new identity. A release which cannot preserve old-state access requires an explicit major migration boundary. |
+| Continuation tokens | Existing tokens for the same layout, generation, query, and work policy remain accepted. A security or correctness emergency may invalidate them only with explicit release notes and the documented restart behavior. | A versioned token/policy family may explicitly reject an older token with the public token exception and restart guidance; it must never parse the old token as new meaning. Tokens are resumability artifacts, not durable state. | Silent reinterpretation or resumption under different query/layout/schema/work semantics is forbidden. Removing promised same-policy resumption outside the stated invalidation boundary is breaking. |
+| Work policy, limits, and accounting | Existing defaults, hard limits, charged units, admission decisions, stop reasons, and continuation bindings are unchanged. | New opt-in policy versions or additive bounded controls are allowed when old behavior remains selectable and protocol/capability tests cover both. | Lowering an accepted public bound, changing a public constant/default, or changing charged meaning under an existing policy version is breaking. A new accounting meaning requires a new policy identity and token binding. |
+
+Dropping a supported target framework or Orleans line is a major change. Adding a separately tested
+provider or supported dependency line is minor and does not imply that every `IGrainStorage`
+implementation is qualified. A patch may narrow undocumented implementation behavior only when the
+documented closed contract, accepted inputs, durable recovery, and error taxonomy remain unchanged.
+
 ## 1.0 change filter
 
 Before the 1.0 release, a change to this candidate contract should answer all of these questions:
@@ -333,5 +367,6 @@ For the bounded membership slice, any future expansion must re-answer the exact 
 public query form, element/null/duplicate semantics, deterministic schema identity, and every
 admission, wire, work, and result bound rather than treating another LINQ shape as equivalent.
 
-After 1.0 is actually released, normal SemVer review decides whether a contract change is
-compatible. Until then, this matrix is the review target, not a substitute for release policy.
+Until 1.0 is actually released, this matrix and the frozen baselines are the review target. After
+the stable tag, the SemVer rules above are the compatibility policy; a green baseline update is
+evidence of an intentional change, not proof that its version classification is compatible.

@@ -5,6 +5,11 @@ Orleans.SearchableStorage follows the engineering conventions used by the .NET a
 ## Development rules
 
 - Use C# and the SDK pinned in `global.json`.
+- The source-compatibility analyzer targets Roslyn 5.6.0, so source builds require the
+  .NET 10.0.3xx SDK feature band pinned by `global.json` (10.0.302 or a later patch selected by
+  its roll-forward policy). Earlier feature bands are unsupported and can report `CS9057` after
+  bypassing SDK selection; install the SDK selected by `global.json` instead of overriding the
+  compiler toolset.
 - Keep all repository-facing text in English, including source comments, documentation, commits, issues, and pull requests.
 - Do not add co-author trailers or AI attribution to commit messages.
 - Keep pull requests focused and route every change through a pull request.
@@ -49,5 +54,10 @@ dotnet test Orleans.SearchableStorage.slnx --no-build --collect "XPlat Code Cove
 python3 eng/validate-doc-links.py
 bash eng/release-dry-run.sh
 ```
+
+Pull requests and `main` must also pass the repository-wide `Security` workflow: Gitleaks scans
+repository history and tracked source, while CodeQL builds and analyzes the C# solution. Do not add
+an allow-list merely to silence a finding; remove the credential, rotate it when real, and narrow any
+false-positive suppression to the exact deterministic fixture.
 
 The same storage contract tests will be exercised against multiple physical Orleans persistence providers. PostgreSQL and Redis are required backends. An object-storage backend, such as Azure Blob Storage or an S3-compatible provider, will be tested on a separately configured integration environment.

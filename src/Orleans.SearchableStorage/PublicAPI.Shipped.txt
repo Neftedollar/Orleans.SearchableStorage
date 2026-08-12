@@ -1,0 +1,385 @@
+#nullable enable
+Orleans.SearchableStorage.ISearchableStorageAdminClient
+Orleans.SearchableStorage.ISearchableStorageAdminClient.AbortMoveAsync(System.Guid moveId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.AdvanceMoveAsync(System.Guid moveId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.EnableMovementAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageLayout!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.ExecuteMoveAsync(System.Guid moveId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.ExecuteRebalanceAsync(int targetPartitionCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageRebalancePlan!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.GetIndexSchemaAsync<TState>(string! stateName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.GetIndexSchemaAsync<TState>(string! stateName, int applicationSchemaVersion, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.GetLayoutAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageLayout?>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.GetMoveAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress?>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.PlanMoveAsync(int slot, int targetPartitionIndex, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.PlanRebalanceAsync(int targetPartitionCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageRebalancePlan!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.RebuildIndexSchemaAsync<TState>(string! stateName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.ISearchableStorageAdminClient.RebuildIndexSchemaAsync<TState>(string! stateName, int applicationSchemaVersion, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.ISearchableStorageAsyncQueryProvider
+Orleans.SearchableStorage.ISearchableStorageAsyncQueryProvider.ExecuteToGrainIdsAsync(System.Linq.Expressions.Expression! expression, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>!>!
+Orleans.SearchableStorage.ISearchableStorageClient
+Orleans.SearchableStorage.ISearchableStorageClient.FindAsync<TState, TValue>(string! stateName, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, TValue value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>!>!
+Orleans.SearchableStorage.ISearchableStorageClient.RangeAsync<TState, TValue>(string! stateName, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, TValue lowerBound, TValue upperBound, bool includeLowerBound = true, bool includeUpperBound = true, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>!>!
+Orleans.SearchableStorage.ISearchableStorageFacetQueryProvider
+Orleans.SearchableStorage.ISearchableStorageFacetQueryProvider.ExecuteDistinctFacetValuePageAsync<TValue>(System.Linq.Expressions.Expression! queryExpression, System.Linq.Expressions.LambdaExpression! propertySelector, Orleans.SearchableStorage.SearchableStorageFacetPageRequest! request, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageDistinctFacetPage<TValue>!>!
+Orleans.SearchableStorage.ISearchableStorageFacetQueryProvider.ExecuteFacetMinMaxAsync<TValue>(System.Linq.Expressions.Expression! queryExpression, System.Linq.Expressions.LambdaExpression! propertySelector, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageFacetMinMax<TValue>?>!
+Orleans.SearchableStorage.ISearchableStorageFacetQueryProvider.ExecuteFacetValueCountsAsync<TValue>(System.Linq.Expressions.Expression! queryExpression, System.Linq.Expressions.LambdaExpression! propertySelector, Orleans.SearchableStorage.SearchableStorageFacetRequest! request, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageFacetResult<TValue>!>!
+Orleans.SearchableStorage.ISearchableStoragePagedQueryProvider
+Orleans.SearchableStorage.ISearchableStoragePagedQueryProvider.ExecuteToGrainIdPageAsync(System.Linq.Expressions.Expression! expression, Orleans.SearchableStorage.SearchableStorageQueryPageRequest! request, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageQueryPage!>!
+Orleans.SearchableStorage.ISearchableStorageQueryClient
+Orleans.SearchableStorage.ISearchableStorageQueryClient.Query<TState>(string! stateName) -> System.Linq.IQueryable<TState>!
+Orleans.SearchableStorage.SearchableIndexAttribute
+Orleans.SearchableStorage.SearchableIndexAttribute.Kind.get -> Orleans.SearchableStorage.SearchableIndexKind
+Orleans.SearchableStorage.SearchableIndexAttribute.Name.get -> string?
+Orleans.SearchableStorage.SearchableIndexAttribute.Name.init -> void
+Orleans.SearchableStorage.SearchableIndexAttribute.SearchableIndexAttribute(Orleans.SearchableStorage.SearchableIndexKind kind) -> void
+Orleans.SearchableStorage.SearchableIndexKind
+Orleans.SearchableStorage.SearchableIndexKind.Hash = 0 -> Orleans.SearchableStorage.SearchableIndexKind
+Orleans.SearchableStorage.SearchableIndexKind.Range = 1 -> Orleans.SearchableStorage.SearchableIndexKind
+Orleans.SearchableStorage.SearchableStorageAdminClient
+Orleans.SearchableStorage.SearchableStorageAdminClient.AbortMoveAsync(System.Guid moveId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.AdvanceMoveAsync(System.Guid moveId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.EnableMovementAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageLayout!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.ExecuteMoveAsync(System.Guid moveId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.ExecuteRebalanceAsync(int targetPartitionCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageRebalancePlan!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.GetIndexSchemaAsync<TState>(string! stateName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.GetIndexSchemaAsync<TState>(string! stateName, int applicationSchemaVersion, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.GetLayoutAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageLayout?>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.GetMoveAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress?>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.PlanMoveAsync(int slot, int targetPartitionIndex, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageSlotMoveProgress!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.PlanRebalanceAsync(int targetPartitionCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageRebalancePlan!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.RebuildIndexSchemaAsync<TState>(string! stateName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.RebuildIndexSchemaAsync<TState>(string! stateName, int applicationSchemaVersion, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus!>!
+Orleans.SearchableStorage.SearchableStorageAdminClient.SearchableStorageAdminClient(Orleans.IGrainFactory! grainFactory, string! providerName, int partitionCount) -> void
+Orleans.SearchableStorage.SearchableStorageAdminClient.SearchableStorageAdminClient(Orleans.IGrainFactory! grainFactory, string! providerName, int partitionCount, Orleans.SearchableStorage.SearchableStorageMovementOptions! movementOptions) -> void
+Orleans.SearchableStorage.SearchableStorageCapacityExceededException
+Orleans.SearchableStorage.SearchableStorageCapacityExceededException.Actual.get -> long
+Orleans.SearchableStorage.SearchableStorageCapacityExceededException.Boundary.get -> string!
+Orleans.SearchableStorage.SearchableStorageCapacityExceededException.Limit.get -> long
+Orleans.SearchableStorage.SearchableStorageCapacityExceededException.SearchableStorageCapacityExceededException() -> void
+Orleans.SearchableStorage.SearchableStorageCapacityExceededException.SearchableStorageCapacityExceededException(string! boundary, long actual, long limit) -> void
+Orleans.SearchableStorage.SearchableStorageCapacityLimits
+Orleans.SearchableStorage.SearchableStorageClient
+Orleans.SearchableStorage.SearchableStorageClient.FindAsync<TState, TValue>(string! stateName, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, TValue value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>!>!
+Orleans.SearchableStorage.SearchableStorageClient.Query<TState>(string! stateName) -> System.Linq.IQueryable<TState>!
+Orleans.SearchableStorage.SearchableStorageClient.RangeAsync<TState, TValue>(string! stateName, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, TValue lowerBound, TValue upperBound, bool includeLowerBound = true, bool includeUpperBound = true, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>!>!
+Orleans.SearchableStorage.SearchableStorageClient.SearchableStorageClient(Orleans.IGrainFactory! grainFactory, string! providerName, int partitionCount) -> void
+Orleans.SearchableStorage.SearchableStorageClient.SearchableStorageClient(Orleans.IGrainFactory! grainFactory, string! providerName, int partitionCount, Orleans.SearchableStorage.SearchableStorageQueryOptions! queryOptions) -> void
+Orleans.SearchableStorage.SearchableStorageClient.SearchableStorageClient(Orleans.IGrainFactory! grainFactory, string! providerName, int partitionCount, Orleans.SearchableStorage.SearchableStorageQueryOptions! queryOptions, Orleans.SearchableStorage.SearchableStorageSchemaRegistry! schemaRegistry) -> void
+Orleans.SearchableStorage.SearchableStorageConstants
+Orleans.SearchableStorage.SearchableStorageContinuationKey
+Orleans.SearchableStorage.SearchableStorageContinuationKey.KeyId.get -> string!
+Orleans.SearchableStorage.SearchableStorageContinuationKey.SearchableStorageContinuationKey(string! keyId, byte[]! keyMaterial) -> void
+Orleans.SearchableStorage.SearchableStorageContinuationProtectionOptions
+Orleans.SearchableStorage.SearchableStorageContinuationProtectionOptions.CurrentKey.get -> Orleans.SearchableStorage.SearchableStorageContinuationKey?
+Orleans.SearchableStorage.SearchableStorageContinuationProtectionOptions.CurrentKey.set -> void
+Orleans.SearchableStorage.SearchableStorageContinuationProtectionOptions.DecryptionKeys.get -> System.Collections.Generic.IList<Orleans.SearchableStorage.SearchableStorageContinuationKey!>!
+Orleans.SearchableStorage.SearchableStorageContinuationProtectionOptions.SearchableStorageContinuationProtectionOptions() -> void
+Orleans.SearchableStorage.SearchableStorageDistinctFacetPage<TValue>
+Orleans.SearchableStorage.SearchableStorageDistinctFacetPage<TValue>.ContinuationToken.get -> string?
+Orleans.SearchableStorage.SearchableStorageDistinctFacetPage<TValue>.Items.get -> System.Collections.Generic.IReadOnlyList<TValue>!
+Orleans.SearchableStorage.SearchableStorageDistinctFacetPage<TValue>.SearchableStorageDistinctFacetPage(System.Collections.Generic.IReadOnlyList<TValue>! items, string? continuationToken) -> void
+Orleans.SearchableStorage.SearchableStorageFacetAccuracy
+Orleans.SearchableStorage.SearchableStorageFacetAccuracy.Approximate = 1 -> Orleans.SearchableStorage.SearchableStorageFacetAccuracy
+Orleans.SearchableStorage.SearchableStorageFacetAccuracy.Exact = 0 -> Orleans.SearchableStorage.SearchableStorageFacetAccuracy
+Orleans.SearchableStorage.SearchableStorageFacetConcurrentChangeException
+Orleans.SearchableStorage.SearchableStorageFacetConcurrentChangeException.SearchableStorageFacetConcurrentChangeException() -> void
+Orleans.SearchableStorage.SearchableStorageFacetConcurrentChangeException.SearchableStorageFacetConcurrentChangeException(string! message, System.Exception! innerException) -> void
+Orleans.SearchableStorage.SearchableStorageFacetMinMax<TValue>
+Orleans.SearchableStorage.SearchableStorageFacetMinMax<TValue>.Maximum.get -> TValue
+Orleans.SearchableStorage.SearchableStorageFacetMinMax<TValue>.Minimum.get -> TValue
+Orleans.SearchableStorage.SearchableStorageFacetMinMax<TValue>.SearchableStorageFacetMinMax(TValue minimum, TValue maximum) -> void
+Orleans.SearchableStorage.SearchableStorageFacetPageRequest
+Orleans.SearchableStorage.SearchableStorageFacetPageRequest.ContinuationToken.get -> string?
+Orleans.SearchableStorage.SearchableStorageFacetPageRequest.PageSize.get -> int
+Orleans.SearchableStorage.SearchableStorageFacetPageRequest.SearchableStorageFacetPageRequest(int pageSize, string? continuationToken = null) -> void
+Orleans.SearchableStorage.SearchableStorageFacetRequest
+Orleans.SearchableStorage.SearchableStorageFacetRequest.Accuracy.get -> Orleans.SearchableStorage.SearchableStorageFacetAccuracy
+Orleans.SearchableStorage.SearchableStorageFacetRequest.SearchableStorageFacetRequest(int topN, Orleans.SearchableStorage.SearchableStorageFacetAccuracy accuracy) -> void
+Orleans.SearchableStorage.SearchableStorageFacetRequest.TopN.get -> int
+Orleans.SearchableStorage.SearchableStorageFacetResult<TValue>
+Orleans.SearchableStorage.SearchableStorageFacetResult<TValue>.IsExact.get -> bool
+Orleans.SearchableStorage.SearchableStorageFacetResult<TValue>.Items.get -> System.Collections.Generic.IReadOnlyList<Orleans.SearchableStorage.SearchableStorageFacetValueCount<TValue>!>!
+Orleans.SearchableStorage.SearchableStorageFacetResult<TValue>.MaximumOmittedCount.get -> long
+Orleans.SearchableStorage.SearchableStorageFacetResult<TValue>.SearchableStorageFacetResult(System.Collections.Generic.IReadOnlyList<Orleans.SearchableStorage.SearchableStorageFacetValueCount<TValue>!>! items, bool isExact, long maximumOmittedCount) -> void
+Orleans.SearchableStorage.SearchableStorageFacetValueCount<TValue>
+Orleans.SearchableStorage.SearchableStorageFacetValueCount<TValue>.Count.get -> long
+Orleans.SearchableStorage.SearchableStorageFacetValueCount<TValue>.SearchableStorageFacetValueCount(TValue value, long count) -> void
+Orleans.SearchableStorage.SearchableStorageFacetValueCount<TValue>.Value.get -> TValue
+Orleans.SearchableStorage.SearchableStorageIndexSchemaException
+Orleans.SearchableStorage.SearchableStorageIndexSchemaException.SearchableStorageIndexSchemaException() -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaException.SearchableStorageIndexSchemaException(string! message) -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaException.SearchableStorageIndexSchemaException(string! message, System.Exception! innerException) -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase
+Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase.ActivatingGeneration = 2 -> Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase
+Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase.EnablingOwners = 0 -> Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase
+Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase.ScanningRecords = 1 -> Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase
+Orleans.SearchableStorage.SearchableStorageIndexSchemaState
+Orleans.SearchableStorage.SearchableStorageIndexSchemaState.Active = 2 -> Orleans.SearchableStorage.SearchableStorageIndexSchemaState
+Orleans.SearchableStorage.SearchableStorageIndexSchemaState.Rebuilding = 1 -> Orleans.SearchableStorage.SearchableStorageIndexSchemaState
+Orleans.SearchableStorage.SearchableStorageIndexSchemaState.Uninitialized = 0 -> Orleans.SearchableStorage.SearchableStorageIndexSchemaState
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.Fingerprint.get -> string?
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.Fingerprint.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.ProcessedRecordCount.get -> long
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.ProcessedRecordCount.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.RebuildId.get -> System.Guid?
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.RebuildId.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.RebuildPhase.get -> Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase?
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.RebuildPhase.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.ScannedOwnerCount.get -> int?
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.ScannedOwnerCount.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.SchemaEnabledOwnerCount.get -> int?
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.SchemaEnabledOwnerCount.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.SearchableStorageIndexSchemaStatus() -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.State.get -> Orleans.SearchableStorage.SearchableStorageIndexSchemaState
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.State.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.StateName.get -> string!
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.StateName.init -> void
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.TotalOwnerCount.get -> int?
+Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus.TotalOwnerCount.init -> void
+Orleans.SearchableStorage.SearchableStorageInvalidContinuationTokenException
+Orleans.SearchableStorage.SearchableStorageInvalidContinuationTokenException.SearchableStorageInvalidContinuationTokenException() -> void
+Orleans.SearchableStorage.SearchableStorageInvalidContinuationTokenException.SearchableStorageInvalidContinuationTokenException(string! message) -> void
+Orleans.SearchableStorage.SearchableStorageInvalidContinuationTokenException.SearchableStorageInvalidContinuationTokenException(string! message, System.Exception! innerException) -> void
+Orleans.SearchableStorage.SearchableStorageLayout
+Orleans.SearchableStorage.SearchableStorageLayout.ActiveMove.get -> Orleans.SearchableStorage.SearchableStorageSlotMoveProgress?
+Orleans.SearchableStorage.SearchableStorageLayout.ActiveMove.init -> void
+Orleans.SearchableStorage.SearchableStorageLayout.Epoch.get -> long
+Orleans.SearchableStorage.SearchableStorageLayout.Epoch.init -> void
+Orleans.SearchableStorage.SearchableStorageLayout.IndexSchemaProtocolVersion.get -> int
+Orleans.SearchableStorage.SearchableStorageLayout.IndexSchemaProtocolVersion.init -> void
+Orleans.SearchableStorage.SearchableStorageLayout.InitialPartitionCount.get -> int
+Orleans.SearchableStorage.SearchableStorageLayout.InitialPartitionCount.init -> void
+Orleans.SearchableStorage.SearchableStorageLayout.MovementProtocolVersion.get -> int
+Orleans.SearchableStorage.SearchableStorageLayout.MovementProtocolVersion.init -> void
+Orleans.SearchableStorage.SearchableStorageLayout.MovementState.get -> Orleans.SearchableStorage.SearchableStorageMovementState
+Orleans.SearchableStorage.SearchableStorageLayout.MovementState.init -> void
+Orleans.SearchableStorage.SearchableStorageLayout.Partitions.get -> System.Collections.Generic.IReadOnlyList<Orleans.SearchableStorage.SearchableStoragePartitionLayout!>!
+Orleans.SearchableStorage.SearchableStorageLayout.Partitions.init -> void
+Orleans.SearchableStorage.SearchableStorageLayout.SearchableStorageLayout() -> void
+Orleans.SearchableStorage.SearchableStorageLayout.VirtualSlotCount.get -> int
+Orleans.SearchableStorage.SearchableStorageLayout.VirtualSlotCount.init -> void
+Orleans.SearchableStorage.SearchableStorageMovementOptions
+Orleans.SearchableStorage.SearchableStorageMovementOptions.SearchableStorageMovementOptions() -> void
+Orleans.SearchableStorage.SearchableStorageMovementOptions.TransferPageByteTarget.get -> int
+Orleans.SearchableStorage.SearchableStorageMovementOptions.TransferPageByteTarget.set -> void
+Orleans.SearchableStorage.SearchableStorageMovementOptions.TransferPageRecordLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageMovementOptions.TransferPageRecordLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageMovementState
+Orleans.SearchableStorage.SearchableStorageMovementState.Disabled = 0 -> Orleans.SearchableStorage.SearchableStorageMovementState
+Orleans.SearchableStorage.SearchableStorageMovementState.Enabled = 2 -> Orleans.SearchableStorage.SearchableStorageMovementState
+Orleans.SearchableStorage.SearchableStorageMovementState.Enabling = 1 -> Orleans.SearchableStorage.SearchableStorageMovementState
+Orleans.SearchableStorage.SearchableStorageOptions
+Orleans.SearchableStorage.SearchableStorageOptions.CompactionThreshold.get -> int
+Orleans.SearchableStorage.SearchableStorageOptions.CompactionThreshold.set -> void
+Orleans.SearchableStorage.SearchableStorageOptions.GrainStorageSerializer.get -> Orleans.Storage.IGrainStorageSerializer!
+Orleans.SearchableStorage.SearchableStorageOptions.GrainStorageSerializer.set -> void
+Orleans.SearchableStorage.SearchableStorageOptions.JournalSegmentCapacity.get -> int
+Orleans.SearchableStorage.SearchableStorageOptions.JournalSegmentCapacity.set -> void
+Orleans.SearchableStorage.SearchableStorageOptions.MaximumJournalReplayEntries.get -> int
+Orleans.SearchableStorage.SearchableStorageOptions.MaximumJournalReplayEntries.set -> void
+Orleans.SearchableStorage.SearchableStorageOptions.Movement.get -> Orleans.SearchableStorage.SearchableStorageMovementOptions!
+Orleans.SearchableStorage.SearchableStorageOptions.PartitionCount.get -> int
+Orleans.SearchableStorage.SearchableStorageOptions.PartitionCount.set -> void
+Orleans.SearchableStorage.SearchableStorageOptions.Query.get -> Orleans.SearchableStorage.SearchableStorageQueryOptions!
+Orleans.SearchableStorage.SearchableStorageOptions.SearchableStorageOptions() -> void
+Orleans.SearchableStorage.SearchableStorageOptions.VirtualSlotTargetCount.get -> int
+Orleans.SearchableStorage.SearchableStorageOptions.VirtualSlotTargetCount.set -> void
+Orleans.SearchableStorage.SearchableStoragePartitionLayout
+Orleans.SearchableStorage.SearchableStoragePartitionLayout.PartitionIndex.get -> int
+Orleans.SearchableStorage.SearchableStoragePartitionLayout.PartitionIndex.init -> void
+Orleans.SearchableStorage.SearchableStoragePartitionLayout.SearchableStoragePartitionLayout() -> void
+Orleans.SearchableStorage.SearchableStoragePartitionLayout.SlotCount.get -> int
+Orleans.SearchableStorage.SearchableStoragePartitionLayout.SlotCount.init -> void
+Orleans.SearchableStorage.SearchableStorageQueryConfigurationException
+Orleans.SearchableStorage.SearchableStorageQueryConfigurationException.SearchableStorageQueryConfigurationException() -> void
+Orleans.SearchableStorage.SearchableStorageQueryConfigurationException.SearchableStorageQueryConfigurationException(string! message) -> void
+Orleans.SearchableStorage.SearchableStorageQueryConfigurationException.SearchableStorageQueryConfigurationException(string! message, System.Exception! innerException) -> void
+Orleans.SearchableStorage.SearchableStorageQueryLimitExceededException
+Orleans.SearchableStorage.SearchableStorageQueryLimitExceededException.SearchableStorageQueryLimitExceededException() -> void
+Orleans.SearchableStorage.SearchableStorageQueryLimitExceededException.SearchableStorageQueryLimitExceededException(string! message) -> void
+Orleans.SearchableStorage.SearchableStorageQueryLimitExceededException.SearchableStorageQueryLimitExceededException(string! message, System.Exception! innerException) -> void
+Orleans.SearchableStorage.SearchableStorageQueryLimits
+Orleans.SearchableStorage.SearchableStorageQueryOptions
+Orleans.SearchableStorage.SearchableStorageQueryOptions.ContinuationProtection.get -> Orleans.SearchableStorage.SearchableStorageContinuationProtectionOptions!
+Orleans.SearchableStorage.SearchableStorageQueryOptions.ContinuationTokenByteLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.ContinuationTokenByteLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.CoordinatorBufferedByteLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.CoordinatorBufferedByteLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.CoordinatorBufferedItemLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.CoordinatorBufferedItemLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetAggregateByteLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetAggregateByteLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetAggregateItemLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetAggregateItemLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetAggregateWorkLimit.get -> long
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetAggregateWorkLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetRoundLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetRoundLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetTopNLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.FacetTopNLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyAggregateWorkLimit.get -> long
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyAggregateWorkLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyResultByteLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyResultByteLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyResultItemLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyResultItemLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyRoundLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.LegacyRoundLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PageByteLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PageByteLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PageSizeLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PageSizeLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PartitionResponseByteLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PartitionResponseByteLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PartitionResponseItemLimit.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PartitionResponseItemLimit.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PartitionWorkBudget.get -> long
+Orleans.SearchableStorage.SearchableStorageQueryOptions.PartitionWorkBudget.set -> void
+Orleans.SearchableStorage.SearchableStorageQueryOptions.SearchableStorageQueryOptions() -> void
+Orleans.SearchableStorage.SearchableStorageQueryPage
+Orleans.SearchableStorage.SearchableStorageQueryPage.ContinuationToken.get -> string?
+Orleans.SearchableStorage.SearchableStorageQueryPage.Items.get -> System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>!
+Orleans.SearchableStorage.SearchableStorageQueryPage.SearchableStorageQueryPage(System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>! items, string? continuationToken) -> void
+Orleans.SearchableStorage.SearchableStorageQueryPageRequest
+Orleans.SearchableStorage.SearchableStorageQueryPageRequest.ContinuationToken.get -> string?
+Orleans.SearchableStorage.SearchableStorageQueryPageRequest.PageSize.get -> int
+Orleans.SearchableStorage.SearchableStorageQueryPageRequest.SearchableStorageQueryPageRequest(int pageSize, string? continuationToken = null) -> void
+Orleans.SearchableStorage.SearchableStorageQueryableExtensions
+Orleans.SearchableStorage.SearchableStorageRebalancePlan
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.ActiveMove.get -> Orleans.SearchableStorage.SearchableStorageSlotMoveProgress?
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.ActiveMove.init -> void
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.Epoch.get -> long
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.Epoch.init -> void
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.NextMove.get -> Orleans.SearchableStorage.SearchableStorageSlotMovePlan?
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.NextMove.init -> void
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.RequiredMoveCount.get -> int
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.RequiredMoveCount.init -> void
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.SearchableStorageRebalancePlan() -> void
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.TargetPartitionCount.get -> int
+Orleans.SearchableStorage.SearchableStorageRebalancePlan.TargetPartitionCount.init -> void
+Orleans.SearchableStorage.SearchableStorageSchemaRegistry
+Orleans.SearchableStorage.SearchableStorageSchemaRegistry.AddState<TState>(string! stateName, int applicationSchemaVersion = 1) -> Orleans.SearchableStorage.SearchableStorageSchemaRegistry!
+Orleans.SearchableStorage.SearchableStorageSchemaRegistry.SearchableStorageSchemaRegistry() -> void
+Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.Aborted = 12 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.Aborting = 10 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.Completed = 11 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.CopyComplete = 4 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.Copying = 3 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.DeletingSource = 8 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.OwnershipCommitted = 5 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.Planned = 0 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.Retiring = 9 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.SourceFrozen = 1 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.SourceVisibilityFenced = 6 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.TargetEnabled = 7 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePhase.TargetVersionFenced = 2 -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan.SearchableStorageSlotMovePlan() -> void
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan.Slot.get -> int
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan.Slot.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan.SourcePartitionIndex.get -> int
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan.SourcePartitionIndex.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan.TargetPartitionIndex.get -> int
+Orleans.SearchableStorage.SearchableStorageSlotMovePlan.TargetPartitionIndex.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.CanAbort.get -> bool
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.CanAbort.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.CurrentEpoch.get -> long
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.CurrentEpoch.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.DeletedByteCount.get -> long
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.DeletedByteCount.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.DeletedRecordCount.get -> long
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.DeletedRecordCount.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.ExportedByteCount.get -> long
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.ExportedByteCount.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.ExportedRecordCount.get -> long
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.ExportedRecordCount.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.IsComplete.get -> bool
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.IsComplete.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.MoveId.get -> System.Guid
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.MoveId.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.Phase.get -> Orleans.SearchableStorage.SearchableStorageSlotMovePhase
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.Phase.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.SearchableStorageSlotMoveProgress() -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.Slot.get -> int
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.Slot.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.SourceEpoch.get -> long
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.SourceEpoch.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.SourcePartitionIndex.get -> int
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.SourcePartitionIndex.init -> void
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.TargetPartitionIndex.get -> int
+Orleans.SearchableStorage.SearchableStorageSlotMoveProgress.TargetPartitionIndex.init -> void
+Orleans.SearchableStorage.SearchableStorageStaleContinuationTokenException
+Orleans.SearchableStorage.SearchableStorageStaleContinuationTokenException.SearchableStorageStaleContinuationTokenException() -> void
+Orleans.SearchableStorage.SearchableStorageStaleContinuationTokenException.SearchableStorageStaleContinuationTokenException(string! message) -> void
+Orleans.SearchableStorage.SearchableStorageStaleContinuationTokenException.SearchableStorageStaleContinuationTokenException(string! message, System.Exception! innerException) -> void
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumGrainKeyBytes = 4096 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumGrainTypeBytes = 1024 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumIndexBytesPerRecord = 524288 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumIndexEntriesPerRecord = 256 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumIndexEntriesPerScope = 64 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumIndexEntryCanonicalBytes = 65536 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumJournalEntryCanonicalBytes = 5242880 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumJournalReplayEntries = 65536 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumJournalSegmentCanonicalBytes = 335544320 -> long
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumJournalSegmentEntries = 64 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumRecordCanonicalBytes = 4980736 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumRecordKeyCanonicalBytes = 16384 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumRecordPayloadBytes = 4194304 -> int
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumSnapshotCanonicalBytes = 536870912 -> long
+const Orleans.SearchableStorage.SearchableStorageCapacityLimits.MaximumSnapshotRecords = 1000000 -> int
+const Orleans.SearchableStorage.SearchableStorageConstants.PhysicalStorageProviderName = "Orleans.SearchableStorage.Physical" -> string!
+const Orleans.SearchableStorage.SearchableStorageMovementOptions.DefaultTransferPageByteTarget = 262144 -> int
+const Orleans.SearchableStorage.SearchableStorageMovementOptions.DefaultTransferPageRecordLimit = 128 -> int
+const Orleans.SearchableStorage.SearchableStorageMovementOptions.MaximumTransferPageByteTarget = 4194304 -> int
+const Orleans.SearchableStorage.SearchableStorageMovementOptions.MaximumTransferPageRecordLimit = 1024 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryLimits.MaximumWhereInValues = 64 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultContinuationTokenBytes = 2048 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultCoordinatorBufferedBytes = 2097152 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultCoordinatorBufferedItems = 8192 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultFacetAggregateBytes = 8388608 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultFacetAggregateItems = 8192 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultFacetAggregateWork = 4194304 -> long
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultFacetRounds = 2048 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultFacetTopN = 128 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultLegacyAggregateWork = 4194304 -> long
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultLegacyResultBytes = 8388608 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultLegacyResultItems = 8192 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultLegacyRounds = 64 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultPageBytes = 1048576 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultPageSize = 128 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultPartitionResponseBytes = 262144 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultPartitionResponseItems = 1024 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.DefaultPartitionWorkBudget = 65536 -> long
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumContinuationTokenBytes = 32768 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumCoordinatorBufferedBytes = 16777216 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumCoordinatorBufferedItems = 65536 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumFacetAggregateBytes = 67108864 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumFacetAggregateItems = 65536 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumFacetAggregateWork = 67108864 -> long
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumFacetRounds = 32768 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumFacetTopN = 1024 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumLegacyAggregateWork = 67108864 -> long
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumLegacyResultBytes = 67108864 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumLegacyResultItems = 100000 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumLegacyRounds = 1024 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumPageBytes = 4194304 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumPageSize = 1024 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumPartitionResponseBytes = 1048576 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumPartitionResponseItems = 4096 -> int
+const Orleans.SearchableStorage.SearchableStorageQueryOptions.MaximumPartitionWorkBudget = 1048576 -> long
+override Orleans.SearchableStorage.SearchableStorageClient.ToString() -> string!
+static Orleans.SearchableStorage.SearchableStorageQueryableExtensions.ToDistinctFacetValuePageAsync<TState, TValue>(this System.Linq.IQueryable<TState>! source, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, Orleans.SearchableStorage.SearchableStorageFacetPageRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageDistinctFacetPage<TValue>!>!
+static Orleans.SearchableStorage.SearchableStorageQueryableExtensions.ToFacetMinMaxAsync<TState, TValue>(this System.Linq.IQueryable<TState>! source, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageFacetMinMax<TValue>?>!
+static Orleans.SearchableStorage.SearchableStorageQueryableExtensions.ToFacetValueCountsAsync<TState, TValue>(this System.Linq.IQueryable<TState>! source, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, Orleans.SearchableStorage.SearchableStorageFacetRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageFacetResult<TValue>!>!
+static Orleans.SearchableStorage.SearchableStorageQueryableExtensions.ToGrainIdPageAsync<TState>(this System.Linq.IQueryable<TState>! source, Orleans.SearchableStorage.SearchableStorageQueryPageRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Orleans.SearchableStorage.SearchableStorageQueryPage!>!
+static Orleans.SearchableStorage.SearchableStorageQueryableExtensions.ToGrainIdsAsync<TState>(this System.Linq.IQueryable<TState>! source, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>!>!
+static Orleans.SearchableStorage.SearchableStorageQueryableExtensions.WhereIn<TState, TValue>(this System.Linq.IQueryable<TState>! source, System.Linq.Expressions.Expression<System.Func<TState, TValue>!>! propertySelector, System.Collections.Generic.IReadOnlyList<TValue>! values) -> System.Linq.IQueryable<TState>!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableGrainStorage(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! providerName, System.Action<Orleans.SearchableStorage.SearchableStorageOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableGrainStorage(this Orleans.Hosting.ISiloBuilder! builder, string! providerName, System.Action<Orleans.SearchableStorage.SearchableStorageOptions!>? configure = null) -> Orleans.Hosting.ISiloBuilder!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableStorageState<TState>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! providerName, string! stateName) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableStorageState<TState>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! providerName, string! stateName, int applicationSchemaVersion) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableStorageState<TState>(this Orleans.Hosting.ISiloBuilder! builder, string! providerName, string! stateName) -> Orleans.Hosting.ISiloBuilder!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableStorageState<TState>(this Orleans.Hosting.ISiloBuilder! builder, string! providerName, string! stateName, int applicationSchemaVersion) -> Orleans.Hosting.ISiloBuilder!

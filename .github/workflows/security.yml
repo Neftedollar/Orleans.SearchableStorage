@@ -1,0 +1,132 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-secret-scan:
+    name: Source secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the pinned Gitleaks CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=8.29.1
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}"
+          expected_sha256=e4eb209d04e20339d77122a3bdf9cd41351255cfb27ebcb75e85325e04f88924
+          install_directory="$RUNNER_TEMP/gitleaks-${version}"
+          mkdir -p "$install_directory"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$RUNNER_TEMP/$archive" "$url"
+          printf '%s  %s\n' "$expected_sha256" "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar --extract --gzip --no-same-owner --file "$RUNNER_TEMP/$archive" \
+            --directory "$install_directory" gitleaks
+          chmod 0555 "$install_directory/gitleaks"
+          "$install_directory/gitleaks" version
+          echo "$install_directory" >> "$GITHUB_PATH"
+
+      - name: Scan the complete reachable repository history
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --is-shallow-repository)" = false
+          gitleaks detect \
+            --source . \
+            --redact \
+            --verbose \
+            --exit-code 2 \
+            --report-format sarif \
+            --report-path "$RUNNER_TEMP/gitleaks.sarif"
+
+  codeql:
+    name: CodeQL C# analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          languages: csharp
+          build-mode: manual
+          queries: security-extended
+
+      - name: Restore
+        run: dotnet restore Orleans.SearchableStorage.slnx
+
+      - name: Build for analysis
+        run: dotnet build Orleans.SearchableStorage.slnx --configuration Release --no-restore
+
+      - name: Analyze
+        id: codeql-analyze
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          category: /language:csharp
+          output: artifacts/codeql
+
+      - name: Reject CodeQL security findings
+        shell: bash
+        env:
+          CODEQL_SARIF_ROOT: ${{ steps.codeql-analyze.outputs.sarif-output }}
+        run: |
+          if [[ -z "$CODEQL_SARIF_ROOT" || ! -d "$CODEQL_SARIF_ROOT" ]]; then
+            echo "CodeQL did not expose a SARIF output directory." >&2
+            exit 1
+          fi
+
+          mapfile -d '' -t sarif_files < <(
+            find "$CODEQL_SARIF_ROOT" -type f -name '*.sarif' -print0
+          )
+          if [[ ${#sarif_files[@]} -eq 0 ]]; then
+            echo "CodeQL produced no SARIF file." >&2
+            exit 1
+          fi
+
+          finding_count=0
+          for sarif in "${sarif_files[@]}"; do
+            jq --exit-status \
+              '(.version == "2.1.0") and ([.runs[]?] | length > 0)' \
+              "$sarif" >/dev/null
+            current_count=$(jq '[.runs[]?.results[]?] | length' "$sarif")
+            finding_count=$((finding_count + current_count))
+          done
+
+          if (( finding_count != 0 )); then
+            echo "CodeQL reported $finding_count security finding(s); review the uploaded alerts." >&2
+            exit 1
+          fi
+
+          echo "CodeQL reported no security findings."

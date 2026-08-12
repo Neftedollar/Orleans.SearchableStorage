@@ -1,0 +1,1 @@
+# Entries added after the 1.0 freeze belong here until the next release.

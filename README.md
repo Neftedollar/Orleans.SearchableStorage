@@ -1,5 +1,11 @@
 # Orleans.SearchableStorage
 
+> [!CAUTION]
+> **Version 1.0.0-rc.1 is NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION.**
+> It is a qualification and integration candidate. Controlled 1,000,000-record provider runs and
+> a full, non-modelled, external/distributed 10,000,000+ record run are still required before a
+> production 1.0 release. See [the release notes](RELEASE_NOTES.md) for the exact evidence status.
+
 Orleans-native persistent grain storage with secondary indexes.
 
 The project is an early vertical slice. It implements an `IGrainStorage` provider whose records and local index entries are owned by Orleans grains and persisted through another Orleans storage provider. Applications continue to use `IPersistentState<T>` and add searchable semantics by marking state properties.
@@ -12,6 +18,9 @@ It does not claim that version 1.0 or its SemVer guarantees have already shipped
 For production and contributor navigation, start with the [operations index](docs/operations.md),
 the [maintainer guide](docs/maintainers.md), and the [release process](docs/release.md). They connect
 the focused product contract to the existing schema, movement, capacity, backend, and query runbooks.
+The [prerelease handoff and qualification boundary](docs/qualification-handoff.md) provides the
+still-open clean-room human worksheet and defines how an exact NuGet package later becomes the target
+of independently reproducible one-million and ten-million-record verification.
 
 ## Current semantics
 

@@ -1,0 +1,4 @@
+# Deterministic 40-hex fake repository commits in benchmark artifact fixtures; not credentials.
+61d04385ebaac0ed97e1a7df3909034af9b35e1a:tests/Orleans.SearchableStorage.Benchmarking.Tests/BenchmarkResultTests.cs:sourcegraph-access-token:21
+61d04385ebaac0ed97e1a7df3909034af9b35e1a:tests/Orleans.SearchableStorage.Benchmarking.Tests/BenchmarkResultTests.cs:sourcegraph-access-token:733
+61d04385ebaac0ed97e1a7df3909034af9b35e1a:tests/Orleans.SearchableStorage.Benchmarking.Tests/BenchmarkResultTests.cs:sourcegraph-access-token:843

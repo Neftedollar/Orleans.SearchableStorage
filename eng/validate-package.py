@@ -22,6 +22,9 @@ from typing import BinaryIO
 
 PACKAGE_ID = "Orleans.SearchableStorage"
 REPOSITORY_URL = "https://github.com/Neftedollar/Orleans.SearchableStorage"
+PACKAGE_DESCRIPTION = "Orleans-native persistent storage with searchable secondary indexes."
+PRERELEASE_WARNING = "NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION."
+PRERELEASE_WARNING_ENTRIES = ("README.md", "RELEASE_NOTES.md")
 REPOSITORY_POLICY = Path(__file__).with_name("nuget-repository-policy.json")
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 GLOBAL_JSON = REPOSITORY_ROOT / "global.json"
@@ -96,6 +99,18 @@ def matches(pattern: str, name: str) -> bool:
     )
 
 
+def is_prerelease(version: str) -> bool:
+    """Return whether a normalized NuGet/SemVer version has a prerelease component."""
+    return "-" in version.split("+", maxsplit=1)[0]
+
+
+def require_prerelease_warning(value: str, surface: str) -> None:
+    if PRERELEASE_WARNING not in value:
+        raise ValueError(
+            f"prerelease {surface} must contain the exact non-production warning"
+        )
+
+
 def validate_nuspec(
     data: bytes,
     expected_version: str | None,
@@ -111,12 +126,23 @@ def validate_nuspec(
         raise ValueError(f"package version {version!r} != expected {expected_version!r}")
     if child_text(metadata, "authors") != "Orleans.SearchableStorage contributors":
         raise ValueError("unexpected package authors")
-    if child_text(metadata, "description") != (
-        "Orleans-native persistent storage with searchable secondary indexes."
-    ):
+    description = child_text(metadata, "description")
+    if is_prerelease(version):
+        require_prerelease_warning(description, "nuspec <description>")
+        if PACKAGE_DESCRIPTION not in description:
+            raise ValueError("prerelease package description must retain the product description")
+    elif description != PACKAGE_DESCRIPTION:
         raise ValueError("unexpected package description")
     if child_text(metadata, "readme") != "README.md":
         raise ValueError("package readme must be README.md")
+    release_notes_element = metadata.find("{*}releaseNotes")
+    release_notes = (
+        (release_notes_element.text or "").strip()
+        if release_notes_element is not None
+        else ""
+    )
+    if is_prerelease(version):
+        require_prerelease_warning(release_notes, "nuspec <releaseNotes>")
 
     license_element = child(metadata, "license")
     if license_element.attrib.get("type") != "expression" or (license_element.text or "").strip() != "MIT":
@@ -154,8 +180,10 @@ def validate_nuspec(
         "id": actual_id,
         "version": version,
         "authors": child_text(metadata, "authors"),
+        "description": description,
         "license": "MIT",
         "readme": child_text(metadata, "readme"),
+        "releaseNotes": release_notes,
         "repository": {
             "type": repository_type,
             "url": repository_url,
@@ -456,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_created = True
         patterns = load_allowlist(args.allowlist)
         canonical_entries: dict[str, dict[str, object]] = {}
+        warning_entry_text: dict[str, str] = {}
         total_bytes = 0
         nuspec_data: bytes | None = None
         signature_seen = False
@@ -524,6 +553,8 @@ def main(argv: list[str] | None = None) -> int:
                     }
                     if name == f"{PACKAGE_ID}.nuspec":
                         nuspec_data = data
+                    if name in PRERELEASE_WARNING_ENTRIES:
+                        warning_entry_text[name] = data.decode("utf-8")
 
                 payload_names = [name for name in names if name != SIGNATURE_ENTRY]
                 unmatched_patterns = [
@@ -542,6 +573,14 @@ def main(argv: list[str] | None = None) -> int:
         if nuspec_data is None:
             raise ValueError("package nuspec was not found")
         metadata = validate_nuspec(nuspec_data, args.expected_version, args.expected_commit)
+        if is_prerelease(str(metadata["version"])):
+            for entry_name in PRERELEASE_WARNING_ENTRIES:
+                if entry_name not in warning_entry_text:
+                    raise ValueError(f"prerelease package is missing {entry_name}")
+                require_prerelease_warning(
+                    warning_entry_text[entry_name],
+                    f"package entry {entry_name}",
+                )
         canonical = {
             "format": "orleans-searchable-storage-package/v1",
             "metadata": metadata,
