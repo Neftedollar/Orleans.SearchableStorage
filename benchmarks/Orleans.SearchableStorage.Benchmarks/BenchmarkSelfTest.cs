@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
+using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Benchmarks;
 
@@ -248,23 +249,27 @@ internal static class BenchmarkSelfTest
         Ensure(longDiagnostics.MinimumGrainKeyLength == 1_024, "long-GrainId fixture length");
         Ensure(longDiagnostics.FirstPage.ItemByteCount > 0, "long-GrainId page-byte accounting");
 
-        var conservativeRange = new QueryPlanEvaluationBenchmarks
+        var selectedWindowRange = new QueryPlanEvaluationBenchmarks
         {
             Dataset = QueryEvaluationDataset.ShortIds64K,
             Distribution = QueryEvaluationDistribution.Uniform,
             Scenario = QueryEvaluationScenario.Range,
             Variant = QueryEvaluationVariant.OrderedMaximumPolicyPartitionPage,
         };
-        conservativeRange.GlobalSetup();
-        var conservativeDiagnostics = conservativeRange.OrderedDiagnostics
-            ?? throw new InvalidOperationException("Conservative range diagnostics were omitted.");
+        selectedWindowRange.GlobalSetup();
+        var selectedWindowDiagnostics = selectedWindowRange.OrderedDiagnostics
+            ?? throw new InvalidOperationException("Selected-window range diagnostics were omitted.");
         Ensure(
-            conservativeDiagnostics.RangeExecutionStrategy
-                == QueryRangeExecutionStrategy.CatalogFallback
-            && conservativeDiagnostics.FirstPage.Work.PostingSeekCount >= 2
-            && conservativeDiagnostics.FirstPage.Work.RangeBucketVisitCount == 0
-            && conservativeDiagnostics.FirstPage.Work.RangeMergeOperationCount == 0,
-            "65K whole-scope range preflight conservatively selects catalog fallback");
+            selectedWindowDiagnostics.RangeExecutionStrategy
+                == QueryRangeExecutionStrategy.OrderedRangeMerge
+            && selectedWindowDiagnostics.FirstPage.AccessPath
+                == PartitionQueryAccessPath.RangeMerge
+            && selectedWindowDiagnostics.FirstPage.Work.RangeBucketVisitCount > 0
+            && selectedWindowDiagnostics.FirstPage.Work.RangeBucketVisitCount
+                < selectedWindowDiagnostics.RecordCount
+            && selectedWindowDiagnostics.FirstPage.Work.RangeMergeOperationCount > 0
+            && selectedWindowDiagnostics.FirstPage.Work.CatalogCandidateVisitCount == 0,
+            "65K narrow range admits its charged selected-window merge");
     }
 
     private static void ValidateQuerySerialization()

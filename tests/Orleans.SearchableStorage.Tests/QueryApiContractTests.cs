@@ -3,9 +3,12 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using AwesomeAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
+using Orleans.Serialization;
 
 namespace Orleans.SearchableStorage.Tests;
 
@@ -177,6 +180,351 @@ public sealed class QueryApiContractTests
     }
 
     [Fact]
+    public void ScalarAccessPathWireValuesAreFrozen()
+    {
+        ((int)PartitionQueryAccessPath.None).Should().Be(0);
+        ((int)PartitionQueryAccessPath.Empty).Should().Be(1);
+        ((int)PartitionQueryAccessPath.ExactPosting).Should().Be(2);
+        ((int)PartitionQueryAccessPath.RangeMerge).Should().Be(3);
+        ((int)PartitionQueryAccessPath.Union).Should().Be(4);
+        ((int)PartitionQueryAccessPath.Catalog).Should().Be(5);
+    }
+
+    [Fact]
+    public void ScalarQueryShapeAdmitsOnlyStructurallyPossibleAccessPaths()
+    {
+        var cases = new (string Name, PartitionQueryPlan Plan, PartitionQueryAccessPath[] Expected)[]
+        {
+            ("empty", Empty(), [PartitionQueryAccessPath.Empty]),
+            ("all", All(), [PartitionQueryAccessPath.Catalog]),
+            ("exact", Exact("a"),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.ExactPosting,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+            ("range", Range("a"),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.RangeMerge,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+            ("exact-only AND", And(Exact("a"), Exact("b")),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.ExactPosting,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+            ("range-only AND", And(Range("a"), Range("b")),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.RangeMerge,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+            ("exact-only OR", Or(Exact("a"), Exact("b")),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.ExactPosting,
+                PartitionQueryAccessPath.Union,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+            ("mixed OR", Or(Exact("a"), Range("b")),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.ExactPosting,
+                PartitionQueryAccessPath.RangeMerge,
+                PartitionQueryAccessPath.Union,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+            ("AND with usable OR", And(Or(Exact("a"), Exact("b")), Range("c")),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.ExactPosting,
+                PartitionQueryAccessPath.RangeMerge,
+                PartitionQueryAccessPath.Union,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+            ("literal empty AND exact", And(Empty(), Exact("a")),
+                [PartitionQueryAccessPath.Empty]),
+            ("literal all OR exact", Or(All(), Exact("a")),
+                [PartitionQueryAccessPath.Catalog]),
+            ("literal empty OR exact", Or(Empty(), Exact("a")),
+            [
+                PartitionQueryAccessPath.Empty,
+                PartitionQueryAccessPath.ExactPosting,
+                PartitionQueryAccessPath.Catalog,
+            ]),
+        };
+
+        foreach (var testCase in cases)
+        {
+            var requirements = QueryResponseRequirements.Create(testCase.Plan);
+            foreach (var accessPath in Enum.GetValues<PartitionQueryAccessPath>())
+            {
+                requirements.Allows(accessPath).Should().Be(
+                    testCase.Expected.Contains(accessPath),
+                    $"query shape '{testCase.Name}' has a closed access-path set");
+            }
+        }
+
+        static PartitionQueryPlan Empty() => new()
+        {
+            Operation = PartitionQueryOperation.Empty,
+        };
+
+        static PartitionQueryPlan All() => new()
+        {
+            Operation = PartitionQueryOperation.All,
+        };
+
+        static PartitionQueryPlan Exact(string value) => new()
+        {
+            Operation = PartitionQueryOperation.Exact,
+            Scope = $"state/value/{value}",
+            IndexKind = SearchableIndexKind.Hash,
+            Value = IndexValue.Create(value),
+        };
+
+        static PartitionQueryPlan Range(string value) => new()
+        {
+            Operation = PartitionQueryOperation.Range,
+            Scope = $"state/range/{value}",
+            LowerBound = IndexValue.Create(0),
+            IncludeLowerBound = true,
+        };
+
+        static PartitionQueryPlan And(PartitionQueryPlan left, PartitionQueryPlan right) => new()
+        {
+            Operation = PartitionQueryOperation.And,
+            Left = left,
+            Right = right,
+        };
+
+        static PartitionQueryPlan Or(PartitionQueryPlan left, PartitionQueryPlan right) => new()
+        {
+            Operation = PartitionQueryOperation.Or,
+            Left = left,
+            Right = right,
+        };
+    }
+
+    [Fact]
+    public void ChargedAndAnalysisPreparationProduceTheSameCanonicalShape()
+    {
+        var plan = CreateAndPlan(
+            CreateExactPlan("z"),
+            CreateAndPlan(
+                CreateOrPlan(CreateRangePlan("range"), CreateExactPlan("a")),
+                CreateAllPlan()));
+        var request = new RoutedPartitionQueryPageRequest
+        {
+            Query = plan,
+            WorkBudget = 100,
+            QueryFingerprint = new byte[32],
+            LayoutFingerprint = new byte[32],
+            StateName = "state",
+        };
+        var work = new PageWorkAccumulator(request.WorkBudget);
+
+        var charged = PreparedScalarQuery.Create(request, ref work);
+        var analysis = PreparedScalarQuery.CreateForAnalysis(plan);
+
+        AssertEquivalent(charged, analysis);
+        work.TotalOperationCount.Should().Be(7);
+        work.Snapshot.PlannerNodeVisitCount.Should().Be(7);
+
+        static void AssertEquivalent(
+            PreparedScalarQuery chargedNode,
+            PreparedScalarQuery analysisNode)
+        {
+            chargedNode.Operation.Should().Be(analysisNode.Operation);
+            chargedNode.CanonicalRank.Should().Be(analysisNode.CanonicalRank);
+            chargedNode.Leaf.Should().BeSameAs(analysisNode.Leaf);
+            chargedNode.Operands.Should().HaveSameCount(analysisNode.Operands);
+            for (var index = 0; index < chargedNode.Operands.Length; index++)
+            {
+                AssertEquivalent(chargedNode.Operands[index], analysisNode.Operands[index]);
+            }
+        }
+    }
+
+    [Fact]
+    public void BooleanEmptyLowerBoundRequiresOneReachableParetoAlternative()
+    {
+        var plan = CreateAndPlan(
+            CreateExactPlan("exact"),
+            CreateOrPlan(CreateRangePlan("left"), CreateRangePlan("right")));
+        var requirements = QueryResponseRequirements.Create(plan);
+
+        requirements.MeetsEmptyPlanningLowerBound(
+            PlanningWork(seek: 1, metadata: 0)).Should().BeFalse();
+        requirements.MeetsEmptyPlanningLowerBound(
+            PlanningWork(seek: 1, metadata: 1)).Should().BeTrue();
+        requirements.MeetsEmptyPlanningLowerBound(
+            PlanningWork(seek: 2, metadata: 0)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void WideOrPlanningLowerBoundIsSpecificToTheReportedAccessPath()
+    {
+        var plan = CreateOrPlan(
+            CreateExactPlan("a"),
+            CreateOrPlan(CreateExactPlan("b"), CreateExactPlan("c")));
+        var requirements = QueryResponseRequirements.Create(plan);
+
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.ExactPosting,
+            PlanningWork(seek: 3, metadata: 3)).Should().BeFalse();
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.ExactPosting,
+            PlanningWork(seek: 4, metadata: 3)).Should().BeTrue();
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.Union,
+            PlanningWork(seek: 4, metadata: 3)).Should().BeFalse();
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.Union,
+            PlanningWork(seek: 5, metadata: 3)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void MixedUnionPlanningLowerBoundIncludesItsActiveRangeBucket()
+    {
+        var plan = CreateOrPlan(CreateExactPlan("exact"), CreateRangePlan("range"));
+        var requirements = QueryResponseRequirements.Create(plan);
+
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.Union,
+            PlanningWork(seek: 4, metadata: 2, rangeBucket: 0)).Should().BeFalse();
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.Union,
+            PlanningWork(seek: 4, metadata: 2, rangeBucket: 1)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void NestedRangeOnlyUnionRequiresTwoActiveRangeBuckets()
+    {
+        var plan = CreateOrPlan(
+            CreateRangePlan("a"),
+            CreateOrPlan(CreateRangePlan("b"), CreateRangePlan("c")));
+        var requirements = QueryResponseRequirements.Create(plan);
+
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.Union,
+            PlanningWork(seek: 5, metadata: 2, rangeBucket: 1)).Should().BeFalse();
+        requirements.MeetsAccessPathPlanningLowerBound(
+            PartitionQueryAccessPath.Union,
+            PlanningWork(seek: 5, metadata: 2, rangeBucket: 2)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void MaterializedMatchMinimumIncludesCanonicalNoMatchPrefix()
+    {
+        var plan = CreateOrPlan(CreateEmptyPlan(), CreateExactPlan("match"));
+        var requirements = QueryResponseRequirements.Create(plan);
+
+        requirements.HasMinimumMaterializedPredicateWork(
+            1,
+            PredicateWork(predicate: 2, indexEntry: 1)).Should().BeFalse();
+        requirements.HasMinimumMaterializedPredicateWork(
+            1,
+            PredicateWork(predicate: 3, indexEntry: 1)).Should().BeTrue();
+    }
+
+    private static PartitionQueryPageWork PlanningWork(
+        long seek,
+        long metadata,
+        long rangeBucket = 0) => new()
+    {
+        PostingSeekCount = seek,
+        PlannerMetadataReadCount = metadata,
+        RangeBucketVisitCount = rangeBucket,
+    };
+
+    private static PartitionQueryPageWork PredicateWork(long predicate, long indexEntry) => new()
+    {
+        PredicateNodeProbeCount = predicate,
+        IndexEntryProbeCount = indexEntry,
+    };
+
+    private static PartitionQueryPlan CreateEmptyPlan() => new()
+    {
+        Operation = PartitionQueryOperation.Empty,
+    };
+
+    private static PartitionQueryPlan CreateAllPlan() => new()
+    {
+        Operation = PartitionQueryOperation.All,
+    };
+
+    private static PartitionQueryPlan CreateExactPlan(string value) => new()
+    {
+        Operation = PartitionQueryOperation.Exact,
+        Scope = $"state/value/{value}",
+        IndexKind = SearchableIndexKind.Hash,
+        Value = IndexValue.Create(value),
+    };
+
+    private static PartitionQueryPlan CreateRangePlan(string value) => new()
+    {
+        Operation = PartitionQueryOperation.Range,
+        Scope = $"state/range/{value}",
+        LowerBound = IndexValue.Create(0),
+        IncludeLowerBound = true,
+    };
+
+    private static PartitionQueryPlan CreateAndPlan(
+        PartitionQueryPlan left,
+        PartitionQueryPlan right) => new()
+    {
+        Operation = PartitionQueryOperation.And,
+        Left = left,
+        Right = right,
+    };
+
+    private static PartitionQueryPlan CreateOrPlan(
+        PartitionQueryPlan left,
+        PartitionQueryPlan right) => new()
+    {
+        Operation = PartitionQueryOperation.Or,
+        Left = left,
+        Right = right,
+    };
+
+    [Fact]
+    public void PartitionQueryPageWorkRoundTripsEveryFieldThroughOrleansSerializer()
+    {
+        using var services = new ServiceCollection()
+            .AddSerializer(builder => builder.AddAssembly(typeof(PartitionQueryPageWork).Assembly))
+            .BuildServiceProvider();
+        var serializer = services.GetRequiredService<Serializer>();
+        var original = new PartitionQueryPageWork
+        {
+            OrderedCandidateVisitCount = 1,
+            RecordProbeCount = 2,
+            PredicateNodeProbeCount = 3,
+            IndexEntryProbeCount = 4,
+            OwnershipProbeCount = 5,
+            PostingSeekCount = 6,
+            RangeBucketVisitCount = 7,
+            ResultMaterializationCount = 8,
+            RangeMergeOperationCount = 9,
+            PlannerNodeVisitCount = 10,
+            PlannerMetadataReadCount = 11,
+            PostingCandidateVisitCount = 12,
+            CatalogCandidateVisitCount = 13,
+            HeapOperationCount = 14,
+            UnionOperationCount = 15,
+            AccessPath = PartitionQueryAccessPath.Union,
+        };
+
+        var payload = serializer.SerializeToArray(original);
+        var copy = serializer.Deserialize<PartitionQueryPageWork>(payload);
+
+        copy.Should().BeEquivalentTo(original);
+        copy.TotalOperationCount.Should().Be(120);
+    }
+
+    [Fact]
     public void VirtualRoutingWireAndLayoutMessagesKeepStableFieldIds()
     {
         typeof(IStorageLayoutGrain)
@@ -264,7 +612,14 @@ public sealed class QueryApiContractTests
             (nameof(PartitionQueryPageWork.PostingSeekCount), 5),
             (nameof(PartitionQueryPageWork.RangeBucketVisitCount), 6),
             (nameof(PartitionQueryPageWork.ResultMaterializationCount), 7),
-            (nameof(PartitionQueryPageWork.RangeMergeOperationCount), 8));
+            (nameof(PartitionQueryPageWork.RangeMergeOperationCount), 8),
+            (nameof(PartitionQueryPageWork.PlannerNodeVisitCount), 9),
+            (nameof(PartitionQueryPageWork.PlannerMetadataReadCount), 10),
+            (nameof(PartitionQueryPageWork.PostingCandidateVisitCount), 11),
+            (nameof(PartitionQueryPageWork.CatalogCandidateVisitCount), 12),
+            (nameof(PartitionQueryPageWork.HeapOperationCount), 13),
+            (nameof(PartitionQueryPageWork.UnionOperationCount), 14),
+            (nameof(PartitionQueryPageWork.AccessPath), 15));
         AssertFieldIds<PartitionQueryBudgetTooSmallException>(
             (nameof(PartitionQueryBudgetTooSmallException.RequestedLimit), 0),
             (nameof(PartitionQueryBudgetTooSmallException.MinimumRequired), 1),

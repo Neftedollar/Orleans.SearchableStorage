@@ -17,18 +17,16 @@ public sealed class ContinuationTokenCodecTests
     private static readonly byte[] NewMaterial = SHA256.HashData("new secret"u8);
 
     [Fact]
-    public void CapturedPr14V1GrainIdTokenRemainsDecodable()
+    public void CapturedVersionOneWorkPolicyTokenFailsClosedAfterPolicyBump()
     {
         const string capturedToken =
             "AAAAAQAAAAEAAAAHY3VycmVudMfuhzQ6VBL6HqXT3wAAAMl28Tm577txN9R0FMJ76Cjof9pStuYR280I3XkxqXU8Ag_6AouNhd4jKrzeJ8l6O83_d0ChJ-dvrfe4hh8ipli4FXrsTi4eJ2nzPsxY1PuBmIdSioEbLEGWxekSlo2xBIc3eARbUx3Z4jrpmRSNvy244qrAt1aTocZC-J8SFh7X-yYlTegblznGxeUvQWuX45xGk3-chCB77Y4rUKz8I3p-46R9xDKfr1wY9Is3A0LWMbkOLc4XYMK40hNrlrxvzoz4f9VPLPpgY0B56qnnTkANBtkoV7g5utqt";
         var codec = CreateCodec("current", CurrentMaterial);
         var binding = CreateBinding();
 
-        var decoded = codec.Unprotect(capturedToken, binding);
+        Action decode = () => _ = codec.Unprotect(capturedToken, binding);
 
-        decoded.ResponseFamily.Should().Be(PartitionQueryResponseFamily.GrainIdPage);
-        decoded.After.Should().Be(GrainId.Create("pr14-frontier", "captured-v1"));
-        decoded.AfterFacetValue.Should().BeNull();
+        AssertInvalid(decode);
     }
 
     [Fact]
@@ -258,6 +256,28 @@ public sealed class ContinuationTokenCodecTests
             ProviderName,
             CurrentMaterial,
             plaintext => MutateProtocolField(plaintext, field));
+
+        Action decode = () => _ = codec.Unprotect(altered, binding);
+
+        AssertInvalid(decode);
+    }
+
+    [Fact]
+    public void AuthenticatedVersionOneGrainPageWorkPolicyFailsClosed()
+    {
+        QueryProtocol.WorkPolicyVersion.Should().Be(2);
+        var codec = CreateCodec("current", CurrentMaterial);
+        var binding = CreateBinding();
+        var token = codec.Protect(
+            new ContinuationTokenPayload(binding, GrainId.Create("paging", "after")));
+        var altered = ReprotectAuthenticatedPlaintext(
+            token,
+            ProviderName,
+            CurrentMaterial,
+            plaintext => MutateProtocolField(
+                plaintext,
+                AuthenticatedField.WorkPolicyVersion,
+                replacement: 1));
 
         Action decode = () => _ = codec.Unprotect(altered, binding);
 
@@ -522,7 +542,10 @@ public sealed class ContinuationTokenCodecTests
         return Base64UrlEncode(writer.WrittenSpan);
     }
 
-    private static byte[] MutateProtocolField(byte[] plaintext, AuthenticatedField field)
+    private static byte[] MutateProtocolField(
+        byte[] plaintext,
+        AuthenticatedField field,
+        int? replacement = null)
     {
         var providerLength = BinaryPrimitives.ReadInt32BigEndian(plaintext.AsSpan(8, sizeof(int)));
         var familyOffset = 12 + providerLength;
@@ -547,7 +570,11 @@ public sealed class ContinuationTokenCodecTests
             AuthenticatedField.WorkPolicyVersion => workPolicyOffset,
             _ => throw new ArgumentOutOfRangeException(nameof(field)),
         };
-        BinaryPrimitives.WriteInt32BigEndian(plaintext.AsSpan(offset, sizeof(int)), 2);
+        var value = replacement
+            ?? (field == AuthenticatedField.WorkPolicyVersion
+                ? checked(QueryProtocol.WorkPolicyVersion + 1)
+                : 2);
+        BinaryPrimitives.WriteInt32BigEndian(plaintext.AsSpan(offset, sizeof(int)), value);
         return plaintext;
     }
 

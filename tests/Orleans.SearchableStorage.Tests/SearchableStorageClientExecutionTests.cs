@@ -706,12 +706,29 @@ public sealed class SearchableStorageClientExecutionTests
                 .Distinct(GrainIdCanonicalOrder.EqualityComparer)
                 .Order(GrainIdCanonicalOrder.Comparer)
                 .ToArray();
+            var minimumMatch = QueryResponseRequirements
+                .Create(request.Query)
+                .MinimumCombinedMatchWork;
             return new PartitionQueryPageResult
             {
                 Items = items,
                 Exhausted = true,
                 StopReason = PartitionQueryPageStopReason.Exhausted,
-                Work = new PartitionQueryPageWork(),
+                Work = new PartitionQueryPageWork
+                {
+                    OrderedCandidateVisitCount = items.Length,
+                    RecordProbeCount = items.Length,
+                    PredicateNodeProbeCount = checked(
+                        items.LongLength * minimumMatch.PredicateNodeCount),
+                    IndexEntryProbeCount = checked(
+                        items.LongLength * minimumMatch.IndexEntryCount),
+                    OwnershipProbeCount = items.Length,
+                    PostingSeekCount = 1,
+                    ResultMaterializationCount = items.Length,
+                    PlannerNodeVisitCount = CountQueryNodes(request.Query),
+                    CatalogCandidateVisitCount = items.Length,
+                    AccessPath = PartitionQueryAccessPath.Catalog,
+                },
                 ItemByteCount = items.Sum(GrainIdCanonicalOrder.GetEncodedLength),
                 ProtocolVersion = request.ProtocolVersion,
                 OrderingVersion = request.OrderingVersion,
@@ -722,6 +739,13 @@ public sealed class SearchableStorageClientExecutionTests
                 LayoutFormatVersion = request.LayoutFormatVersion,
                 LayoutFingerprint = [.. request.LayoutFingerprint],
             };
+        }
+
+        private static int CountQueryNodes(PartitionQueryPlan query)
+        {
+            return query.Operation is PartitionQueryOperation.And or PartitionQueryOperation.Or
+                ? checked(1 + CountQueryNodes(query.Left!) + CountQueryNodes(query.Right!))
+                : 1;
         }
     }
 }

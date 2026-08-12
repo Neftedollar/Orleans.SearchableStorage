@@ -59,6 +59,8 @@ public sealed class SearchableStoragePagingCoordinatorTests
     {
         var firstFrontier = CreateId("b");
         var secondFrontier = CreateId("c");
+        var options = CreateOptions();
+        options.PartitionWorkBudget = 5;
         var owner0 = new PagePartition(request => Task.FromResult(request.HasAfter
             ? Result(request, [], exhausted: true)
             : Result(request, [], frontier: firstFrontier)));
@@ -67,7 +69,8 @@ public sealed class SearchableStoragePagingCoordinatorTests
             : Result(request, [], frontier: secondFrontier)));
         var client = CreateClient(
             CreateLayout(epoch: 1, 0, 1),
-            new Dictionary<int, PagePartition> { [0] = owner0, [1] = owner1 });
+            new Dictionary<int, PagePartition> { [0] = owner0, [1] = owner1 },
+            options);
         var query = CreateQuery(client);
 
         var page1 = await query.ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
@@ -317,6 +320,8 @@ public sealed class SearchableStoragePagingCoordinatorTests
         var layout = CreateLayout(epoch: 1, 0);
         var loadCount = 0;
         var frontier = CreateId("frontier");
+        var options = CreateOptions();
+        options.PartitionWorkBudget = 5;
         var partition = new PagePartition(request => request.HasAfter
             ? Task.FromException<PartitionQueryPageResult>(
                 CreateMismatch(request.Epoch, currentEpoch: 2, requestedOwner: 0))
@@ -327,7 +332,8 @@ public sealed class SearchableStoragePagingCoordinatorTests
                 Interlocked.Increment(ref loadCount);
                 return Task.FromResult<StorageLayoutSnapshot?>(layout);
             }),
-            new Dictionary<int, PagePartition> { [0] = partition });
+            new Dictionary<int, PagePartition> { [0] = partition },
+            options);
         var query = CreateQuery(client);
         var first = await query.ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
 
@@ -446,19 +452,31 @@ public sealed class SearchableStoragePagingCoordinatorTests
     [InlineData("range-bucket")]
     [InlineData("materialization")]
     [InlineData("range-merge")]
+    [InlineData("planner-node")]
+    [InlineData("planner-metadata")]
+    [InlineData("posting-candidate")]
+    [InlineData("catalog-candidate")]
+    [InlineData("heap")]
+    [InlineData("union")]
     public async Task NegativeWorkComponentCannotBeHiddenByAPositiveComponent(string component)
     {
         var work = component switch
         {
-            "candidate" => new PartitionQueryPageWork { OrderedCandidateVisitCount = -1 },
-            "record" => new PartitionQueryPageWork { RecordProbeCount = -1 },
-            "predicate" => new PartitionQueryPageWork { PredicateNodeProbeCount = -1 },
-            "entry" => new PartitionQueryPageWork { IndexEntryProbeCount = -1 },
-            "ownership" => new PartitionQueryPageWork { OwnershipProbeCount = -1 },
-            "seek" => new PartitionQueryPageWork { PostingSeekCount = -1 },
-            "range-bucket" => new PartitionQueryPageWork { RangeBucketVisitCount = -1 },
-            "materialization" => new PartitionQueryPageWork { ResultMaterializationCount = -1 },
-            "range-merge" => new PartitionQueryPageWork { RangeMergeOperationCount = -1 },
+            "candidate" => WorkWith(orderedCandidate: -1),
+            "record" => WorkWith(record: -1),
+            "predicate" => WorkWith(predicate: -1),
+            "entry" => WorkWith(entry: -1),
+            "ownership" => WorkWith(ownership: -1),
+            "seek" => WorkWith(seek: -1),
+            "range-bucket" => WorkWith(rangeBucket: -1),
+            "materialization" => WorkWith(materialization: -1),
+            "range-merge" => WorkWith(rangeMerge: -1),
+            "planner-node" => WorkWith(plannerNode: -1),
+            "planner-metadata" => WorkWith(plannerMetadata: -1),
+            "posting-candidate" => WorkWith(postingCandidate: -1),
+            "catalog-candidate" => WorkWith(catalogCandidate: -1),
+            "heap" => WorkWith(heap: -1),
+            "union" => WorkWith(union: -1),
             _ => throw new ArgumentOutOfRangeException(nameof(component)),
         };
         var partition = new PagePartition(request => Task.FromResult(
@@ -472,6 +490,1049 @@ public sealed class SearchableStoragePagingCoordinatorTests
 
         await execute.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*effective response policy*");
+    }
+
+    [Theory]
+    [InlineData((int)PartitionQueryAccessPath.None)]
+    [InlineData(int.MaxValue)]
+    public async Task InvalidScalarAccessPathFailsClosed(int rawAccessPath)
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: new PartitionQueryPageWork
+            {
+                AccessPath = (PartitionQueryAccessPath)rawAccessPath,
+            })));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*invalid scalar access path*");
+    }
+
+    [Fact]
+    public async Task ScalarAccessPathWhichContradictsItsWorkEvidenceFailsClosed()
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: new PartitionQueryPageWork
+            {
+                AccessPath = PartitionQueryAccessPath.ExactPosting,
+                CatalogCandidateVisitCount = 1,
+                PostingSeekCount = 2,
+                PlannerNodeVisitCount = 1,
+                PlannerMetadataReadCount = 1,
+            })));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData("exact-source")]
+    [InlineData("range-source")]
+    [InlineData("range-heap")]
+    [InlineData("range-merge")]
+    [InlineData("union-source")]
+    [InlineData("union-operation")]
+    [InlineData("catalog-source")]
+    public async Task ScalarAccessPathRejectsUnderreportedSourceWork(string evidence)
+    {
+        var work = evidence switch
+        {
+            "exact-source" => WorkWith(
+                orderedCandidate: 1,
+                ownership: 1,
+                seek: 2,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                accessPath: PartitionQueryAccessPath.ExactPosting),
+            "range-source" => WorkWith(
+                orderedCandidate: 1,
+                ownership: 1,
+                seek: 2,
+                rangeBucket: 1,
+                rangeMerge: 1,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                heap: 1,
+                accessPath: PartitionQueryAccessPath.RangeMerge),
+            "range-heap" => WorkWith(
+                orderedCandidate: 1,
+                ownership: 1,
+                seek: 2,
+                rangeBucket: 1,
+                rangeMerge: 1,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                postingCandidate: 1,
+                accessPath: PartitionQueryAccessPath.RangeMerge),
+            "range-merge" => WorkWith(
+                orderedCandidate: 1,
+                ownership: 1,
+                seek: 2,
+                rangeBucket: 1,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                postingCandidate: 1,
+                heap: 1,
+                accessPath: PartitionQueryAccessPath.RangeMerge),
+            "union-source" => WorkWith(
+                orderedCandidate: 1,
+                ownership: 1,
+                seek: 4,
+                plannerNode: 3,
+                plannerMetadata: 2,
+                union: 1,
+                accessPath: PartitionQueryAccessPath.Union),
+            "union-operation" => WorkWith(
+                orderedCandidate: 1,
+                ownership: 1,
+                seek: 4,
+                plannerNode: 3,
+                plannerMetadata: 2,
+                postingCandidate: 1,
+                accessPath: PartitionQueryAccessPath.Union),
+            "catalog-source" => WorkWith(
+                orderedCandidate: 1,
+                ownership: 1,
+                plannerNode: 3),
+            _ => throw new ArgumentOutOfRangeException(nameof(evidence)),
+        };
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: work)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateBooleanQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    [InlineData(true, 4)]
+    public async Task PlannerNodeVisitsMustEqualTheWirePlanNodeCount(
+        bool useBooleanQuery,
+        long reportedNodeCount)
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: CreateZeroCandidateWork(
+                PartitionQueryAccessPath.Catalog,
+                reportedNodeCount))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+        var query = useBooleanQuery ? CreateBooleanQuery(client) : CreateQuery(client);
+
+        Func<Task> execute = async () => await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData("catalog-seek")]
+    [InlineData("exact-seek")]
+    [InlineData("exact-metadata")]
+    [InlineData("range-seek")]
+    [InlineData("range-metadata")]
+    [InlineData("range-bucket")]
+    [InlineData("union-seek")]
+    [InlineData("union-metadata")]
+    public async Task ScalarAccessPathRejectsUnderreportedVersionTwoMinimums(
+        string evidence)
+    {
+        var work = evidence switch
+        {
+            "catalog-seek" => WorkWith(seek: 0, plannerNode: 3),
+            "exact-seek" => WorkWith(
+                seek: 1,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                accessPath: PartitionQueryAccessPath.ExactPosting),
+            "exact-metadata" => WorkWith(
+                seek: 2,
+                plannerNode: 3,
+                plannerMetadata: 0,
+                accessPath: PartitionQueryAccessPath.ExactPosting),
+            "range-seek" => WorkWith(
+                seek: 1,
+                rangeBucket: 1,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                accessPath: PartitionQueryAccessPath.RangeMerge),
+            "range-metadata" => WorkWith(
+                seek: 2,
+                rangeBucket: 1,
+                plannerNode: 3,
+                plannerMetadata: 0,
+                accessPath: PartitionQueryAccessPath.RangeMerge),
+            "range-bucket" => WorkWith(
+                seek: 2,
+                rangeBucket: 0,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                accessPath: PartitionQueryAccessPath.RangeMerge),
+            "union-seek" => WorkWith(
+                seek: 3,
+                plannerNode: 3,
+                plannerMetadata: 2,
+                accessPath: PartitionQueryAccessPath.Union),
+            "union-metadata" => WorkWith(
+                seek: 4,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                accessPath: PartitionQueryAccessPath.Union),
+            _ => throw new ArgumentOutOfRangeException(nameof(evidence)),
+        };
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: work)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateBooleanQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResumedMixedUnionPlanningLowerBoundRequiresItsRangeBucketVisit(
+        bool reportRangeBucket)
+    {
+        var firstItem = CreateId($"mixed-union-bucket-{reportRangeBucket}");
+        var partition = new PagePartition(request => Task.FromResult(request.HasAfter
+            ? Result(
+                request,
+                [],
+                exhausted: true,
+                work: WorkWith(
+                    seek: 4,
+                    rangeBucket: reportRangeBucket ? 1 : 0,
+                    plannerNode: 3,
+                    plannerMetadata: 2,
+                    accessPath: PartitionQueryAccessPath.Union))
+            : Result(
+                request,
+                [firstItem],
+                frontier: firstItem,
+                work: WorkWith(
+                    orderedCandidate: 1,
+                    record: 1,
+                    predicate: 2,
+                    entry: 1,
+                    ownership: 1,
+                    materialization: 1,
+                    plannerNode: 3,
+                    catalogCandidate: 1))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+        var query = CreateMixedBooleanQuery(client);
+        var first = await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(10));
+
+        if (reportRangeBucket)
+        {
+            var page = await query.ToGrainIdPageAsync(
+                new SearchableStorageQueryPageRequest(10, first.ContinuationToken));
+
+            page.Items.Should().BeEmpty();
+            page.ContinuationToken.Should().BeNull();
+            return;
+        }
+
+        Func<Task> execute = async () => await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(10, first.ContinuationToken));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData((int)PartitionQueryAccessPath.RangeMerge)]
+    [InlineData((int)PartitionQueryAccessPath.Union)]
+    public async Task ExactRootRejectsAnIncompatibleScalarAccessPath(int rawAccessPath)
+    {
+        var accessPath = (PartitionQueryAccessPath)rawAccessPath;
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: CreateZeroCandidateWork(accessPath))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData((int)PartitionQueryAccessPath.Empty)]
+    [InlineData((int)PartitionQueryAccessPath.Catalog)]
+    public async Task ExactRootAcceptsFirstPageNonSelectiveZeroCandidateAccessPaths(
+        int rawAccessPath)
+    {
+        var accessPath = (PartitionQueryAccessPath)rawAccessPath;
+        var work = accessPath == PartitionQueryAccessPath.Empty
+            ? WorkWith(
+                plannerMetadata: 1,
+                accessPath: PartitionQueryAccessPath.Empty)
+            : CreateZeroCandidateWork(accessPath);
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: work)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        var page = await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        page.Items.Should().BeEmpty();
+        page.ContinuationToken.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("seek")]
+    [InlineData("metadata")]
+    public async Task ExactEmptyProofRequiresItsLookupAndMetadataCharges(string missing)
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: WorkWith(
+                seek: missing == "seek" ? 0 : 1,
+                plannerMetadata: missing == "metadata" ? 0 : 1,
+                accessPath: PartitionQueryAccessPath.Empty))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task RangeRootRejectsAnExactPostingAccessPath()
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: CreateZeroCandidateWork(PartitionQueryAccessPath.ExactPosting))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await client.RangeAsync<PagingState, int>(
+            "state",
+            state => state.Rank,
+            0,
+            10);
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task RangeEmptyProofRequiresAChargedLookup()
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: WorkWith(
+                seek: 0,
+                accessPath: PartitionQueryAccessPath.Empty))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await client.RangeAsync<PagingState, int>(
+            "state",
+            state => state.Rank,
+            0,
+            10);
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task RangeRootAcceptsAChargedEmptyProof()
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: WorkWith(accessPath: PartitionQueryAccessPath.Empty))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        var result = await client.RangeAsync<PagingState, int>(
+            "state",
+            state => state.Rank,
+            0,
+            10);
+
+        result.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("record-without-ownership")]
+    [InlineData("predicate-without-record")]
+    [InlineData("index-entry-without-predicate")]
+    public async Task ScalarWorkRejectsMissingPrerequisiteCharges(string evidence)
+    {
+        var work = evidence switch
+        {
+            "record-without-ownership" => WorkWith(
+                record: 1,
+                predicate: 1),
+            "predicate-without-record" => WorkWith(
+                orderedCandidate: 1,
+                predicate: 1,
+                ownership: 1,
+                catalogCandidate: 1),
+            "index-entry-without-predicate" => WorkWith(entry: 1),
+            _ => throw new ArgumentOutOfRangeException(nameof(evidence)),
+        };
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: work)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task FrontierRequiresCompletedOwnershipEvidence()
+    {
+        var frontier = CreateId("frontier-without-ownership");
+        var options = CreateOptions();
+        options.PartitionWorkBudget = 2;
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            frontier: frontier,
+            work: WorkWith())));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition },
+            options);
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task ResumedPostingSourceVisitRequiresAnOrderedCandidate()
+    {
+        var firstItem = CreateId("posting-source-resume");
+        var partition = new PagePartition(request => Task.FromResult(request.HasAfter
+            ? Result(
+                request,
+                [],
+                exhausted: true,
+                work: WorkWith(
+                    seek: 2,
+                    plannerMetadata: 1,
+                    postingCandidate: 1,
+                    accessPath: PartitionQueryAccessPath.ExactPosting))
+            : Result(
+                request,
+                [firstItem],
+                frontier: firstItem)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+        var query = CreateQuery(client);
+        var first = await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(10));
+
+        Func<Task> resume = async () => await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(10, first.ContinuationToken));
+
+        await resume.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task ExhaustedCatalogSourceVisitRequiresAnOrderedCandidate()
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: WorkWith(catalogCandidate: 1))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExactAndRangeItemsRequireAtLeastOneIndexProbePerResult(
+        bool useRangeRoot)
+    {
+        var item = CreateId(useRangeRoot ? "range-without-index-probe" : "exact-without-index-probe");
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [item],
+            exhausted: true,
+            work: WorkWith(
+                orderedCandidate: 1,
+                record: 1,
+                predicate: 1,
+                ownership: 1,
+                materialization: 1,
+                catalogCandidate: 1))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = useRangeRoot
+            ? async () => await client.RangeAsync<PagingState, int>(
+                "state",
+                state => state.Rank,
+                0,
+                10)
+            : async () => await CreateQuery(client)
+                .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task CheckedWorkSumOverflowFailsClosedAsCoordinatorAccounting()
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: WorkWith(
+                orderedCandidate: long.MaxValue,
+                record: 1))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        var failure = (await execute.Should().ThrowAsync<InvalidOperationException>())
+            .Which;
+        failure.Message.Should().Contain("overflowed coordinator accounting");
+        failure.InnerException.Should().BeOfType<OverflowException>();
+    }
+
+    [Fact]
+    public async Task WorkBudgetStopMustConsumeTheRequestedPartitionBudget()
+    {
+        var frontier = CreateId("underreported-work-budget");
+        var options = CreateOptions();
+        options.PartitionWorkBudget = 6;
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            frontier: frontier,
+            work: CreateValidCatalogWork(itemCount: 0, hasCompletedFrontier: true),
+            stopReason: PartitionQueryPageStopReason.WorkBudget)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition },
+            options);
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task ItemLimitStopMustReturnTheConfiguredNumberOfItems()
+    {
+        var item = CreateId("underreported-item-limit");
+        var options = CreateOptions();
+        options.PartitionResponseItemLimit = 2;
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [item],
+            frontier: item,
+            stopReason: PartitionQueryPageStopReason.ItemLimit)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition },
+            options);
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task ByteLimitStopCannotReturnAnEmptyItemPrefix()
+    {
+        var frontier = CreateId("impossible-empty-byte-limit");
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            frontier: frontier,
+            stopReason: PartitionQueryPageStopReason.ByteLimit)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task BooleanMaterializationIncludesTheBooleanRootPredicateCharge()
+    {
+        var item = CreateId("underreported-boolean-root");
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [item],
+            exhausted: true,
+            work: WorkWith(
+                orderedCandidate: 1,
+                record: 1,
+                predicate: 1,
+                entry: 1,
+                ownership: 1,
+                materialization: 1,
+                plannerNode: 3,
+                catalogCandidate: 1))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateBooleanQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task ResultMaterializationCountMustEqualReturnedItemCount(
+        long reportedMaterializationCount)
+    {
+        var item = CreateId("mismatched-materialization");
+        var candidateCount = Math.Max(1, reportedMaterializationCount);
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [item],
+            exhausted: true,
+            work: WorkWith(
+                orderedCandidate: candidateCount,
+                record: candidateCount,
+                predicate: candidateCount,
+                entry: candidateCount,
+                ownership: candidateCount,
+                materialization: reportedMaterializationCount,
+                catalogCandidate: candidateCount))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData("ordered")]
+    [InlineData("ownership")]
+    [InlineData("record")]
+    [InlineData("predicate")]
+    [InlineData("source")]
+    public async Task MaterializedResultsCannotBeHiddenByUnderreportedCandidateWork(
+        string component)
+    {
+        var item = CreateId($"underreported-{component}");
+        var work = component switch
+        {
+            "ordered" => WorkWith(
+                record: 1,
+                predicate: 1,
+                entry: 1,
+                ownership: 1,
+                materialization: 1,
+                catalogCandidate: 1),
+            "ownership" => WorkWith(
+                orderedCandidate: 1,
+                record: 1,
+                predicate: 1,
+                entry: 1,
+                materialization: 1,
+                catalogCandidate: 1),
+            "record" => WorkWith(
+                orderedCandidate: 1,
+                predicate: 1,
+                entry: 1,
+                ownership: 1,
+                materialization: 1,
+                catalogCandidate: 1),
+            "predicate" => WorkWith(
+                orderedCandidate: 1,
+                record: 1,
+                entry: 1,
+                ownership: 1,
+                materialization: 1,
+                catalogCandidate: 1),
+            "source" => WorkWith(
+                orderedCandidate: 1,
+                record: 1,
+                predicate: 1,
+                entry: 1,
+                ownership: 1,
+                materialization: 1),
+            _ => throw new ArgumentOutOfRangeException(nameof(component)),
+        };
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [item],
+            exhausted: true,
+            work: work)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData(false, 3, 1)]
+    [InlineData(true, 2, 0)]
+    [InlineData(true, 2, 1)]
+    public async Task AtMostOneUnownedCandidateIsAllowedOnlyForAWorkBudgetStop(
+        bool exhausted,
+        long orderedCandidate,
+        long ownership)
+    {
+        var frontier = CreateId("partial-candidate-frontier");
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted,
+            frontier,
+            WorkWith(
+                orderedCandidate: orderedCandidate,
+                ownership: ownership,
+                catalogCandidate: orderedCandidate))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Fact]
+    public async Task WorkBudgetStopMayIncludeOneCandidateWhoseOwnershipChargeDidNotFit()
+    {
+        var frontier = CreateId("completed-before-partial-candidate");
+        var options = CreateOptions();
+        options.PartitionWorkBudget = 7;
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: false,
+            frontier: frontier,
+            work: WorkWith(
+                orderedCandidate: 2,
+                ownership: 1,
+                catalogCandidate: 2))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition },
+            options);
+
+        var page = await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        page.Items.Should().BeEmpty();
+        page.ContinuationToken.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task WorkBudgetStopMayIncludeOneRecordWhoseRootPredicateChargeDidNotFit()
+    {
+        var frontier = CreateId("completed-before-partial-record");
+        var options = CreateOptions();
+        options.PartitionWorkBudget = 11;
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: false,
+            frontier: frontier,
+            work: WorkWith(
+                orderedCandidate: 2,
+                record: 2,
+                predicate: 1,
+                ownership: 2,
+                catalogCandidate: 2))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition },
+            options);
+
+        var page = await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        page.Items.Should().BeEmpty();
+        page.ContinuationToken.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task WorkBudgetStopCannotReportTwoSimultaneouslyIncompleteStages()
+    {
+        var frontier = CreateId("forged-multiple-partial-stages");
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: false,
+            frontier: frontier,
+            work: WorkWith(
+                orderedCandidate: 2,
+                record: 1,
+                ownership: 1,
+                catalogCandidate: 2))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData((int)PartitionQueryAccessPath.Empty)]
+    [InlineData((int)PartitionQueryAccessPath.Catalog)]
+    public async Task FirstPageNonSelectiveAccessPathMayHaveNoCandidate(
+        int rawAccessPath)
+    {
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: CreateBooleanZeroCandidateWork(
+                (PartitionQueryAccessPath)rawAccessPath,
+                plannerNodeCount: 3))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        var page = await CreateBooleanQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        page.Items.Should().BeEmpty();
+        page.ContinuationToken.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData((int)PartitionQueryAccessPath.ExactPosting)]
+    [InlineData((int)PartitionQueryAccessPath.RangeMerge)]
+    [InlineData((int)PartitionQueryAccessPath.Union)]
+    public async Task ResumedSelectiveAccessPathMayHaveNoCandidateAfterItsBoundary(
+        int rawAccessPath)
+    {
+        var accessPath = (PartitionQueryAccessPath)rawAccessPath;
+        var firstItem = CreateId($"selective-resume-{accessPath}");
+        var partition = new PagePartition(request => Task.FromResult(request.HasAfter
+            ? Result(
+                request,
+                [],
+                exhausted: true,
+                work: CreateMixedBooleanZeroCandidateWork(accessPath))
+            : Result(
+                request,
+                [firstItem],
+                frontier: firstItem,
+                work: WorkWith(
+                    orderedCandidate: 1,
+                    record: 1,
+                    predicate: 2,
+                    entry: 1,
+                    ownership: 1,
+                    materialization: 1,
+                    plannerNode: 3,
+                    catalogCandidate: 1))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+        var query = CreateMixedBooleanQuery(client);
+
+        var first = await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(10));
+        var second = await query.ToGrainIdPageAsync(
+            new SearchableStorageQueryPageRequest(10, first.ContinuationToken));
+
+        first.Items.Should().ContainSingle().Which.Should().Be(firstItem);
+        first.ContinuationToken.Should().NotBeNull();
+        second.Items.Should().BeEmpty();
+        second.ContinuationToken.Should().BeNull();
+        partition.Requests.Should().HaveCount(2);
+        partition.Requests[1].HasAfter.Should().BeTrue();
+        partition.Requests[1].After.Should().Be(firstItem);
+    }
+
+    [Theory]
+    [InlineData((int)PartitionQueryAccessPath.ExactPosting)]
+    [InlineData((int)PartitionQueryAccessPath.RangeMerge)]
+    [InlineData((int)PartitionQueryAccessPath.Union)]
+    public async Task FirstPageSelectiveAccessPathCannotReportZeroCandidates(
+        int rawAccessPath)
+    {
+        var accessPath = (PartitionQueryAccessPath)rawAccessPath;
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            [],
+            exhausted: true,
+            work: CreateMixedBooleanZeroCandidateWork(accessPath))));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateMixedBooleanQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
+    }
+
+    [Theory]
+    [InlineData("frontier")]
+    [InlineData("candidate")]
+    [InlineData("posting-source")]
+    [InlineData("catalog-source")]
+    [InlineData("record")]
+    [InlineData("predicate")]
+    [InlineData("index-entry")]
+    [InlineData("materialization")]
+    [InlineData("heap")]
+    [InlineData("union")]
+    [InlineData("range-merge")]
+    public async Task EmptyAccessPathRejectsExecutionEvidence(string evidence)
+    {
+        var frontier = CreateId("empty-path-frontier");
+        var work = WorkWith(
+            orderedCandidate: evidence == "candidate" ? 1 : 0,
+            record: evidence == "record" ? 1 : 0,
+            predicate: evidence == "predicate" ? 1 : 0,
+            entry: evidence == "index-entry" ? 1 : 0,
+            ownership: evidence == "candidate" ? 1 : 0,
+            materialization: evidence == "materialization" ? 1 : 0,
+            rangeMerge: evidence == "range-merge" ? 1 : 0,
+            postingCandidate: evidence == "posting-source" ? 1 : 0,
+            catalogCandidate: evidence == "catalog-source" ? 1 : 0,
+            heap: evidence == "heap" ? 1 : 0,
+            union: evidence == "union" ? 1 : 0,
+            plannerMetadata: 1,
+            accessPath: PartitionQueryAccessPath.Empty);
+        var items = evidence == "materialization" ? new[] { CreateId("empty-item") } : [];
+        var partition = new PagePartition(request => Task.FromResult(Result(
+            request,
+            items,
+            exhausted: evidence != "frontier",
+            frontier: evidence == "frontier" ? frontier : null,
+            work: work)));
+        var client = CreateClient(
+            CreateLayout(epoch: 1, 0),
+            new Dictionary<int, PagePartition> { [0] = partition });
+
+        Func<Task> execute = async () => await CreateQuery(client)
+            .ToGrainIdPageAsync(new SearchableStorageQueryPageRequest(10));
+
+        await execute.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*inconsistent scalar work evidence*");
     }
 
     [Fact]
@@ -572,8 +1633,13 @@ public sealed class SearchableStoragePagingCoordinatorTests
         var options = CreateOptions();
         options.LegacyResultItemLimit = ceiling == "items" ? 1 : 10;
         options.LegacyResultByteLimit = ceiling == "bytes" ? 1 : 1_024;
-        options.LegacyAggregateWorkLimit = ceiling == "work" ? 1 : 1_024;
+        options.LegacyAggregateWorkLimit = ceiling == "work" ? 5 : 1_024;
         options.LegacyRoundLimit = ceiling == "rounds" ? 1 : 10;
+        if (ceiling == "rounds")
+        {
+            options.PartitionWorkBudget = 5;
+        }
+
         var partition = new PagePartition(request => Task.FromResult(ceiling switch
         {
             "rounds" => Result(request, [], frontier: first),
@@ -582,12 +1648,14 @@ public sealed class SearchableStoragePagingCoordinatorTests
                 request,
                 [],
                 frontier: first,
-                work: new PartitionQueryPageWork { RecordProbeCount = request.WorkBudget }),
+                work: CreateValidCatalogWork(
+                    itemCount: 0,
+                    hasCompletedFrontier: true)),
             _ => Result(
                 request,
                 [first, second],
                 exhausted: true,
-                work: new PartitionQueryPageWork { RecordProbeCount = 2 }),
+                work: CreateValidCatalogWork(itemCount: 2)),
         }));
         var client = CreateClient(
             CreateLayout(epoch: 1, 0),
@@ -617,16 +1685,13 @@ public sealed class SearchableStoragePagingCoordinatorTests
         var options = CreateOptions();
         options.LegacyResultItemLimit = ceiling == "items" ? 1 : 10;
         options.LegacyResultByteLimit = ceiling == "bytes" ? itemBytes : 1_024;
-        options.LegacyAggregateWorkLimit = ceiling == "work" ? 2 : 1_024;
+        options.LegacyAggregateWorkLimit = ceiling == "work" ? 9 : 1_024;
         options.LegacyRoundLimit = ceiling == "rounds" ? 1 : 10;
         var partition = new PagePartition(request => Task.FromResult(Result(
             request,
             [item],
             exhausted: true,
-            work: new PartitionQueryPageWork
-            {
-                RecordProbeCount = ceiling == "work" ? 2 : 0,
-            })));
+            work: CreateValidCatalogWork(itemCount: 1))));
         var client = CreateClient(
             CreateLayout(epoch: 1, 0),
             new Dictionary<int, PagePartition> { [0] = partition },
@@ -653,16 +1718,12 @@ public sealed class SearchableStoragePagingCoordinatorTests
         var options = CreateOptions();
         options.LegacyResultItemLimit = ceiling == "items" ? 1 : 10;
         options.LegacyResultByteLimit = ceiling == "bytes" ? itemBytes : 1_024;
-        options.LegacyAggregateWorkLimit = ceiling == "work" ? 2 : 1_024;
+        options.LegacyAggregateWorkLimit = ceiling == "work" ? 9 : 1_024;
         options.LegacyRoundLimit = ceiling == "rounds" ? 1 : 10;
         var partition = new PagePartition(request => Task.FromResult(Result(
             request,
             [item],
-            frontier: item,
-            work: new PartitionQueryPageWork
-            {
-                RecordProbeCount = ceiling == "work" ? 2 : 0,
-            })));
+            frontier: item)));
         var client = CreateClient(
             CreateLayout(epoch: 1, 0),
             new Dictionary<int, PagePartition> { [0] = partition },
@@ -681,17 +1742,17 @@ public sealed class SearchableStoragePagingCoordinatorTests
     public async Task LegacyWorkBudgetIsApportionedBeforeFanout()
     {
         var options = CreateOptions();
-        options.LegacyAggregateWorkLimit = 3;
+        options.LegacyAggregateWorkLimit = 5;
         var owner0 = new PagePartition(request => Task.FromResult(Result(
             request,
             [],
             exhausted: true,
-            work: new PartitionQueryPageWork { RecordProbeCount = request.WorkBudget })));
+            work: WorkWith())));
         var owner1 = new PagePartition(request => Task.FromResult(Result(
             request,
             [],
             exhausted: true,
-            work: new PartitionQueryPageWork { RecordProbeCount = request.WorkBudget })));
+            work: WorkWith())));
         var client = CreateClient(
             CreateLayout(epoch: 1, 0, 1),
             new Dictionary<int, PagePartition> { [0] = owner0, [1] = owner1 },
@@ -703,13 +1764,26 @@ public sealed class SearchableStoragePagingCoordinatorTests
             "match");
 
         result.Should().BeEmpty();
-        owner0.Requests.Should().ContainSingle().Which.WorkBudget.Should().Be(1);
-        owner1.Requests.Should().ContainSingle().Which.WorkBudget.Should().Be(1);
+        owner0.Requests.Should().ContainSingle().Which.WorkBudget.Should().Be(2);
+        owner1.Requests.Should().ContainSingle().Which.WorkBudget.Should().Be(2);
     }
 
     private static IQueryable<PagingState> CreateQuery(SearchableStorageClient client)
     {
         return client.Query<PagingState>("state").Where(state => state.Value == "match");
+    }
+
+    private static IQueryable<PagingState> CreateBooleanQuery(SearchableStorageClient client)
+    {
+        return client.Query<PagingState>("state").Where(
+            state => state.Value == "match" || state.Value == "alternate");
+    }
+
+    private static IQueryable<PagingState> CreateMixedBooleanQuery(
+        SearchableStorageClient client)
+    {
+        return client.Query<PagingState>("state").Where(
+            state => state.Value == "match" || state.Rank >= 0);
     }
 
     private static SearchableStorageClient CreateClient(
@@ -773,7 +1847,8 @@ public sealed class SearchableStoragePagingCoordinatorTests
         GrainId[] items,
         bool exhausted = false,
         GrainId? frontier = null,
-        PartitionQueryPageWork? work = null)
+        PartitionQueryPageWork? work = null,
+        PartitionQueryPageStopReason? stopReason = null)
     {
         return new PartitionQueryPageResult
         {
@@ -783,8 +1858,12 @@ public sealed class SearchableStoragePagingCoordinatorTests
             Exhausted = exhausted,
             StopReason = exhausted
                 ? PartitionQueryPageStopReason.Exhausted
-                : PartitionQueryPageStopReason.WorkBudget,
-            Work = work ?? new PartitionQueryPageWork(),
+                : stopReason ?? (items.Length > 0
+                    ? PartitionQueryPageStopReason.ByteLimit
+                    : PartitionQueryPageStopReason.WorkBudget),
+            Work = work ?? CreateValidCatalogWork(
+                items.Length,
+                hasCompletedFrontier: !exhausted),
             ItemByteCount = items.Any(static item => item.IsDefault)
                 ? 0
                 : items.Sum(GrainIdCanonicalOrder.GetEncodedLength),
@@ -796,6 +1875,148 @@ public sealed class SearchableStoragePagingCoordinatorTests
             QueryFingerprint = [.. request.QueryFingerprint],
             LayoutFormatVersion = request.LayoutFormatVersion,
             LayoutFingerprint = [.. request.LayoutFingerprint],
+        };
+    }
+
+    private static PartitionQueryPageWork WorkWith(
+        long orderedCandidate = 0,
+        long record = 0,
+        long predicate = 0,
+        long entry = 0,
+        long ownership = 0,
+        long seek = 1,
+        long rangeBucket = 0,
+        long materialization = 0,
+        long rangeMerge = 0,
+        long plannerNode = 1,
+        long plannerMetadata = 0,
+        long postingCandidate = 0,
+        long catalogCandidate = 0,
+        long heap = 0,
+        long union = 0,
+        PartitionQueryAccessPath accessPath = PartitionQueryAccessPath.Catalog)
+    {
+        return new PartitionQueryPageWork
+        {
+            OrderedCandidateVisitCount = orderedCandidate,
+            RecordProbeCount = record,
+            PredicateNodeProbeCount = predicate,
+            IndexEntryProbeCount = entry,
+            OwnershipProbeCount = ownership,
+            PostingSeekCount = seek,
+            RangeBucketVisitCount = rangeBucket,
+            ResultMaterializationCount = materialization,
+            RangeMergeOperationCount = rangeMerge,
+            PlannerNodeVisitCount = plannerNode,
+            PlannerMetadataReadCount = plannerMetadata,
+            PostingCandidateVisitCount = postingCandidate,
+            CatalogCandidateVisitCount = catalogCandidate,
+            HeapOperationCount = heap,
+            UnionOperationCount = union,
+            AccessPath = accessPath,
+        };
+    }
+
+    private static PartitionQueryPageWork CreateValidCatalogWork(
+        int itemCount,
+        bool hasCompletedFrontier = false)
+    {
+        var candidateCount = Math.Max(itemCount, hasCompletedFrontier ? 1 : 0);
+        return WorkWith(
+            orderedCandidate: candidateCount,
+            record: itemCount,
+            predicate: itemCount,
+            entry: itemCount,
+            ownership: candidateCount,
+            materialization: itemCount,
+            catalogCandidate: candidateCount);
+    }
+
+    private static PartitionQueryPageWork CreateZeroCandidateWork(
+        PartitionQueryAccessPath accessPath,
+        long plannerNodeCount = 1)
+    {
+        return accessPath switch
+        {
+            PartitionQueryAccessPath.Empty => WorkWith(
+                seek: 0,
+                plannerNode: plannerNodeCount,
+                plannerMetadata: 0,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.ExactPosting => WorkWith(
+                seek: 2,
+                plannerNode: plannerNodeCount,
+                plannerMetadata: 1,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.RangeMerge => WorkWith(
+                seek: 2,
+                rangeBucket: 1,
+                plannerNode: plannerNodeCount,
+                plannerMetadata: 1,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.Union => WorkWith(
+                seek: 4,
+                plannerNode: plannerNodeCount,
+                plannerMetadata: 2,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.Catalog => WorkWith(
+                plannerNode: plannerNodeCount,
+                accessPath: accessPath),
+            _ => throw new ArgumentOutOfRangeException(nameof(accessPath)),
+        };
+    }
+
+    private static PartitionQueryPageWork CreateBooleanZeroCandidateWork(
+        PartitionQueryAccessPath accessPath,
+        long plannerNodeCount)
+    {
+        return accessPath switch
+        {
+            PartitionQueryAccessPath.Empty => WorkWith(
+                seek: 2,
+                plannerNode: plannerNodeCount,
+                plannerMetadata: 2,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.ExactPosting => WorkWith(
+                seek: 3,
+                plannerNode: plannerNodeCount,
+                plannerMetadata: 2,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.Union => WorkWith(
+                seek: 4,
+                plannerNode: plannerNodeCount,
+                plannerMetadata: 2,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.Catalog => WorkWith(
+                plannerNode: plannerNodeCount,
+                accessPath: accessPath),
+            _ => throw new ArgumentOutOfRangeException(nameof(accessPath)),
+        };
+    }
+
+    private static PartitionQueryPageWork CreateMixedBooleanZeroCandidateWork(
+        PartitionQueryAccessPath accessPath)
+    {
+        return accessPath switch
+        {
+            PartitionQueryAccessPath.ExactPosting => WorkWith(
+                seek: 3,
+                plannerNode: 3,
+                plannerMetadata: 1,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.RangeMerge => WorkWith(
+                seek: 3,
+                rangeBucket: 1,
+                plannerNode: 3,
+                plannerMetadata: 2,
+                accessPath: accessPath),
+            PartitionQueryAccessPath.Union => WorkWith(
+                seek: 4,
+                rangeBucket: 1,
+                plannerNode: 3,
+                plannerMetadata: 2,
+                accessPath: accessPath),
+            _ => throw new ArgumentOutOfRangeException(nameof(accessPath)),
         };
     }
 
@@ -816,6 +2037,9 @@ public sealed class SearchableStoragePagingCoordinatorTests
     {
         [SearchableIndex(SearchableIndexKind.Hash)]
         public string Value { get; init; } = string.Empty;
+
+        [SearchableIndex(SearchableIndexKind.Range)]
+        public int Rank { get; init; }
     }
 
     private sealed class MutableMatchSet

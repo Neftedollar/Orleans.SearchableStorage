@@ -132,8 +132,11 @@ The resulting `query-work-matrix.json` contains the complete first-page work vec
 counts, stop reason, safe-frontier encoding, sequence digest, selective-exact driver cardinality, and
 for traversal variants the round count, aggregate work vector, maximum-page work vector, terminal
 status, and complete-prefix digest. It also labels the selected range execution strategy; the raw
-`RangeBucketVisitCount` and `RangeMergeOperationCount` distinguish an admitted ordered merge from a
-catalog fallback. Setup independently verifies the full ordered result sequence, not only its count.
+`AccessPath` identifies `ExactPosting`, `RangeMerge`, `Union`, `Catalog`, or an empty result proof.
+The version-2 work vector includes charged planner-node and metadata reads, posting/catalog advances,
+heap mutations, and union operations in addition to the preserved version-1 counters. Setup
+independently verifies the full ordered result sequence, not only its count. The JSON evidence schema
+is `oss-query-work-matrix/v2`.
 
 Measure retained managed memory after a forced full compacting collection. Each data point is the
 median of three fresh worker processes; the input records exist before the baseline, so the delta is
@@ -276,15 +279,24 @@ identical complete work vector. For selective exact-and-broad-range plans it rec
 driver cardinality, requires page candidate visits not to exceed that posting, and requires complete
 hard-ceiling traversal to visit exactly that bounded driver.
 
-Range-merge admission deliberately precharges a safe whole-scope upper bound rather than the selected
-range-view cardinality: for `D` range buckets it reserves
-`D × (3 + ceil(log2 D))` logical operations after the initial seek. `SortedSet` does not promise an
-O(log N) rank operation, so using the narrower selected-view count would itself require unbounded
-enumeration. Consequently the uniform 65,536-bucket fixture needs 1,245,184 operations and uses
-`CatalogFallback` even for a narrow range under the public maximum work cap of 1,048,576. The full
-matrix and focused self-test assert that boundary as at least two posting seeks with zero range-bucket
-visits and zero range-merge operations. This is intentional conservative admission, not evidence
-that the selected range was materialized or merged.
+Work-policy 2 permits speculative descriptor construction to consume at most half of the logical
+work remaining after canonical preparation. The other half, rounded toward execution, or the larger
+query-specific fallback minimum remains available to open and traverse the chosen source. Canonical
+Boolean operands receive the same fixed per-operand planning cap. The full traversal oracle therefore
+also guards two failure modes that a first-page microbenchmark can miss: a late broad sibling
+repeatedly starving a completed exact driver, and broad incomplete descriptors leaving only one
+catalog candidate per turn.
+
+Range planning seeks the balanced-tree view and charges each actually traversed bucket before
+advancing it, including an equal endpoint later rejected by an open bound. It retains only included
+buckets and reads each posting cardinality under a metadata charge. Source admission then uses that
+retained selected-window count; it never reserves every bucket in the scope. If worst-case heap
+initialization, first distinct source-candidate draining, and the minimum successful evaluator group
+cannot fit, the descriptor is discarded before any posting cursor opens and execution uses the
+charged catalog fallback. The full matrix and focused self-test now assert that the uniform
+65,536-bucket narrow-range fixture selects `RangeMerge`, visits fewer buckets than the scope contains,
+performs range-merge work, and performs no catalog-candidate advances. This is evidence of the
+selected-window path, not an inference from result count.
 
 `DerivedIndexBuildBenchmarks` compares the old materializing indexes with the production additive
 `StoragePartitionView` (materializing plus ordered indexes). `IndexMutationBenchmarks` makes the same

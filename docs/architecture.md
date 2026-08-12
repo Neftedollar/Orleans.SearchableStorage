@@ -271,10 +271,33 @@ Exact, Range, And, and Or nodes. `StoragePartitionGrain.QueryPageRoutedAsync` va
 plan, protocol versions, response family, route, query fingerprint, layout fingerprint, and hard
 limits before evaluation. Activation-local tree-backed state catalogs and postings use canonical
 `GrainId` order and are rebuilt from durable records. Writes and clears update them synchronously
-with the existing hash/range indexes. Exact and selective exact-AND plans use ordered exact drivers;
-range leaves merge bounded ordered bucket postings; general boolean plans use a bounded ordered
-catalog scan. Every data-dependent step is charged before it runs, and a candidate group must finish
-before its `GrainId` can become a returned item or frontier.
+with the existing hash/range indexes. Grain-page work-policy 2 first charges one visit per original
+wire node and creates a turn-local prepared tree. Associative `AND`/`OR` nodes become flat operand
+sequences ordered by bottom-up structural ranks without hash collisions over semantic `IndexValue`
+comparison/equivalence; the rank's global order is prepared height followed by the semantic leaf or
+exact child-rank descriptor. This uses linear retained space and does not change raw wire-plan or
+fingerprint bytes. Planning and final predicate evaluation share that prepared order, so grouping and
+permutation do not change work or path selection and no recursive canonical comparison occurs per
+candidate. After preparation, work-policy 2 reserves the greater of the query-specific fallback
+minimum (at least 16 operations) and `ceil(remaining / 2)` for execution; speculative planning can
+use only the rest. Canonical Boolean operands receive the same fixed per-operand planning cap,
+preventing a broad late descriptor from consuming the unused allowance of an inexpensive completed
+sibling. `AND` chooses the cheapest completed superset driver with a canonical tie-break. A range
+descriptor enumerates and charges only its selected ordered bucket window, then admits heap
+initialization from the retained included bucket count rather than the scope-wide bucket count.
+Selective admission
+reserves worst-case source initialization and first-source-candidate work, including duplicate range
+draining and N-input union priming, plus the minimum successful evaluator group. This removes
+setup-only budget cliffs at the
+catalog-to-selective transition. It does not cover arbitrarily many records or index entries in an
+actual predicate group; those data-dependent no-progress cases still fail with the documented
+budget-too-small exception. `OR` opens canonical `GrainId` streams and performs a charged N-input
+sorted/distinct union. If a descriptor cannot be completed or admitted under the remaining budget,
+the ordered state catalog is the safe charged fallback. The full predicate is still authoritative
+for every candidate. Every data-dependent planner observation, posting/catalog advance, heap
+mutation, merge/union operation, ownership check, predicate probe, and materialization is charged
+before its step, and a candidate group must finish before its `GrainId` can become a returned item or
+frontier.
 
 The client starts every owner call before awaiting the aggregate, so a partition failure fails the
 entire page and no partial items or token escape. Non-canceled attempts classify simultaneous

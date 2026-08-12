@@ -413,7 +413,10 @@ public class QueryPlanEvaluationBenchmarks
                 && traversal.AggregateWork.OrderedCandidateVisitCount != exactDriverCount)
             {
                 throw new InvalidOperationException(
-                    "The complete selective exact-and-range traversal did not stay on its exact posting driver.");
+                    "The complete selective exact-and-range traversal did not stay on its exact "
+                    + $"posting driver: expected {exactDriverCount} candidates, observed "
+                    + $"{traversal.AggregateWork.OrderedCandidateVisitCount} across "
+                    + $"{traversal.Rounds} rounds for {Dataset}/{Distribution}.");
             }
 
             traversalDiagnostics = new QueryTraversalDiagnostics(
@@ -586,15 +589,19 @@ public class QueryPlanEvaluationBenchmarks
             IndexValue.Create("city-001")).Count;
     }
 
-    private QueryRangeExecutionStrategy GetRangeExecutionStrategy(PartitionQueryPageWork work) => Scenario switch
+    private QueryRangeExecutionStrategy GetRangeExecutionStrategy(PartitionQueryPageWork work) =>
+        work.AccessPath switch
     {
-        QueryEvaluationScenario.Exact => QueryRangeExecutionStrategy.NoRangePlan,
-        QueryEvaluationScenario.SelectiveExactAndBroadRange =>
-            QueryRangeExecutionStrategy.ExactPostingDriver,
-        QueryEvaluationScenario.BroadOr or QueryEvaluationScenario.DuplicateHeavyOr =>
-            QueryRangeExecutionStrategy.CatalogPlanDriver,
-        _ when work.RangeMergeOperationCount > 0 => QueryRangeExecutionStrategy.OrderedRangeMerge,
-        _ => QueryRangeExecutionStrategy.CatalogFallback,
+        PartitionQueryAccessPath.Empty => QueryRangeExecutionStrategy.NoRangePlan,
+        PartitionQueryAccessPath.ExactPosting => Scenario
+            == QueryEvaluationScenario.SelectiveExactAndBroadRange
+                ? QueryRangeExecutionStrategy.ExactPostingDriver
+                : QueryRangeExecutionStrategy.NoRangePlan,
+        PartitionQueryAccessPath.RangeMerge => QueryRangeExecutionStrategy.OrderedRangeMerge,
+        PartitionQueryAccessPath.Union => QueryRangeExecutionStrategy.OrderedUnion,
+        PartitionQueryAccessPath.Catalog => QueryRangeExecutionStrategy.CatalogFallback,
+        _ => throw new InvalidOperationException(
+            $"The ordered benchmark reported unknown access path '{work.AccessPath}'."),
     };
 
     private static void ValidateRangeExecutionStrategy(
@@ -604,19 +611,26 @@ public class QueryPlanEvaluationBenchmarks
         var valid = strategy switch
         {
             QueryRangeExecutionStrategy.NoRangePlan =>
-                work.RangeBucketVisitCount == 0 && work.RangeMergeOperationCount == 0,
+                (work.AccessPath is PartitionQueryAccessPath.Empty
+                    or PartitionQueryAccessPath.ExactPosting)
+                && work.RangeMergeOperationCount == 0,
             QueryRangeExecutionStrategy.ExactPostingDriver =>
-                work.RangeBucketVisitCount == 0 && work.RangeMergeOperationCount == 0,
+                work.AccessPath == PartitionQueryAccessPath.ExactPosting
+                && work.RangeMergeOperationCount == 0,
             QueryRangeExecutionStrategy.CatalogPlanDriver =>
-                work.PostingSeekCount >= 1
-                && work.RangeBucketVisitCount == 0
-                && work.RangeMergeOperationCount == 0,
+                work.AccessPath == PartitionQueryAccessPath.Catalog
+                && work.CatalogCandidateVisitCount > 0,
             QueryRangeExecutionStrategy.OrderedRangeMerge =>
-                work.RangeBucketVisitCount > 0 && work.RangeMergeOperationCount > 0,
+                work.AccessPath == PartitionQueryAccessPath.RangeMerge
+                && work.RangeBucketVisitCount > 0
+                && work.RangeMergeOperationCount > 0,
+            QueryRangeExecutionStrategy.OrderedUnion =>
+                work.AccessPath == PartitionQueryAccessPath.Union
+                && work.UnionOperationCount > 0,
             QueryRangeExecutionStrategy.CatalogFallback =>
-                work.PostingSeekCount >= 2
-                && work.RangeBucketVisitCount == 0
-                && work.RangeMergeOperationCount == 0,
+                work.AccessPath == PartitionQueryAccessPath.Catalog
+                && work.PostingSeekCount >= 1
+                && work.CatalogCandidateVisitCount > 0,
             _ => false,
         };
         if (!valid)
@@ -635,6 +649,7 @@ public class QueryPlanEvaluationBenchmarks
         page.HasFrontier,
         page.HasFrontier ? Convert.ToHexString(page.Frontier.Type.AsSpan()) : null,
         page.HasFrontier ? Convert.ToHexString(page.Frontier.Key.AsSpan()) : null,
+        page.Work.AccessPath,
         BenchmarkWorkVector.From(page.Work),
         ComputeSequenceSha256(page.Items));
 
@@ -1054,6 +1069,7 @@ public enum QueryRangeExecutionStrategy
     CatalogPlanDriver,
     OrderedRangeMerge,
     CatalogFallback,
+    OrderedUnion,
 }
 
 internal sealed record QueryBenchmarkPolicy(
@@ -1102,7 +1118,13 @@ internal readonly record struct BenchmarkWorkVector(
     long PostingSeekCount,
     long RangeBucketVisitCount,
     long ResultMaterializationCount,
-    long RangeMergeOperationCount)
+    long RangeMergeOperationCount,
+    long PlannerNodeVisitCount,
+    long PlannerMetadataReadCount,
+    long PostingCandidateVisitCount,
+    long CatalogCandidateVisitCount,
+    long HeapOperationCount,
+    long UnionOperationCount)
 {
     public long TotalOperationCount => checked(
         OrderedCandidateVisitCount
@@ -1113,7 +1135,13 @@ internal readonly record struct BenchmarkWorkVector(
         + PostingSeekCount
         + RangeBucketVisitCount
         + ResultMaterializationCount
-        + RangeMergeOperationCount);
+        + RangeMergeOperationCount
+        + PlannerNodeVisitCount
+        + PlannerMetadataReadCount
+        + PostingCandidateVisitCount
+        + CatalogCandidateVisitCount
+        + HeapOperationCount
+        + UnionOperationCount);
 
     public static BenchmarkWorkVector From(PartitionQueryPageWork work)
     {
@@ -1127,7 +1155,13 @@ internal readonly record struct BenchmarkWorkVector(
             work.PostingSeekCount,
             work.RangeBucketVisitCount,
             work.ResultMaterializationCount,
-            work.RangeMergeOperationCount);
+            work.RangeMergeOperationCount,
+            work.PlannerNodeVisitCount,
+            work.PlannerMetadataReadCount,
+            work.PostingCandidateVisitCount,
+            work.CatalogCandidateVisitCount,
+            work.HeapOperationCount,
+            work.UnionOperationCount);
     }
 
     public BenchmarkWorkVector Add(BenchmarkWorkVector other) => new(
@@ -1139,7 +1173,13 @@ internal readonly record struct BenchmarkWorkVector(
         checked(PostingSeekCount + other.PostingSeekCount),
         checked(RangeBucketVisitCount + other.RangeBucketVisitCount),
         checked(ResultMaterializationCount + other.ResultMaterializationCount),
-        checked(RangeMergeOperationCount + other.RangeMergeOperationCount));
+        checked(RangeMergeOperationCount + other.RangeMergeOperationCount),
+        checked(PlannerNodeVisitCount + other.PlannerNodeVisitCount),
+        checked(PlannerMetadataReadCount + other.PlannerMetadataReadCount),
+        checked(PostingCandidateVisitCount + other.PostingCandidateVisitCount),
+        checked(CatalogCandidateVisitCount + other.CatalogCandidateVisitCount),
+        checked(HeapOperationCount + other.HeapOperationCount),
+        checked(UnionOperationCount + other.UnionOperationCount));
 
     public static BenchmarkWorkVector Max(BenchmarkWorkVector left, BenchmarkWorkVector right) =>
         right.TotalOperationCount > left.TotalOperationCount ? right : left;
@@ -1153,6 +1193,7 @@ internal sealed record QueryPageDiagnostics(
     bool HasFrontier,
     string? FrontierTypeHex,
     string? FrontierKeyHex,
+    PartitionQueryAccessPath AccessPath,
     BenchmarkWorkVector Work,
     string SequenceSha256);
 
