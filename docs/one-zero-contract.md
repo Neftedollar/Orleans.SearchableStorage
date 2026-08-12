@@ -49,9 +49,10 @@ membership for explicitly supported collection index shapes, together with a can
 limits and must fail without an unbounded or client-side fallback.
 
 The exact collection shapes, element domains, duplicate/null semantics, API spelling, and limits
-are the PR2 decision gate. This document does not guess them. Until that gate is resolved and the
-slice is implemented, documented, and covered end to end, collection-valued indexes and
-`Contains`/`IN` remain unsupported current behavior and this 1.0 contract remains a candidate.
+are the dedicated membership-implementation gate. This document does not guess them. Until that
+gate is resolved and the slice is implemented, documented, and covered end to end,
+collection-valued indexes and `Contains`/`IN` remain unsupported current behavior and this 1.0
+contract remains a candidate.
 `StartsWith` and other text-search operators are explicitly deferred; they are not part of that
 membership decision.
 
@@ -123,7 +124,9 @@ Additional value rules:
 - compiler numeric and enum promotions are accepted only when translation preserves CLR equality
   and ordering over the complete indexed domain;
 - canonical query and facet text fields use strict UTF-8 with a 16 KiB encoded limit. The storage
-  write path predates that wire limit and does not reject a longer or invalid-surrogate string.
+  write path does not share that wire limit and preserves invalid-surrogate strings, but the fixed
+  storage envelope still rejects an index entry above 64 KiB of canonical data or more than
+  512 KiB of aggregate canonical index-entry data for one record.
   A query value cannot be encoded beyond the limit, and a facet which reaches an incompatible
   stored value fails without a partial result. See the bounded protocol for exact failure details.
 
@@ -144,7 +147,7 @@ value, or use the same filtered predicate subset.
 | Captured field/property or static field/property | yes | The member chain must not depend on the state parameter. |
 | Built-in conversion which preserves the indexed domain | yes | Includes safe compiler integral and enum promotions. |
 | `!=`, unary `!`, or Boolean shorthand | no | Complement would require a partition-wide set complement. |
-| `Contains`, `IN`, or `WhereIn` membership | no now | A bounded Hash-only slice is accepted before 1.0; exact shapes and limits remain the PR2 gate. |
+| `Contains`, `IN`, or `WhereIn` membership | no now | A bounded Hash-only slice is accepted before 1.0; exact shapes and limits remain the dedicated membership-implementation gate. |
 | Text methods such as `StartsWith` | no | Explicitly deferred beyond the 1.0 candidate. |
 | Arithmetic or another calculation in the expression | no | Precompute the value outside the expression and capture it. |
 | Nested or unindexed state property | no | The state side must be one directly declared indexed property. |
@@ -209,6 +212,11 @@ claims. A deployment may configure a smaller effective limit.
 Work accounting, encoded-size definitions, owner apportionment, and progress rules are specified in
 the [bounded query and paging contract](bounded-query-contract.md).
 
+Persisted records, index entries, snapshots, journal objects, and replay configuration have a
+separate fixed, non-configurable [storage capacity envelope](storage-capacity-limits.md). Its public
+constants, canonical-byte definition, fail-closed recovery behavior, and pre-1.0 rollout procedure
+are part of this contract candidate; they are not provider-byte or performance claims.
+
 ## Continuations and failures
 
 Public continuations are opaque authenticated-encrypted strings. The current protection key is
@@ -221,6 +229,7 @@ cursor or buffered result set.
 | --- | --- |
 | `NotSupportedException` | Expression, selector, terminal provider, type, or protocol surface is outside the supported contract. Change the request; there is no fallback. |
 | `ArgumentException` / `ArgumentOutOfRangeException` | A selector, value, request, schema declaration, or option is invalid. |
+| `SearchableStorageCapacityExceededException` | A live request or maintenance object exceeded the fixed logical envelope; inspect `Boundary`, `Actual`, and `Limit`, then reduce the state, index contribution, or page. If durable recovery reports it, keep traffic quiesced and follow the capacity runbook; never continue with a partial partition. |
 | `SearchableStorageQueryConfigurationException` | Bounded-query options or continuation protection are unusable. Correct provider/client configuration. |
 | `SearchableStorageInvalidContinuationTokenException` | Token is malformed, unauthenticated, cross-provider/family/query/policy/schema, or otherwise inapplicable. Restart only after checking the request and key ring. |
 | `SearchableStorageStaleContinuationTokenException` | An authenticated token names an obsolete routing layout. Restart from the first page. |
@@ -290,7 +299,7 @@ Before the 1.0 release, a change to this candidate contract should answer all of
 5. Does it retain generation, layout, replay, cancellation, and no-partial-result safety?
 6. Do focused contract tests, backend tests where relevant, samples, XML docs, and runbooks agree?
 
-For the accepted membership slice, the PR2 gate must answer the exact collection shapes, public
+For the accepted membership slice, its implementation review must answer the exact collection shapes, public
 query form, element/null/duplicate semantics, deterministic schema identity, and every admission,
 wire, work, and result bound before the matrix can be called implemented or frozen.
 

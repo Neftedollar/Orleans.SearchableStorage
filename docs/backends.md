@@ -122,12 +122,16 @@ canonical hash-value projection is rebuilt from the same durable records/index e
 
 The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, snapshot, and schema-control states is required; the partition manifest is the record/index commit point and the per-state control is the generation commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, snapshot, or `index-schema` control state.
 
-Journal segments are bounded by operation count, not serialized bytes, and each snapshot contains
-the whole partition. The two snapshot slots bound object count, not object size. Movement export,
-import, and source-deletion page payloads are record-count-bounded and byte-targeted, but an accepted
-oversize record is transferred alone. Compaction can still rewrite the whole partition during a
-move, and activation still loads a whole snapshot and rebuilds the derived slot index;
-provider-native write and latency telemetry must preserve those costs. The virtual map adds
+Journal segments have dual hard ceilings of 64 operations and 320 MiB of deterministic canonical
+entry bytes; each entry is capped at 5 MiB. A whole-partition snapshot is capped at 1,000,000 records
+and 512 MiB of deterministic canonical record bytes. These are logical safety limits, not Orleans-
+serialized or provider-physical sizes; a backend may impose lower limits. Movement export, import,
+and source-deletion pages remain record-count-bounded and byte-targeted, with one accepted record
+allowed to exceed the normal page target. Compaction can still rewrite the whole accepted partition
+during a move, and activation still loads a whole snapshot and rebuilds the derived slot index;
+provider-native write and latency telemetry must preserve those costs. See
+[storage-capacity-limits.md](storage-capacity-limits.md) for exact formulas and rollout preflight.
+The virtual map adds
 approximately four raw bytes per slot before serializer overhead and is read as one layout value.
 Partition activations share one retained map per provider and silo instead of cloning it per
 partition. The keyed storage provider and query/admin clients retain a bounded constant number of

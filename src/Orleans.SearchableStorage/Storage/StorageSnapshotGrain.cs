@@ -10,6 +10,7 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
     private readonly IPersistentState<StorageSnapshotState> _state;
     private readonly Action _requestDeactivation;
     private bool _persistenceOutcomeAmbiguous;
+    private bool _loadedStateInvalid;
 
     public StorageSnapshotGrain(
         [PersistentState("snapshot", SearchableStorageConstants.PhysicalStorageProviderName)]
@@ -30,6 +31,7 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
     {
         EnsureUsable();
         ValidateSnapshot(snapshot);
+        ValidateLoadedState();
 
         if (!_state.State.Initialized)
         {
@@ -78,6 +80,7 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
     public Task<StorageSnapshotState> ReadAsync()
     {
         EnsureUsable();
+        ValidateLoadedState();
         return Task.FromResult(_state.State.Copy());
     }
 
@@ -85,6 +88,7 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
     {
         EnsureUsable();
         ValidateDescriptor(descriptor);
+        ValidateLoadedState();
 
         if (!_state.State.Initialized)
         {
@@ -159,6 +163,12 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
                 nameof(snapshot));
         }
 
+        ValidateSnapshotIdentity(snapshot);
+        StorageSnapshotFactory.ValidatePayload(snapshot);
+    }
+
+    private static void ValidateSnapshotIdentity(StorageSnapshotState snapshot)
+    {
         StoragePersistence.ValidateSnapshotSlot(snapshot.Slot, nameof(snapshot));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(snapshot.Generation, nameof(snapshot));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(snapshot.Sequence, nameof(snapshot));
@@ -181,8 +191,6 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
                 "A durable snapshot operation id must not be empty.",
                 nameof(snapshot));
         }
-
-        StorageSnapshotFactory.ValidatePayload(snapshot);
     }
 
     private static void ValidateDescriptor(StorageSnapshotDescriptor descriptor)
@@ -217,6 +225,60 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
         }
     }
 
+    private void ValidateLoadedState()
+    {
+        try
+        {
+            ArgumentNullException.ThrowIfNull(_state.State.Records);
+            ArgumentNullException.ThrowIfNull(_state.State.LosslessRecords);
+            if (_state.State.Initialized && !_state.State.Tombstoned)
+            {
+                ValidateSnapshot(_state.State);
+                return;
+            }
+
+            _ = StorageCapacityGuardrails.ValidateSnapshotPayload(_state.State);
+            if (_state.State.Records.Count != 0 || _state.State.LosslessRecords.Count != 0)
+            {
+                throw new InvalidOperationException(
+                    "An uninitialized or retired snapshot cannot retain a record payload.");
+            }
+
+            if (!_state.State.Initialized)
+            {
+                if (_state.State.Tombstoned
+                    || _state.State.Slot != 0
+                    || _state.State.Generation != 0
+                    || _state.State.SnapshotId != Guid.Empty
+                    || _state.State.Sequence != 0
+                    || _state.State.OperationId != Guid.Empty
+                    || _state.State.NextVersion != 1
+                    || _state.State.RecordEncodingVersion
+                        != StorageSnapshotFactory.LegacyRecordEncodingVersion)
+                {
+                    throw new InvalidOperationException(
+                        "An uninitialized snapshot contains persisted identity metadata.");
+                }
+
+                return;
+            }
+
+            ValidateSnapshotIdentity(_state.State);
+            if (_state.State.RecordEncodingVersion
+                != StorageSnapshotFactory.LegacyRecordEncodingVersion)
+            {
+                throw new InvalidOperationException(
+                    "A retired snapshot must use the empty legacy payload representation.");
+            }
+        }
+        catch
+        {
+            _loadedStateInvalid = true;
+            _requestDeactivation();
+            throw;
+        }
+    }
+
     private async Task PersistAsync(StorageSnapshotState candidate)
     {
         var previous = _state.State;
@@ -241,6 +303,12 @@ internal sealed class StorageSnapshotGrain : Grain, IStorageSnapshotGrain
         {
             throw new InvalidOperationException(
                 "The snapshot slot activation cannot be reused after an ambiguous persistence write.");
+        }
+
+        if (_loadedStateInvalid)
+        {
+            throw new InvalidOperationException(
+                "The snapshot slot activation cannot be reused after invalid durable state was observed.");
         }
     }
 }

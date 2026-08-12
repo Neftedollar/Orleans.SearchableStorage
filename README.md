@@ -42,11 +42,17 @@ or its SemVer guarantees have already shipped.
 - The physical persistence provider remains replaceable through Orleans configuration.
 
 The journal removes partition-sized writes from the mutation path, but it does not make the current
-layout an unbounded database. A partition activation still loads its whole active snapshot into
-memory, compaction still serializes that whole partition, and a configured segment capacity bounds
-operations rather than bytes: one large record can still produce a large segment. Range indexes now
-use logarithmic bucket seeks and incremental bucket updates. Paging adds activation-local ordered
-catalogs/postings, so retained index memory is higher even though live updates remain logarithmic.
+layout an unbounded database. The fixed storage envelope caps individual records and index entries,
+one journal entry at 5 MiB of canonical data, and a segment at 64 entries and 320 MiB of aggregate
+canonical entry data. Canonical bytes are deterministic logical accounting, not Orleans transport
+or physical-provider bytes. A partition activation still loads its whole accepted snapshot into
+memory, and compaction still serializes that whole partition; the 1,000,000-record and 512 MiB
+canonical snapshot ceilings are safety boundaries, not small latency or transient-memory bounds.
+Range indexes now use logarithmic bucket seeks and incremental bucket updates. Paging adds
+activation-local ordered catalogs/postings, so retained index memory is higher even though live
+updates remain logarithmic.
+The exact accounting, failure behavior, and pre-1.0 rollout procedure are documented in the
+[storage capacity envelope](docs/storage-capacity-limits.md).
 Every query page still contacts every distinct current owner. Moving slots can change that owner set,
 but it does not make a query local or provide a snapshot across partitions. Text search, including
 `StartsWith`, composite indexes, and arbitrary LINQ beyond the documented focused subset are not

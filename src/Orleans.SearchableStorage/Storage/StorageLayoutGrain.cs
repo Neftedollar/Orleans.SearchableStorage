@@ -1555,6 +1555,11 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         StoragePersistence.ValidateOptions(
             descriptor.JournalSegmentCapacity,
             descriptor.MaximumJournalReplayEntries);
+        StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+            descriptor.JournalSegmentCapacity,
+            descriptor.MaximumJournalReplayEntries,
+            nameof(descriptor.JournalSegmentCapacity),
+            nameof(descriptor.MaximumJournalReplayEntries));
         if (descriptor.VirtualSlotTargetCount != 0)
         {
             throw new ArgumentException(
@@ -1576,6 +1581,11 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         StoragePersistence.ValidateOptions(
             descriptor.JournalSegmentCapacity,
             descriptor.MaximumJournalReplayEntries);
+        StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+            descriptor.JournalSegmentCapacity,
+            descriptor.MaximumJournalReplayEntries,
+            nameof(descriptor.JournalSegmentCapacity),
+            nameof(descriptor.MaximumJournalReplayEntries));
     }
 
     private static void ValidateRoutingSeed(StorageLayoutDescriptor descriptor)
@@ -1795,6 +1805,11 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         StoragePersistence.ValidateOptions(
             state.JournalSegmentCapacity,
             state.MaximumJournalReplayEntries);
+        StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+            state.JournalSegmentCapacity,
+            state.MaximumJournalReplayEntries,
+            nameof(state.JournalSegmentCapacity),
+            nameof(state.MaximumJournalReplayEntries));
         if (state.IndexSchemaProtocolVersion is not 0
             and not StorageLayout.CurrentIndexSchemaProtocolVersion)
         {

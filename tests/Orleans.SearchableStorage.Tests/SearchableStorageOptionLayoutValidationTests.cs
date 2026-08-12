@@ -38,7 +38,7 @@ public sealed class SearchableStorageOptionValidationTests
     }
 
     [Fact]
-    public void ValidateOnStartAcceptsTheLargestAddressableJournalRing()
+    public void ValidateOnStartAcceptsTheMaximumBoundedJournalRing()
     {
         const string providerName = "largest-addressable-options";
         var services = new ServiceCollection();
@@ -47,14 +47,43 @@ public sealed class SearchableStorageOptionValidationTests
             options =>
             {
                 options.PartitionCount = 1;
-                options.JournalSegmentCapacity = 1;
-                options.MaximumJournalReplayEntries = int.MaxValue - 2;
+                options.JournalSegmentCapacity =
+                    SearchableStorageCapacityLimits.MaximumJournalSegmentEntries;
+                options.MaximumJournalReplayEntries =
+                    SearchableStorageCapacityLimits.MaximumJournalReplayEntries;
                 options.CompactionThreshold = 1;
                 options.GrainStorageSerializer = StubGrainStorageSerializer.Instance;
             });
         using var serviceProvider = services.BuildServiceProvider();
 
         serviceProvider.GetRequiredService<IStartupValidator>().Validate();
+    }
+
+    [Theory]
+    [InlineData(SearchableStorageCapacityLimits.MaximumJournalSegmentEntries + 1, 1)]
+    [InlineData(1, SearchableStorageCapacityLimits.MaximumJournalReplayEntries + 1)]
+    public void ValidateOnStartRejectsAJournalRingAboveTheFixedCapacityEnvelope(
+        int segmentCapacity,
+        int replayEntries)
+    {
+        const string providerName = "over-capacity-options";
+        var services = new ServiceCollection();
+        services.AddSearchableGrainStorage(
+            providerName,
+            options =>
+            {
+                options.PartitionCount = 1;
+                options.JournalSegmentCapacity = segmentCapacity;
+                options.MaximumJournalReplayEntries = replayEntries;
+                options.CompactionThreshold = 1;
+                options.GrainStorageSerializer = StubGrainStorageSerializer.Instance;
+            });
+        using var serviceProvider = services.BuildServiceProvider();
+
+        Action validate = () => serviceProvider.GetRequiredService<IStartupValidator>().Validate();
+
+        validate.Should().Throw<OptionsValidationException>()
+            .WithMessage("*fixed searchable-storage capacity limits*");
     }
 
     [Fact]

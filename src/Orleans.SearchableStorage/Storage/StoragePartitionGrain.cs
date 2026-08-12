@@ -85,6 +85,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         EnsureUsable();
         EnsureLegacyOperationAllowed();
         ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        StorageCapacityGuardrails.ValidateRecordKey(recordKey);
 
         return Task.FromResult(ReadCore(recordKey));
     }
@@ -108,7 +109,9 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         EnsureUsable();
         ArgumentNullException.ThrowIfNull(request);
+        StorageCapacityGuardrails.ValidateGrainId(request.GrainId);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
+        StorageCapacityGuardrails.ValidateRecordKey(request.RecordKey);
 
         var snapshot = await ValidatePointRouteAsync(request.Slot, request.Epoch);
         ValidateRoutedRecordIdentity(
@@ -133,6 +136,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
         ArgumentNullException.ThrowIfNull(request.Payload);
         ArgumentNullException.ThrowIfNull(request.IndexEntries);
+        StorageCapacityGuardrails.ValidateWriteRequest(request);
         StoragePartitionPersistence.ValidateSettings(request.Persistence);
         Persistence.EnsureSettingsMatch(request.Persistence);
         ValidateManagedSchemaBinding(
@@ -175,8 +179,15 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 : [.. request.IndexSchemaFingerprint],
         })!;
         StoragePartitionIndexes.ValidateRecord(storedRecord);
+        _view.ValidateProjectedUpsert(request.RecordKey, storedRecord);
 
-        await PrepareForMutationAsync(request.Persistence);
+        var validationEntry = CreateMutationJournalValidationEntry(
+            StorageJournalOperation.Upsert,
+            request.RecordKey,
+            request.ExpectedETag,
+            storedRecord,
+            checked(nextVersion + 1));
+        await PrepareForMutationAsync(request.Persistence, validationEntry);
         var entry = new StorageJournalEntry
         {
             Sequence = Persistence.NextSequence,
@@ -201,6 +212,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         EnsureUsable();
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Request);
+        StorageCapacityGuardrails.ValidateWriteRequest(request.Request);
 
         var snapshot = await ValidatePointRouteAsync(request.Slot, request.Epoch);
         ValidateRoutedRecordIdentity(
@@ -226,6 +238,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
+        StorageCapacityGuardrails.ValidateRecordKey(request.RecordKey);
         StoragePartitionPersistence.ValidateSettings(request.Persistence);
         Persistence.EnsureSettingsMatch(request.Persistence);
         ValidateManagedSchemaBinding(
@@ -251,7 +264,13 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
 
         EnsureETagMatches(request.RecordKey, currentRecord.ETag, request.ExpectedETag, "clear");
-        await PrepareForMutationAsync(request.Persistence);
+        var validationEntry = CreateMutationJournalValidationEntry(
+            StorageJournalOperation.Delete,
+            request.RecordKey,
+            request.ExpectedETag,
+            record: null,
+            Persistence.NextVersion);
+        await PrepareForMutationAsync(request.Persistence, validationEntry);
         var entry = new StorageJournalEntry
         {
             Sequence = Persistence.NextSequence,
@@ -274,6 +293,8 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         EnsureUsable();
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Request);
+        StorageCapacityGuardrails.ValidateGrainId(request.GrainId);
+        StorageCapacityGuardrails.ValidateRecordKey(request.Request.RecordKey);
 
         // Route validation deliberately precedes the missing-record fast path in ClearAsync. A
         // stale owner must not acknowledge a clear while the authoritative record lives elsewhere.
@@ -296,13 +317,8 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ArgumentException.ThrowIfNullOrWhiteSpace(request.ProviderName);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.StateName);
         ValidateRebuildPageSize(request.PageSize);
+        ValidateRebuildPageFrontier(request);
 
-        if (!request.HasAfter && !request.After.Equals(default(GrainId)))
-        {
-            throw new ArgumentException(
-                "A schema rebuild request without a frontier contains a non-default GrainId.",
-                nameof(request));
-        }
         IndexSchemaIdentity.ValidateIdentity(request.SchemaKey, nameof(request));
         IndexSchemaIdentity.ValidateIdentity(request.TargetFingerprint, nameof(request));
         StoragePartitionPersistence.ValidateSettings(request.Persistence);
@@ -405,7 +421,14 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                     IndexSchemaFingerprint = [.. request.TargetFingerprint],
                 };
                 StoragePartitionIndexes.ValidateRecord(replacement);
-                await PrepareForMutationAsync(request.Persistence);
+                _view.ValidateProjectedUpsert(recordKey, replacement);
+                var validationEntry = CreateMutationJournalValidationEntry(
+                    StorageJournalOperation.Reindex,
+                    recordKey,
+                    current.ETag,
+                    replacement,
+                    Persistence.NextVersion);
+                await PrepareForMutationAsync(request.Persistence, validationEntry);
                 var entry = new StorageJournalEntry
                 {
                     Sequence = Persistence.NextSequence,
@@ -835,12 +858,16 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 $"Move '{request.Move.MoveId}' cannot prepare a target in phase {current.Phase}.");
         }
 
+        var advancePayload = CreateAdvancePayload(request.Move, request.FrozenNextVersion);
+        ValidateMovementJournalPayloadCapacity(
+            StorageJournalOperation.AdvanceVersion,
+            advancePayload);
         await PrepareForProtocolMutationAsync();
         var advanced = current.Copy();
         advanced.Phase = StoragePartitionMovePhase.TargetImporting;
         var entry = CreateMoveJournalEntry(
             StorageJournalOperation.AdvanceVersion,
-            CreateAdvancePayload(request.Move, request.FrozenNextVersion),
+            advancePayload,
             Math.Max(Persistence.NextVersion, request.FrozenNextVersion));
         await CommitAsync(entry, advanced);
         return Persistence.CreateProtocolState();
@@ -946,7 +973,9 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             request.Page,
             current,
             Persistence.NextVersion);
+        _view.ValidateProjectedImports(request.Page.Records);
         var payload = CreateImportPayload(request.Page);
+        ValidateMovementJournalPayloadCapacity(StorageJournalOperation.Import, payload);
         var advanced = AdvanceImportPageControl(
             current,
             request.Page.NextRecordKey,
@@ -1140,6 +1169,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             request.ItemLimit,
             request.ByteTarget,
             nextPhase);
+        ValidateMovementJournalPayloadCapacity(StorageJournalOperation.MoveDelete, payload);
         await PrepareForProtocolMutationAsync();
         var entry = CreateMoveJournalEntry(
             StorageJournalOperation.MoveDelete,
@@ -1279,6 +1309,11 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         StoragePersistence.ValidateOptions(
             request.JournalSegmentCapacity,
             request.MaximumJournalReplayEntries);
+        StorageCapacityGuardrails.ValidatePersistenceConfiguration(
+            request.JournalSegmentCapacity,
+            request.MaximumJournalReplayEntries,
+            nameof(request.JournalSegmentCapacity),
+            nameof(request.MaximumJournalReplayEntries));
         if (request.IndexSchemaProtocolVersion is not 0
             and not StorageIndexSchema.ProtocolVersion)
         {
@@ -1425,6 +1460,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             request.ItemLimit,
             request.ByteTarget,
             nameof(request));
+        if (request.AfterRecordKey is not null)
+        {
+            StorageCapacityGuardrails.ValidateRecordKeyBytes(request.AfterRecordKey);
+        }
     }
 
     private static void ValidateDeletePageRequest(StorageMoveDeletePageRequest request)
@@ -1441,6 +1480,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             request.ItemLimit,
             request.ByteTarget,
             nameof(request));
+        if (request.AfterRecordKey is not null)
+        {
+            StorageCapacityGuardrails.ValidateRecordKeyBytes(request.AfterRecordKey);
+        }
     }
 
     private static void ValidateExportPage(StorageMoveExportPage page)
@@ -1461,7 +1504,25 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             NextVersionAfter = 1,
             Move = payload,
         };
-        StoragePersistenceStateValidation.ValidateJournalEntry(validationEntry, nameof(page));
+        _ = StorageCapacityGuardrails.ValidateJournalEntry(validationEntry);
+    }
+
+    private static void ValidateMovementJournalPayloadCapacity(
+        StorageJournalOperation operation,
+        StorageMoveJournalPayload payload)
+    {
+        var validationEntry = new StorageJournalEntry
+        {
+            Sequence = 1,
+            WriterEpoch = 1,
+            OperationId = Guid.NewGuid(),
+            PreviousOperationId = Guid.Empty,
+            Operation = operation,
+            RecordKey = string.Empty,
+            NextVersionAfter = 1,
+            Move = payload,
+        };
+        _ = StorageCapacityGuardrails.ValidateJournalEntry(validationEntry);
     }
 
     private static StorageMoveJournalPayload CreateAdvancePayload(
@@ -1743,17 +1804,38 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
     }
 
-    private async Task PrepareForMutationAsync(StoragePersistenceSettings settings)
+    private async Task PrepareForMutationAsync(
+        StoragePersistenceSettings settings,
+        StorageJournalEntry prospectiveEntry)
     {
-        try
+        await StorageMutationAdmission.PrepareAsync(
+            prospectiveEntry,
+            () => Persistence.PrepareForMutationAsync(_view.Records, settings),
+            PoisonActivation);
+    }
+
+    private static StorageJournalEntry CreateMutationJournalValidationEntry(
+        StorageJournalOperation operation,
+        string recordKey,
+        string? expectedEtag,
+        StoredRecord? record,
+        long nextVersionAfter)
+    {
+        // Sequence, epoch, and operation identifiers have fixed canonical widths. These valid
+        // placeholders therefore make the capacity measure byte-for-byte equivalent to the entry
+        // built after writer-epoch acquisition, while allowing rejection before durable authority.
+        return new StorageJournalEntry
         {
-            await Persistence.PrepareForMutationAsync(_view.Records, settings);
-        }
-        catch
-        {
-            PoisonActivation();
-            throw;
-        }
+            Sequence = 1,
+            WriterEpoch = 1,
+            OperationId = Guid.NewGuid(),
+            PreviousOperationId = Guid.Empty,
+            Operation = operation,
+            RecordKey = recordKey,
+            ExpectedETag = expectedEtag,
+            Record = record,
+            NextVersionAfter = nextVersionAfter,
+        };
     }
 
     private static void ValidatePageRequest(RoutedPartitionQueryPageRequest request)
@@ -1824,6 +1906,11 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             throw new ArgumentException(
                 "HasAfter must be true exactly when a non-default exclusive boundary is supplied.",
                 nameof(request));
+        }
+
+        if (request.HasAfter)
+        {
+            StorageCapacityGuardrails.ValidateGrainId(request.After);
         }
 
         if (request.WorkBudget <= 0
@@ -2113,6 +2200,22 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 nameof(pageSize),
                 pageSize,
                 $"A schema rebuild page size must be between 1 and {StorageIndexSchema.RebuildPageSize}.");
+        }
+    }
+
+    internal static void ValidateRebuildPageFrontier(StorageIndexSchemaRebuildPageRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.HasAfter == request.After.IsDefault)
+        {
+            throw new ArgumentException(
+                "A schema rebuild frontier must be present exactly when HasAfter is true.",
+                nameof(request));
+        }
+
+        if (request.HasAfter)
+        {
+            StorageCapacityGuardrails.ValidateGrainId(request.After);
         }
     }
 
@@ -2613,5 +2716,30 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             $"Version conflict during {operation} for searchable storage record '{recordKey}'.",
             storedETag,
             expectedETag);
+    }
+}
+
+/// <summary>Keeps pure request admission outside the persistence-failure poison fence.</summary>
+internal static class StorageMutationAdmission
+{
+    public static async Task PrepareAsync(
+        StorageJournalEntry prospectiveEntry,
+        Func<Task> prepareAuthority,
+        Action poisonAuthorityFailure)
+    {
+        ArgumentNullException.ThrowIfNull(prospectiveEntry);
+        ArgumentNullException.ThrowIfNull(prepareAuthority);
+        ArgumentNullException.ThrowIfNull(poisonAuthorityFailure);
+
+        _ = StorageCapacityGuardrails.ValidateJournalEntry(prospectiveEntry);
+        try
+        {
+            await prepareAuthority();
+        }
+        catch
+        {
+            poisonAuthorityFailure();
+            throw;
+        }
     }
 }

@@ -202,8 +202,10 @@ For capacity `C` and maximum replay entries `R`, a partition addresses
 `ceil(R / C) + 2` journal slots. Absolute segment index, not the reusable slot number, is persisted in
 each slot. Reuse requires a durable tombstone and a newer absolute index; delayed stores and retires
 cannot resurrect an older segment. `CommittedSequence - SnapshotSequence` never exceeds `R`. Segment
-capacity bounds operation count, not serialized bytes, so record-size limits remain an operational
-requirement.
+capacity is at most 64 operations; the same segment is also capped at 320 MiB of deterministic
+canonical journal bytes, with each entry capped at 5 MiB. These logical limits are independent of
+Orleans serialization and provider-physical size. The complete fixed envelope is defined in
+[storage-capacity-limits.md](storage-capacity-limits.md).
 
 Compaction is a four-stage protocol:
 
@@ -282,11 +284,11 @@ use only the rest. Canonical Boolean operands receive the same fixed per-operand
 preventing a broad late descriptor from consuming the unused allowance of an inexpensive completed
 sibling. `AND` chooses the cheapest completed superset driver with a canonical tie-break. A range
 descriptor enumerates and charges only its selected ordered bucket window, then admits heap
-initialization from
-the retained included bucket count rather than the scope-wide bucket count. Selective admission
+initialization from the retained included bucket count rather than the scope-wide bucket count.
+Selective admission
 reserves worst-case source initialization and first-source-candidate work, including duplicate range
-draining and N-input union
-priming, plus the minimum successful evaluator group. This removes setup-only budget cliffs at the
+draining and N-input union priming, plus the minimum successful evaluator group. This removes
+setup-only budget cliffs at the
 catalog-to-selective transition. It does not cover arbitrarily many records or index entries in an
 actual predicate group; those data-dependent no-progress cases still fail with the documented
 budget-too-small exception. `OR` opens canonical `GrainId` streams and performs a charged N-input
@@ -558,9 +560,11 @@ same-hardware baselines.
 Normal mutation I/O is bounded by one configured journal segment plus one small manifest, and index
 maintenance touches only the changed buckets. The remaining partition-size costs are activation and
 compaction: an activation materializes the whole active snapshot, and compaction copies and
-serializes the whole partition while holding its non-reentrant turn. Two stable snapshot slots bound
-object count, not snapshot bytes. Large records also make a bounded-operation journal segment large.
-The activation also retains both the existing lookup indexes and the ordered catalog/postings used by
+serializes the whole partition while holding its non-reentrant turn. A snapshot is capped at
+1,000,000 records and 512 MiB of deterministic canonical record bytes; journal entries and segments
+have the dual count/byte ceilings described above. Those ceilings are safety bounds, not provider-
+physical sizes or evidence that a near-limit partition has acceptable latency or memory use. The
+activation also retains both the existing lookup indexes and the ordered catalog/postings used by
 paging; benchmark capacity tuples therefore report the additive retained-memory cost rather than
 treating per-operation allocation as activation size.
 

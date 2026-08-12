@@ -22,6 +22,7 @@ public sealed class StorageMovementRecoveryTests
         var recoveredIds = new HashSet<Guid>();
         var nextVersion = 1L;
         var operationId = Guid.Empty;
+        var capacity = new StorageCapacityTracker(records);
         var move = StorageMovementProtocolTests.CreateMoveIdentity();
         var advance = CreateAdvanceEntry(
             move,
@@ -37,7 +38,8 @@ public sealed class StorageMovementRecoveryTests
             maximumWriterEpoch: 1,
             recoveredIds,
             ref nextVersion,
-            ref operationId);
+            ref operationId,
+            capacity);
 
         records.Should().BeEmpty();
         nextVersion.Should().Be(50);
@@ -63,7 +65,8 @@ public sealed class StorageMovementRecoveryTests
             maximumWriterEpoch: 1,
             recoveredIds,
             ref nextVersion,
-            ref operationId);
+            ref operationId,
+            capacity);
 
         records["record-49"].ETag.Should().Be("49");
         nextVersion.Should().Be(100);
@@ -77,6 +80,7 @@ public sealed class StorageMovementRecoveryTests
         var recoveredIds = new HashSet<Guid>();
         var nextVersion = 100L;
         var operationId = Guid.Empty;
+        var capacity = new StorageCapacityTracker(records);
         var import = CreateImportEntry(
             move,
             sequence: 1,
@@ -93,7 +97,8 @@ public sealed class StorageMovementRecoveryTests
             maximumWriterEpoch: 1,
             recoveredIds,
             ref nextVersion,
-            ref operationId);
+            ref operationId,
+            capacity);
 
         replay.Should().Throw<InvalidOperationException>()
             .WithMessage("*invalid imported record*");

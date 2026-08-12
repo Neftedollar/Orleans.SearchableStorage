@@ -407,7 +407,7 @@ jobs:
             -- --retained-memory "$evidence" --quick
 
           jq --exit-status '
-            .SchemaVersion == "oss-query-work-matrix/v1"
+            .SchemaVersion == "oss-query-work-matrix/v2"
             and .Quick == true
             and .DefaultLegacyItemWindow == 8192
             and (.Entries | length) == 62
@@ -422,10 +422,22 @@ jobs:
                 + .FirstPage.Work.PostingSeekCount
                 + .FirstPage.Work.RangeBucketVisitCount
                 + .FirstPage.Work.ResultMaterializationCount
-                + .FirstPage.Work.RangeMergeOperationCount)
+                + .FirstPage.Work.RangeMergeOperationCount
+                + .FirstPage.Work.PlannerNodeVisitCount
+                + .FirstPage.Work.PlannerMetadataReadCount
+                + .FirstPage.Work.PostingCandidateVisitCount
+                + .FirstPage.Work.CatalogCandidateVisitCount
+                + .FirstPage.Work.HeapOperationCount
+                + .FirstPage.Work.UnionOperationCount)
               and .FirstPage.Work.TotalOperationCount <= .Policy.WorkBudget
               and .FirstPage.ItemCount <= .Policy.PageSize
-              and .FirstPage.ItemByteCount <= .Policy.ResponseByteLimit)
+              and .FirstPage.ItemByteCount <= .Policy.ResponseByteLimit
+              and (.FirstPage.AccessPath == "Catalog"
+                or .FirstPage.AccessPath == "ExactPosting"
+                or .FirstPage.AccessPath == "RangeMerge"
+                or .FirstPage.AccessPath == "Union"))
+            and ([.Entries[].FirstPage.AccessPath] | unique)
+              == ["Catalog", "ExactPosting", "RangeMerge", "Union"]
             and ([.Entries[].RangeExecutionStrategy] | index("OrderedRangeMerge")) != null
             and ([.Entries[].RangeExecutionStrategy] | index("CatalogFallback")) != null
             and ([.Entries[]

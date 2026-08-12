@@ -28,8 +28,8 @@ internal enum PartitionQueryResponseFamily
 
 internal static class GrainIdCanonicalOrder
 {
-    internal const int MaximumTypeBytes = 1_024;
-    internal const int MaximumKeyBytes = 4_096;
+    internal const int MaximumTypeBytes = SearchableStorageCapacityLimits.MaximumGrainTypeBytes;
+    internal const int MaximumKeyBytes = SearchableStorageCapacityLimits.MaximumGrainKeyBytes;
 
     public static IComparer<GrainId> Comparer { get; } = new CanonicalComparer();
 

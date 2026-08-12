@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Orleans.SearchableStorage;
 
 namespace Orleans.SearchableStorage.Benchmarks;
 
@@ -472,7 +473,8 @@ internal sealed class StorageSpec
 
     public int VirtualSlotTargetCount { get; init; } = 1_024;
 
-    public int JournalSegmentCapacity { get; init; } = 256;
+    public int JournalSegmentCapacity { get; init; } =
+        SearchableStorageCapacityLimits.MaximumJournalSegmentEntries;
 
     public int MaximumJournalReplayEntries { get; init; } = 4_096;
 
@@ -485,6 +487,16 @@ internal sealed class StorageSpec
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(JournalSegmentCapacity);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumJournalReplayEntries);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(CompactionThreshold);
+
+        if (JournalSegmentCapacity
+                > SearchableStorageCapacityLimits.MaximumJournalSegmentEntries
+            || MaximumJournalReplayEntries
+                > SearchableStorageCapacityLimits.MaximumJournalReplayEntries)
+        {
+            throw new InvalidDataException(
+                "Storage journalSegmentCapacity and maximumJournalReplayEntries exceed the fixed "
+                + "searchable-storage capacity envelope.");
+        }
 
         if (PartitionCount > MaximumVirtualSlotCount || VirtualSlotTargetCount > MaximumVirtualSlotCount)
         {

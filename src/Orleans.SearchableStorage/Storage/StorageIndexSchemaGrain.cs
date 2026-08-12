@@ -228,10 +228,16 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
                 });
             if (result.ProcessedRecordCount < 0
                 || result.ProcessedRecordCount > StorageIndexSchema.RebuildPageSize
+                || result.HasAfter == result.After.IsDefault
                 || (!result.Exhausted && (!result.HasAfter || result.ProcessedRecordCount == 0)))
             {
                 throw new InvalidOperationException(
                     $"Storage owner {owner} returned invalid schema-rebuild progress.");
+            }
+
+            if (result.HasAfter)
+            {
+                StorageCapacityGuardrails.ValidateGrainId(result.After);
             }
 
             progress.ProcessedRecordCount = checked(
@@ -430,7 +436,7 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
         }
     }
 
-    private static void ValidateState(StorageIndexSchemaState state)
+    internal static void ValidateState(StorageIndexSchemaState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         if (!state.Initialized)
@@ -471,6 +477,11 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
         ValidatePersistedIdentityBytes(rebuild.SchemaKey, "schema key");
         ValidatePersistedIdentityBytes(rebuild.TargetFingerprint, "target fingerprint");
         ValidatePersistedIdentityBytes(rebuild.LayoutFingerprint, "layout fingerprint");
+        if (rebuild.HasAfter)
+        {
+            StorageCapacityGuardrails.ValidateGrainId(rebuild.After);
+        }
+
         if (rebuild.RebuildId == Guid.Empty
             || rebuild.LayoutEpoch <= 0
             || rebuild.OwnerCount <= 0
