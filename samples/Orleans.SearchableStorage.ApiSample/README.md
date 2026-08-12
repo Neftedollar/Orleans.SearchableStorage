@@ -161,6 +161,65 @@ state objects or support synchronous enumeration, projections, grouping, joins, 
 ordering. Every page fans out to all distinct current owners. The current identity map has every
 initial partition as an owner; a moved layout still receives only one query call per distinct owner.
 
+## Bounded membership and `WhereIn`
+
+The hosted walkthrough deliberately keeps `VacancyState` unchanged: adding a membership property to
+an already managed state changes its schema fingerprint and requires the quiesced rebuild procedure.
+The following companion state and queries are nevertheless runnable public API. Register this state
+under a separate state name on every silo and external query client, then complete its managed-schema
+rebuild before writing or querying it:
+
+```csharp
+[GenerateSerializer]
+public sealed class CandidateState
+{
+    [Id(0)]
+    [SearchableIndex(SearchableIndexKind.Hash)]
+    public string?[] Skills { get; set; } = [];
+
+    [Id(1)]
+    [SearchableIndex(SearchableIndexKind.Hash)]
+    public List<int?> AudienceIds { get; set; } = [];
+
+    [Id(2)]
+    [SearchableIndex(SearchableIndexKind.Hash)]
+    public string City { get; set; } = string.Empty;
+}
+
+siloBuilder.AddSearchableStorageState<CandidateState>(
+    VacancyGrain.StorageProviderName,
+    "candidate",
+    applicationSchemaVersion: 1);
+
+var bySkill = search
+    .Query<CandidateState>("candidate")
+    .Where(state => Enumerable.Contains(state.Skills, "C#"));
+
+var byAudience = search
+    .Query<CandidateState>("candidate")
+    .Where(state => state.AudienceIds.Contains(42));
+
+IReadOnlyList<string> selectedCities = ["Haifa", "Tel Aviv"];
+var byCity = search
+    .Query<CandidateState>("candidate")
+    .WhereIn(state => state.City, selectedCities);
+```
+
+Membership accepts only an exact one-dimensional SZ `T[]` or exact `List<T>` over the supported
+scalar/nullable element types, and only with a Hash index. A null collection contributes no derived
+entries; null elements are omitted, the empty string is retained, and derived entries are
+canonically sorted and deduplicated. One record may retain at most 64 unique values in one
+membership scope. More raw duplicates are allowed when canonical deduplication leaves at most 64.
+The authoritative serialized collection and its order remain part of the normal grain-state payload.
+
+The predicate forms are equally exact: two-argument generic
+`Enumerable.Contains<T>(state.Array, value)` and instance `state.List.Contains(value)` on the direct
+property. Interface/custom/nested/comparer forms and `values.Contains(state.Property)` are rejected.
+Use `WhereIn` only for one direct scalar Hash or Range property. It snapshots at most 64 raw non-null
+values immediately; the built-in provider then canonically deduplicates/sorts them and lowers to the
+existing exact/OR plan. Membership properties cannot be direct `FindAsync`/`RangeAsync`, `WhereIn`,
+or facet selectors.
+
 The [bounded query and paging contract](../../docs/bounded-query-contract.md) defines the implemented
 logical-work accounting, global frontier, continuation, and weak-consistency semantics. With no
 writes and an unchanged layout, concatenating every page is exactly the same sorted, distinct result

@@ -41,6 +41,9 @@ public sealed class MemoryStorageFixture : ISearchableStorageFixture, IAsyncLife
     public const string CancelableSchemaStateName = "cancelable-schema-state";
     public const string FacetGenerationSchemaProviderName = "FacetGenerationSchemaSearchable";
     public const string FacetGenerationSchemaStateName = "facet-generation-schema-state";
+    public const string CollectionMembershipSchemaProviderName =
+        "CollectionMembershipSchemaSearchable";
+    public const string CollectionMembershipSchemaStateName = "collection-membership-schema";
     public const string SchemaBeginBeforeProviderName = "SchemaBeginBeforeSearchable";
     public const string SchemaBeginAfterProviderName = "SchemaBeginAfterSearchable";
     public const string SchemaProgressBeforeProviderName = "SchemaProgressBeforeSearchable";
@@ -174,6 +177,17 @@ public sealed class MemoryStorageFixture : ISearchableStorageFixture, IAsyncLife
                 FacetGenerationSchemaStateName,
                 applicationSchemaVersion: 2,
                 configurePaging: true);
+            siloBuilder.AddSearchableGrainStorage(
+                CollectionMembershipSchemaProviderName,
+                options =>
+                {
+                    options.PartitionCount = 1;
+                    options.Query.ContinuationProtection.CurrentKey =
+                        CreateSchemaTestContinuationKey();
+                });
+            siloBuilder.AddSearchableStorageState<TestGrains.CollectionMembershipState>(
+                CollectionMembershipSchemaProviderName,
+                CollectionMembershipSchemaStateName);
             AddManagedSchemaProvider(
                 siloBuilder,
                 StorageIndexSchemaTestConstants.BackendContractProviderName,

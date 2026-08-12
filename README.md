@@ -6,13 +6,13 @@ The project is an early vertical slice. It implements an `IGrainStorage` provide
 
 The [1.0 product and query contract](docs/one-zero-contract.md) is the concise matrix of the
 implemented product boundary, supported CLR/index/query surface, terminal semantics, failure model,
-and current runtime/backend evidence. It separately identifies the narrow bounded-membership slice
-accepted but not yet implemented before the intended 1.0 freeze, without claiming that version 1.0
-or its SemVer guarantees have already shipped.
+and current runtime/backend evidence, including the implemented bounded collection-membership slice.
+It does not claim that version 1.0 or its SemVer guarantees have already shipped.
 
 ## Current semantics
 
-- Hash indexes support exact-value lookup.
+- Hash indexes support scalar exact-value lookup and bounded membership over exact `T[]` and
+  `List<T>` properties.
 - Range indexes support exact-value and bounded range lookup.
 - A record and all of its local index entries share one journal operation and one manifest commit point.
 - Steady mutations rewrite one bounded journal segment and one constant-size manifest instead of the whole partition.
@@ -25,10 +25,11 @@ or its SemVer guarantees have already shipped.
   then move one slot at a time under durable epoch and visibility fences.
 - Routed point operations carry their virtual slot and layout epoch. Each bounded query page fans out
   to every distinct current owner and returns a sorted, distinct `GrainId` prefix.
-- A focused `IQueryable<TState>` layer supports indexed comparisons combined with boolean AND and OR.
+- A focused `IQueryable<TState>` layer supports indexed comparisons, exact collection `Contains`,
+  bounded scalar `WhereIn`, and boolean AND/OR composition.
 - Every partition evaluates at most one configured logical-work slice in a non-reentrant turn;
   continuations are stateless, authenticated-encrypted, and bound to the query and routing epoch.
-- Indexed-only facet terminals provide value-ordered distinct pages, explicit exact or bounded-
+- Scalar-index-only facet terminals provide value-ordered distinct pages, explicit exact or bounded-
   approximate top-N counts, and exact minimum/maximum values without loading record payloads into
   the caller.
 - The keyed admin client explicitly enables movement, plans/advances/executes/aborts one durable
@@ -48,6 +49,7 @@ canonical entry data. Canonical bytes are deterministic logical accounting, not 
 or physical-provider bytes. A partition activation still loads its whole accepted snapshot into
 memory, and compaction still serializes that whole partition; the 1,000,000-record and 512 MiB
 canonical snapshot ceilings are safety boundaries, not small latency or transient-memory bounds.
+One collection membership scope contributes at most 64 unique canonical entries per record.
 Range indexes now use logarithmic bucket seeks and incremental bucket updates. Paging adds
 activation-local ordered catalogs/postings, so retained index memory is higher even though live
 updates remain logarithmic.
@@ -186,6 +188,52 @@ do
 while (continuation is not null);
 ```
 
+For bounded membership, declare only an exact one-dimensional `T[]` or exact `List<T>` property and
+use a Hash index. `T` must be one of the supported scalar types (including supported nullable value
+types):
+
+```csharp
+[GenerateSerializer]
+public sealed class CandidateState
+{
+    [Id(0)]
+    [SearchableIndex(SearchableIndexKind.Hash)]
+    public string?[] Skills { get; set; } = [];
+
+    [Id(1)]
+    [SearchableIndex(SearchableIndexKind.Hash)]
+    public List<int?> AudienceIds { get; set; } = [];
+
+    [Id(2)]
+    [SearchableIndex(SearchableIndexKind.Hash)]
+    public string City { get; set; } = string.Empty;
+}
+
+var bySkill = search
+    .Query<CandidateState>("candidate")
+    .Where(state => Enumerable.Contains(state.Skills, "C#"));
+
+var byAudience = search
+    .Query<CandidateState>("candidate")
+    .Where(state => state.AudienceIds.Contains(42));
+
+IReadOnlyList<string> selectedCities = ["Haifa", "Tel Aviv"];
+var byCity = search
+    .Query<CandidateState>("candidate")
+    .WhereIn(state => state.City, selectedCities);
+```
+
+Register `CandidateState` for the `candidate` state name on every participant and complete its
+managed-schema rebuild before executing these queries.
+A null collection contributes no entries. Null elements are omitted, an empty string is a normal
+indexed value, and duplicate elements are canonically deduplicated and sorted before admission. A
+managed write runs the active-schema gate before it reads indexed properties, so that gate can
+consult schema/layout authority first. After the gate succeeds, more than 64 unique members in one
+scope fails before any partition mutation or WAL authority. In an unmanaged namespace with no
+registrations, the same first-write rejection occurs before layout initialization or routing.
+Collection properties are predicates only: direct `FindAsync`/`RangeAsync`, `WhereIn`, and facet
+selectors stay scalar.
+
 Use the same deferred predicate for facets over one indexed property:
 
 ```csharp
@@ -257,6 +305,15 @@ The focused query layer accepts direct indexed-property comparisons using `==`, 
 and `>=`. Comparisons can be combined with `&&` and `||`, and additional `Where` calls are treated
 as `&&`. The other side of a comparison must be a constant or captured value; method calls and
 calculations inside the expression are rejected. Relational operators require a range index.
+The two collection exceptions are exact `Enumerable.Contains<T>(state.Array, value)` for a direct
+SZ-array property and exact `state.List.Contains(value)` for a direct `List<T>` property. Both
+require a Hash membership index and a closed scalar operand of the exact element type. Reversing the
+shape to `values.Contains(state.Property)`, using an interface or nested collection, or selecting a
+collection for `WhereIn` is not supported.
+`WhereIn` accepts one direct scalar Hash or Range property plus at most 64 raw non-null values. It
+snapshots the input immediately, then the built-in translator canonically deduplicates and sorts the
+values into existing exact/OR nodes; an empty input is an empty plan. It adds no general LINQ or
+client-side fallback.
 Compiler-generated integral and enum promotions are accepted only when they preserve every indexed
 value exactly. Conversions of the indexed property which box, narrow, invoke user code, or lose
 numeric information are rejected instead of being translated with different CLR semantics. Built-in
@@ -273,6 +330,7 @@ documented in the paging contract.
 
 `ToDistinctFacetValuePageAsync`, `ToFacetValueCountsAsync`, and `ToFacetMinMaxAsync` are separate
 indexed-only terminals. They reject selectors which do not name one declared hash or range index.
+Collection membership indexes cannot be facet selectors.
 The built-in provider bounds candidate metadata, exact-count probes, filtered predicate work, and
 retry rounds independently from legacy result collection. External LINQ providers opt in through
 `ISearchableStorageFacetQueryProvider`; the existing async and paging provider interfaces remain

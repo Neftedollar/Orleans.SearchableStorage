@@ -8,7 +8,8 @@ implementation-specific benchmarks. PR15 adds typed indexed-facet response famil
 distinct-value paging, exact or certified-approximate top-N counts, and exact extrema tracked by
 [issue #9](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/9). The scalar access-path
 planner tracked by issue #25 advances only the `GrainId` page work policy to version 2; facet work
-policy remains version 1.
+policy remains version 1. Bounded collection membership and scalar `WhereIn` lower to the existing
+plan and paging protocol; they add no wire operation or work-policy version.
 
 The keywords **must**, **must not**, **should**, and **may** are normative for the versioned paging
 and work-policy contracts named below.
@@ -31,6 +32,30 @@ This protocol does not create a distributed snapshot or add text search. Live sl
 separate persistence-format-4 state machine documented in [live-movement.md](live-movement.md). Its
 ownership commit increments the layout-format-4 epoch and therefore invalidates continuations created
 under the previous map; every first-page retry still discards the complete old-epoch attempt.
+
+## Membership lowering and bounds
+
+An exact collection predicate is one Exact leaf. The translator accepts only the exact generic
+two-argument `Enumerable.Contains<T>(state.Array, value)` form for a direct exact SZ `T[]` property,
+or exact instance `state.List.Contains(value)` for a direct exact `List<T>` property. The property
+must declare a Hash membership index, and the closed operand must have the exact supported
+scalar/nullable element type. The resulting leaf addresses the same canonical posting shape as a
+scalar exact lookup. Reversed `values.Contains(state.Property)`, interfaces, nested collection
+access, comparer overloads, and arbitrary methods do not translate.
+
+`WhereIn` is a public query-provider marker over one direct scalar Hash or Range property. Its public
+boundary reads and snapshots at most `SearchableStorageQueryLimits.MaximumWhereInValues` (64) raw
+non-null values immediately. The built-in translator converts those values through the selected
+index codec, canonically deduplicates and sorts them, and emits Empty, one Exact leaf, or a balanced
+Or tree of Exact leaves. Thus order and canonical duplicates have one semantic plan, query
+fingerprint, continuation binding, and charged execution. The raw cap applies before deduplication;
+an empty input emits Empty. Normal 64-depth/256-node validation remains authoritative when this
+predicate is combined with other `Where` clauses.
+
+External `IQueryable` providers receive the marker method-call expression and own its execution and
+bounding semantics. The library does not rewrite it into general LINQ or execute a client-side
+collection scan. Collection indexes themselves are not valid `WhereIn`, direct `FindAsync`/
+`RangeAsync`, or facet selectors.
 
 ## Logical work accounting
 
@@ -492,7 +517,7 @@ An external `IQueryable` provider already controls `ExecuteToGrainIdsAsync` thro
 that implementation. The public provider contract therefore requires external providers to own and
 document their bounding semantics; it does not claim they use the built-in distributed protocol.
 
-The built-in lower-level `FindAsync` and `RangeAsync` implementations route exact and range
+The built-in lower-level scalar `FindAsync` and `RangeAsync` implementations route exact and range
 evaluation through the same bounded partition paging RPC
 and aggregate internally under the same hard legacy work, item, byte, and round ceilings. They return
 the complete sorted, distinct result only when every owner is exhausted; otherwise they throw the
@@ -504,8 +529,9 @@ Neither the client nor a partition falls back to the old unbounded array-returni
 ## Indexed facet protocol
 
 Facet terminals are opt-in through `ISearchableStorageFacetQueryProvider` and accept a selector for
-one declared hash or range index on the query element type. The normal focused predicate is compiled
-first, then evaluated for every nominated exact value. An unindexed, mismatched, nested, computed, or
+one declared scalar hash or range index on the query element type. Membership indexes may filter the
+normal focused predicate but cannot be selected as the facet value. The predicate is compiled first,
+then evaluated for every nominated exact value. An unindexed, mismatched, nested, computed, or
 otherwise unsupported selector is rejected before fan-out. Null property values have no index entry
 and therefore never appear as a distinct value, count item, minimum, or maximum.
 

@@ -27,6 +27,12 @@ public abstract class JournaledPersistenceContractTests<TFixture>
     }
 
     [SkippableFact]
+    public Task CollectionMembershipSurvivesPersistenceAndMovement()
+    {
+        return CollectionMembershipProviderContract.AssertPersistenceAndMovementAsync(Fixture);
+    }
+
+    [SkippableFact]
     public async Task ManagedIndexSchemaRebuildsLegacyRecordsAcrossThePhysicalBackend()
     {
         var providerName = StorageIndexSchemaTestConstants.BackendContractProviderName;

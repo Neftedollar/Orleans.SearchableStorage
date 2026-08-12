@@ -23,7 +23,7 @@ internal static class QueryTranslator
             budget,
             depth: 1)
             ?? throw new NotSupportedException(
-                "A searchable storage query must contain at least one Where predicate.");
+                "A searchable storage query must contain at least one Where or WhereIn filter.");
         QueryPlanValidator.Validate(plan);
         return plan;
     }
@@ -59,6 +59,35 @@ internal static class QueryTranslator
         if (expression is ConstantExpression { Value: IQueryable<TState> })
         {
             return null;
+        }
+
+        if (expression is MethodCallExpression whereInCall
+            && SearchableStorageQueryableExtensions.IsWhereInMethod(whereInCall.Method))
+        {
+            if (whereInCall.Arguments.Count != 3
+                || StripQuote(whereInCall.Arguments[1]) is not LambdaExpression
+                {
+                    Parameters.Count: 1,
+                } selector)
+            {
+                throw new NotSupportedException(
+                    "WhereIn requires one direct property selector and one snapshotted value list.");
+            }
+
+            var whereInSourcePlan = TranslateQueryExpression<TState>(
+                stateName,
+                whereInCall.Arguments[0],
+                schemaFingerprint,
+                budget,
+                depth + 1);
+            var whereInPlan = TranslateWhereIn<TState>(
+                stateName,
+                selector,
+                whereInCall.Arguments[2],
+                schemaFingerprint);
+            return whereInSourcePlan is null
+                ? whereInPlan
+                : QueryPlanBuilder.And(whereInSourcePlan, whereInPlan);
         }
 
         if (expression is not MethodCallExpression methodCall
@@ -102,11 +131,6 @@ internal static class QueryTranslator
         int depth)
     {
         budget.Visit(depth);
-        if (expression is ConstantExpression { Value: false })
-        {
-            return EmptyQueryPlan.Instance;
-        }
-
         return expression.NodeType switch
         {
             ExpressionType.AndAlso when expression is BinaryExpression binary =>
@@ -123,7 +147,8 @@ internal static class QueryTranslator
             ExpressionType.GreaterThan or
             ExpressionType.GreaterThanOrEqual when expression is BinaryExpression comparison =>
                 TranslateComparison<TState>(stateName, comparison, parameter, schemaFingerprint, budget),
-            ExpressionType.Call when expression is MethodCallExpression methodCall =>
+            ExpressionType.Call when expression is MethodCallExpression methodCall
+                && methodCall.Method.Name == nameof(Enumerable.Contains) =>
                 TranslateCollectionContains<TState>(
                     stateName,
                     methodCall,
@@ -138,6 +163,113 @@ internal static class QueryTranslator
                 $"Predicate expression '{expression.NodeType}' is not supported. " +
                 "Use indexed comparisons combined with && or ||."),
         };
+    }
+
+    private static QueryPlan TranslateWhereIn<TState>(
+        string stateName,
+        LambdaExpression selector,
+        Expression valuesExpression,
+        byte[]? schemaFingerprint)
+    {
+        var parameter = selector.Parameters[0];
+        if (parameter.Type != typeof(TState)
+            || !TryGetDirectProperty(selector.Body, parameter, out var propertyAccess)
+            || propertyAccess.Conversions.Count != 0)
+        {
+            throw new NotSupportedException(
+                "WhereIn requires a directly typed scalar indexed property selector.");
+        }
+
+        var property = propertyAccess.Property;
+        SelectedIndex index;
+        try
+        {
+            index = IndexMetadataProvider.GetDeclaredIndex<TState>(
+                stateName,
+                property,
+                nameof(selector),
+                schemaFingerprint);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new NotSupportedException(
+                $"Property '{property.Name}' is not searchable because it does not declare SearchableIndexAttribute.",
+                exception);
+        }
+
+        if (index.Multiplicity != IndexValueMultiplicity.Scalar)
+        {
+            throw new NotSupportedException(
+                $"WhereIn requires a scalar index, but property '{property.Name}' is a collection membership index.");
+        }
+
+        if (property.PropertyType != selector.ReturnType
+            || property.PropertyType != index.Converter.ValueType)
+        {
+            throw new NotSupportedException(
+                $"WhereIn selector type '{selector.ReturnType}' must exactly match scalar indexed property "
+                + $"type '{index.Converter.ValueType}'; conversions and boxing are not supported.");
+        }
+
+        if (valuesExpression is not ConstantExpression { Value: IWhereInValueSnapshot values }
+            || values.ElementType != property.PropertyType)
+        {
+            throw new NotSupportedException(
+                "WhereIn requires the immutable value snapshot produced by its public query operator.");
+        }
+
+        if (values.Count > SearchableStorageQueryLimits.MaximumWhereInValues)
+        {
+            throw new NotSupportedException(
+                $"WhereIn cannot contain more than {SearchableStorageQueryLimits.MaximumWhereInValues} raw values.");
+        }
+
+        var canonical = new SortedSet<IndexValue>();
+        for (var valueIndex = 0; valueIndex < values.Count; valueIndex++)
+        {
+            var value = values.GetValue(valueIndex);
+            if (value is null)
+            {
+                throw new NotSupportedException(
+                    $"Null WhereIn values are not supported because property '{property.Name}' does not index null values.");
+            }
+
+            var valuePlan = QueryComparisonPlanFactory.Create(index, ExpressionType.Equal, value);
+            switch (valuePlan)
+            {
+                case ExactQueryPlan exact:
+                    canonical.Add(exact.Value);
+                    break;
+                case EmptyQueryPlan:
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        "An exact WhereIn value produced a non-exact scalar comparison plan.");
+            }
+        }
+
+        if (canonical.Count == 0)
+        {
+            return EmptyQueryPlan.Instance;
+        }
+
+        var current = canonical
+            .Select(value => (QueryPlan)new ExactQueryPlan(index, value))
+            .ToList();
+        while (current.Count > 1)
+        {
+            var next = new List<QueryPlan>((current.Count + 1) / 2);
+            for (var valueIndex = 0; valueIndex < current.Count; valueIndex += 2)
+            {
+                next.Add(valueIndex + 1 < current.Count
+                    ? new OrQueryPlan(current[valueIndex], current[valueIndex + 1])
+                    : current[valueIndex]);
+            }
+
+            current = next;
+        }
+
+        return current[0];
     }
 
     private static QueryPlan TranslateCollectionContains<TState>(
@@ -201,12 +333,11 @@ internal static class QueryTranslator
         SelectedIndex index;
         try
         {
-            index = IndexMetadataProvider.GetSelectedIndex<TState>(
+            index = IndexMetadataProvider.GetCollectionMembershipIndex<TState>(
                 stateName,
                 property,
                 nameof(methodCall),
-                schemaFingerprint,
-                IndexValueMultiplicity.CollectionMembership);
+                schemaFingerprint);
         }
         catch (ArgumentException exception)
         {
@@ -256,7 +387,7 @@ internal static class QueryTranslator
         SelectedIndex index;
         try
         {
-            index = IndexMetadataProvider.GetSelectedIndex<TState>(
+            index = IndexMetadataProvider.GetDeclaredIndex<TState>(
                 stateName,
                 property,
                 nameof(comparison),
@@ -267,6 +398,13 @@ internal static class QueryTranslator
             throw new NotSupportedException(
                 $"Property '{property.Name}' is not searchable because it does not declare SearchableIndexAttribute.",
                 exception);
+        }
+
+        if (index.Multiplicity != IndexValueMultiplicity.Scalar)
+        {
+            throw new NotSupportedException(
+                $"Collection membership property '{property.Name}' cannot be compared directly. "
+                + "Use its supported Contains form with a non-null element value.");
         }
 
         QueryComparisonPlanFactory.ValidatePropertyConversions(

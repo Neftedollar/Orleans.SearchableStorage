@@ -4,6 +4,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using Orleans.SearchableStorage.Storage;
+using PolyType;
 using PolyType.Abstractions;
 using PolyType.ReflectionProvider;
 
@@ -97,16 +98,48 @@ internal static class IndexMetadataProvider
             stateName,
             property,
             nameof(expression),
-            schemaFingerprint,
-            requiredMultiplicity: IndexValueMultiplicity.Scalar);
+            schemaFingerprint);
     }
 
     public static SelectedIndex GetSelectedIndex<TState>(
         string stateName,
         PropertyInfo property,
         string parameterName,
-        byte[]? schemaFingerprint = null,
-        IndexValueMultiplicity requiredMultiplicity = IndexValueMultiplicity.Scalar)
+        byte[]? schemaFingerprint = null)
+    {
+        var index = GetDeclaredIndex<TState>(stateName, property, parameterName, schemaFingerprint);
+        if (index.Multiplicity != IndexValueMultiplicity.Scalar)
+        {
+            throw new ArgumentException(
+                $"Indexed property '{property.Name}' is a collection membership index; this operation requires a scalar index.",
+                parameterName);
+        }
+
+        return index;
+    }
+
+    public static SelectedIndex GetCollectionMembershipIndex<TState>(
+        string stateName,
+        PropertyInfo property,
+        string parameterName,
+        byte[]? schemaFingerprint = null)
+    {
+        var index = GetDeclaredIndex<TState>(stateName, property, parameterName, schemaFingerprint);
+        if (index.Multiplicity != IndexValueMultiplicity.CollectionMembership)
+        {
+            throw new ArgumentException(
+                $"Indexed property '{property.Name}' is a scalar index; collection Contains requires a collection membership index.",
+                parameterName);
+        }
+
+        return index;
+    }
+
+    public static SelectedIndex GetDeclaredIndex<TState>(
+        string stateName,
+        PropertyInfo property,
+        string parameterName,
+        byte[]? schemaFingerprint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
         ArgumentNullException.ThrowIfNull(property);
@@ -117,16 +150,6 @@ internal static class IndexMetadataProvider
             ?? throw new ArgumentException(
                 $"Property '{property.Name}' is not marked with SearchableIndexAttribute.",
                 parameterName);
-
-        if (index.Multiplicity != requiredMultiplicity)
-        {
-            var expected = requiredMultiplicity == IndexValueMultiplicity.Scalar
-                ? "a scalar index"
-                : "a collection membership index";
-            throw new ArgumentException(
-                $"Indexed property '{property.Name}' does not declare {expected}.",
-                parameterName);
-        }
 
         var scope = index.GetScope(stateName);
         if (schemaFingerprint is not null)
@@ -237,7 +260,7 @@ internal static class IndexMetadataProvider
                     + $"{nameof(SearchableIndexKind.Hash)} indexes.");
             }
 
-            if (attribute.Kind == SearchableIndexKind.Range && !index.Converter.SupportsRange)
+            if (attribute.Kind == SearchableIndexKind.Range && !index.SupportsRange)
             {
                 throw new NotSupportedException(
                     $"Range-indexed property '{typeof(TState).FullName}.{property.Name}' has unordered type '{property.PropertyType.Type}'.");
@@ -360,6 +383,11 @@ internal static class IndexMetadataProvider
 
             if (converter is null)
             {
+                if (propertyShape.PropertyType.Kind != TypeShapeKind.Enumerable)
+                {
+                    return null;
+                }
+
                 return propertyShape.PropertyType.Accept(
                     CollectionPropertyIndexBuilder<TState>.Instance,
                     new CollectionPropertyBuildContext<TState, TValue>(
@@ -453,6 +481,9 @@ internal abstract class PropertyIndexMetadata<TState>(
     public string ValueTypeIdentity { get; } = valueTypeIdentity;
 
     public IndexValueConverter Converter { get; } = converter;
+
+    public bool SupportsRange { get; } = multiplicity == IndexValueMultiplicity.Scalar
+        && converter.SupportsRange;
 
     public IndexValueMultiplicity Multiplicity { get; } = multiplicity;
 

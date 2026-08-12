@@ -11,7 +11,7 @@ permissions:
 
 env:
   # Every backend inherits the shared contract. Memory adds one provider test; external providers add two.
-  SHARED_STORAGE_CONTRACT_TEST_COUNT: "99"
+  SHARED_STORAGE_CONTRACT_TEST_COUNT: "100"
 
 jobs:
   build-and-test:

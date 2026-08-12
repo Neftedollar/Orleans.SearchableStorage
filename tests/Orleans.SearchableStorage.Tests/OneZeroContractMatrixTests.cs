@@ -116,7 +116,7 @@ public sealed class OneZeroContractMatrixTests
         var facetPlan = QueryTranslator.TranslateFacet<ContractState>("state", expression);
 
         translateIdentifiers.Should().Throw<NotSupportedException>()
-            .WithMessage("*at least one Where predicate*");
+            .WithMessage("*at least one Where or WhereIn filter*");
         facetPlan.Should().BeSameAs(AllQueryPlan.Instance);
     }
 

@@ -14,7 +14,7 @@ public interface ISearchableStorageClient
     /// <typeparam name="TState">The persisted state type which declares the index.</typeparam>
     /// <typeparam name="TValue">The indexed property type.</typeparam>
     /// <param name="stateName">The Orleans persistent-state name.</param>
-    /// <param name="propertySelector">An expression selecting one indexed state property.</param>
+    /// <param name="propertySelector">An expression selecting one scalar indexed state property.</param>
     /// <param name="value">The exact value to find. Null values are not indexed.</param>
     /// <param name="cancellationToken">A token which cancels waiting for the distributed query.</param>
     /// <returns>A sorted, distinct list of matching grain identifiers.</returns>
@@ -24,6 +24,9 @@ public interface ISearchableStorageClient
     /// throws without returning a partial list. Express potentially large traversals through
     /// <see cref="ISearchableStorageQueryClient.Query{TState}(string)"/> and
     /// <see cref="SearchableStorageQueryableExtensions.ToGrainIdPageAsync{TState}(IQueryable{TState}, SearchableStorageQueryPageRequest, CancellationToken)"/>.
+    /// A collection membership property is not a direct selector; use
+    /// <see cref="ISearchableStorageQueryClient.Query{TState}(string)"/> with the supported exact
+    /// array or <c>List&lt;T&gt;</c> <c>Contains</c> predicate.
     /// </remarks>
     /// <exception cref="ArgumentException">The selector or value does not match a declared index.</exception>
     /// <exception cref="InvalidOperationException">The configured client layout differs from the persisted layout.</exception>
