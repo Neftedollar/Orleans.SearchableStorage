@@ -46,6 +46,19 @@ internal static class BenchmarkArtifactValidator
         }
 
         var resultBytes = await File.ReadAllBytesAsync(resultPath, cancellationToken);
+        using (var versionDocument = JsonDocument.Parse(resultBytes))
+        {
+            if (versionDocument.RootElement.TryGetProperty("schemaVersion", out var schemaVersion) &&
+                string.Equals(
+                    schemaVersion.GetString(),
+                    BenchmarkEvidenceV2Validator.ResultSchemaVersion,
+                    StringComparison.Ordinal))
+            {
+                await BenchmarkEvidenceV2Validator.ValidateAsync(resultPath, resultBytes, cancellationToken);
+                return;
+            }
+        }
+
         ValidateResultSchema(resultBytes);
         using var document = JsonDocument.Parse(resultBytes);
         var status = document.RootElement.GetProperty("status").GetString();

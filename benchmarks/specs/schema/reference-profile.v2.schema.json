@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orleans-searchable-storage.dev/benchmarks/reference-profile.v2.schema.json",
+  "title": "Orleans.SearchableStorage benchmark reference profile v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "id",
+    "revision",
+    "classification",
+    "status",
+    "qualificationScope",
+    "backend",
+    "implementationPath",
+    "topology",
+    "cases",
+    "thresholds"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
+    "schemaVersion": { "const": "oss-benchmark-reference-profile/v2" },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "classification": { "enum": ["schema-fixture", "qualification"] },
+    "status": { "enum": ["contract-smoke", "frozen"] },
+    "qualificationScope": { "type": "string", "minLength": 1 },
+    "backend": { "$ref": "#/$defs/backend" },
+    "implementationPath": { "enum": ["searchable", "plain"] },
+    "topology": { "enum": ["embedded", "external"] },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/case" }
+    },
+    "thresholds": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/threshold" }
+    }
+  },
+  "$defs": {
+    "backend": { "enum": ["memory", "postgresql", "redis", "azure-blob"] },
+    "workload": {
+      "enum": [
+        "public-paging",
+        "public-facet",
+        "public-hydration",
+        "point-read",
+        "point-write",
+        "point-delete",
+        "storage-recovery",
+        "schema-rebuild",
+        "schema-resume"
+      ]
+    },
+    "lifecycle": {
+      "enum": ["hot-application-grain", "warm-storage-owner", "cold-storage-owner"]
+    },
+    "phase": {
+      "enum": [
+        "steady-state",
+        "activation",
+        "garbage-collection",
+        "journal-replay",
+        "compaction",
+        "schema-rebuild",
+        "schema-resume"
+      ]
+    },
+    "accessPath": {
+      "enum": [
+        "hash-posting",
+        "facet-candidate-metadata",
+        "hydration-batch",
+        "storage-owner-point-read",
+        "storage-owner-point-write",
+        "storage-owner-point-delete",
+        "storage-owner-recovery",
+        "schema-rebuild-coordinator",
+        "schema-resume-checkpoint"
+      ]
+    },
+    "providerTelemetryPolicy": { "enum": ["not-applicable", "optional", "required"] },
+    "metric": {
+      "enum": [
+        "completed-operations",
+        "offered-operations",
+        "failed-operations",
+        "timed-out-operations",
+        "error-rate",
+        "timeout-rate",
+        "latency-p50",
+        "latency-p95",
+        "latency-p99",
+        "latency-p999",
+        "returned-grain-ids",
+        "completed-pages",
+        "facet-values",
+        "hydrated-grains",
+        "activated-grains",
+        "gen2-collections",
+        "replayed-entries",
+        "compacted-entries",
+        "rebuilt-records",
+        "resume-checkpoints",
+        "retained-managed-bytes",
+        "peak-managed-bytes",
+        "memory-headroom-bytes",
+        "cold-activation-duration",
+        "recovery-duration",
+        "gc-pause-duration",
+        "compaction-pause-duration",
+        "logical-orleans-read-calls",
+        "logical-orleans-write-calls",
+        "logical-orleans-delete-calls",
+        "provider-read-call-amplification",
+        "provider-write-call-amplification",
+        "provider-delete-call-amplification",
+        "provider-byte-amplification"
+      ]
+    },
+    "unit": { "enum": ["count", "milliseconds", "bytes", "ratio"] },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "workload",
+        "lifecycle",
+        "accessPath",
+        "requiredPhases",
+        "fanoutCeiling",
+        "providerTelemetryPolicy"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "workload": { "$ref": "#/$defs/workload" },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "accessPath": { "$ref": "#/$defs/accessPath" },
+        "requiredPhases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/phase" }
+        },
+        "fanoutCeiling": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["physicalOwners", "virtualSlots"],
+          "properties": {
+            "physicalOwners": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "virtualSlots": { "type": "integer", "minimum": 1, "maximum": 262144 }
+          }
+        },
+        "providerTelemetryPolicy": { "$ref": "#/$defs/providerTelemetryPolicy" }
+      }
+    },
+    "threshold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "caseId",
+        "phase",
+        "metric",
+        "unit",
+        "comparison",
+        "value",
+        "purpose"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "caseId": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "phase": { "$ref": "#/$defs/phase" },
+        "metric": { "$ref": "#/$defs/metric" },
+        "unit": { "$ref": "#/$defs/unit" },
+        "comparison": { "enum": ["less-than-or-equal", "greater-than-or-equal"] },
+        "value": { "type": "number", "minimum": 0 },
+        "purpose": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

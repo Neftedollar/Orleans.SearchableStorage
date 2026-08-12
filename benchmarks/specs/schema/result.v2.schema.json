@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orleans-searchable-storage.dev/benchmarks/result.v2.schema.json",
+  "title": "Orleans.SearchableStorage benchmark evidence result v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "id",
+    "classification",
+    "qualified",
+    "scaleClaim",
+    "qualificationReason",
+    "profile",
+    "run",
+    "cases",
+    "thresholdEvaluations"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
+    "schemaVersion": { "const": "oss-benchmark-result/v2" },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "classification": { "enum": ["schema-fixture", "qualification"] },
+    "qualified": { "type": "boolean" },
+    "scaleClaim": { "type": "boolean" },
+    "qualificationReason": { "type": "string", "minLength": 1 },
+    "profile": { "$ref": "#/$defs/profileReference" },
+    "run": { "$ref": "#/$defs/run" },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/caseResult" }
+    },
+    "thresholdEvaluations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/thresholdEvaluation" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "backend": { "enum": ["memory", "postgresql", "redis", "azure-blob"] },
+    "workload": {
+      "enum": [
+        "public-paging",
+        "public-facet",
+        "public-hydration",
+        "point-read",
+        "point-write",
+        "point-delete",
+        "storage-recovery",
+        "schema-rebuild",
+        "schema-resume"
+      ]
+    },
+    "lifecycle": {
+      "enum": ["hot-application-grain", "warm-storage-owner", "cold-storage-owner"]
+    },
+    "phase": {
+      "enum": [
+        "steady-state",
+        "activation",
+        "garbage-collection",
+        "journal-replay",
+        "compaction",
+        "schema-rebuild",
+        "schema-resume"
+      ]
+    },
+    "accessPath": {
+      "enum": [
+        "hash-posting",
+        "facet-candidate-metadata",
+        "hydration-batch",
+        "storage-owner-point-read",
+        "storage-owner-point-write",
+        "storage-owner-point-delete",
+        "storage-owner-recovery",
+        "schema-rebuild-coordinator",
+        "schema-resume-checkpoint"
+      ]
+    },
+    "metric": {
+      "enum": [
+        "completed-operations",
+        "offered-operations",
+        "failed-operations",
+        "timed-out-operations",
+        "error-rate",
+        "timeout-rate",
+        "latency-p50",
+        "latency-p95",
+        "latency-p99",
+        "latency-p999",
+        "returned-grain-ids",
+        "completed-pages",
+        "facet-values",
+        "hydrated-grains",
+        "activated-grains",
+        "gen2-collections",
+        "replayed-entries",
+        "compacted-entries",
+        "rebuilt-records",
+        "resume-checkpoints",
+        "retained-managed-bytes",
+        "peak-managed-bytes",
+        "memory-headroom-bytes",
+        "cold-activation-duration",
+        "recovery-duration",
+        "gc-pause-duration",
+        "compaction-pause-duration",
+        "logical-orleans-read-calls",
+        "logical-orleans-write-calls",
+        "logical-orleans-delete-calls",
+        "provider-read-call-amplification",
+        "provider-write-call-amplification",
+        "provider-delete-call-amplification",
+        "provider-byte-amplification"
+      ]
+    },
+    "unit": { "enum": ["count", "milliseconds", "bytes", "ratio"] },
+    "profileReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "sha256"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "gitCommit",
+        "gitDirty",
+        "backend",
+        "implementationPath",
+        "topology",
+        "recordCount",
+        "physicalOwnerCount",
+        "virtualSlotCount",
+        "siloCount",
+        "clientCount",
+        "provenance",
+        "rawEvidenceArtifacts"
+      ],
+      "properties": {
+        "runId": { "type": "string", "minLength": 1 },
+        "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "gitDirty": { "type": "boolean" },
+        "backend": { "$ref": "#/$defs/backend" },
+        "implementationPath": { "enum": ["searchable", "plain"] },
+        "topology": { "enum": ["embedded", "external"] },
+        "recordCount": { "type": "integer", "minimum": 1 },
+        "physicalOwnerCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "virtualSlotCount": { "type": "integer", "minimum": 1, "maximum": 262144 },
+        "siloCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "clientCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "rawEvidenceArtifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/rawEvidenceArtifact" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "driverVersion",
+        "frameworkDescription",
+        "runtimeVersion",
+        "osDescription",
+        "osArchitecture",
+        "processArchitecture",
+        "processorCount",
+        "cpuModel",
+        "physicalMemoryBytes",
+        "serverGc",
+        "concurrentGc",
+        "stopwatchFrequency",
+        "serializer",
+        "providerName",
+        "providerVersion",
+        "components"
+      ],
+      "properties": {
+        "driverVersion": { "type": "string", "minLength": 1 },
+        "frameworkDescription": { "type": "string", "minLength": 1 },
+        "runtimeVersion": { "type": "string", "minLength": 1 },
+        "osDescription": { "type": "string", "minLength": 1 },
+        "osArchitecture": { "type": "string", "minLength": 1 },
+        "processArchitecture": { "type": "string", "minLength": 1 },
+        "processorCount": { "type": "integer", "minimum": 1 },
+        "cpuModel": { "type": "string", "minLength": 1 },
+        "physicalMemoryBytes": { "type": "integer", "minimum": 1 },
+        "serverGc": { "type": "boolean" },
+        "concurrentGc": { "type": "boolean" },
+        "stopwatchFrequency": { "type": "integer", "minimum": 1 },
+        "serializer": { "type": "string", "minLength": 1 },
+        "providerName": { "type": "string", "minLength": 1 },
+        "providerVersion": { "type": "string", "minLength": 1 },
+        "components": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "rawEvidenceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "sha256"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "operation-histogram",
+            "gc-trace",
+            "provider-telemetry",
+            "schema-checkpoint",
+            "contract-fixture"
+          ]
+        },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "caseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "workload",
+        "lifecycle",
+        "accessPath",
+        "observedFanout",
+        "phases",
+        "logicalOrleansCalls",
+        "byteEvidence",
+        "providerNativeTelemetry"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "workload": { "$ref": "#/$defs/workload" },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "accessPath": { "$ref": "#/$defs/accessPath" },
+        "observedFanout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["physicalOwners", "virtualSlots"],
+          "properties": {
+            "physicalOwners": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "virtualSlots": { "type": "integer", "minimum": 1, "maximum": 262144 }
+          }
+        },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/phaseEvidence" }
+        },
+        "logicalOrleansCalls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["read", "write", "delete"],
+          "properties": {
+            "read": { "type": "integer", "minimum": 0 },
+            "write": { "type": "integer", "minimum": 0 },
+            "delete": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "byteEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "logicalStateBytes",
+            "canonicalSerializedBytes",
+            "providerNativePhysicalBytes"
+          ],
+          "properties": {
+            "logicalStateBytes": { "$ref": "#/$defs/byteObservation" },
+            "canonicalSerializedBytes": { "$ref": "#/$defs/byteObservation" },
+            "providerNativePhysicalBytes": { "$ref": "#/$defs/byteObservation" }
+          }
+        },
+        "providerNativeTelemetry": { "$ref": "#/$defs/providerTelemetry" }
+      }
+    },
+    "phaseEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "status", "durationMilliseconds", "metrics"],
+      "properties": {
+        "phase": { "$ref": "#/$defs/phase" },
+        "status": { "enum": ["completed", "failed"] },
+        "durationMilliseconds": { "type": "number", "minimum": 0 },
+        "metrics": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/metricObservation" }
+        }
+      }
+    },
+    "metricObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "unit", "value"],
+      "properties": {
+        "metric": { "$ref": "#/$defs/metric" },
+        "unit": { "$ref": "#/$defs/unit" },
+        "value": { "type": "number", "minimum": 0 }
+      }
+    },
+    "byteObservation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "valueBytes"],
+          "properties": {
+            "availability": { "const": "observed" },
+            "valueBytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "reason"],
+          "properties": {
+            "availability": { "const": "missing" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "reason"],
+          "properties": {
+            "availability": { "const": "not-applicable" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "providerTelemetry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "observations"],
+          "properties": {
+            "availability": { "const": "observed" },
+            "observations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["metric", "unit", "value"],
+                "properties": {
+                  "metric": {
+                    "enum": [
+                      "read-calls",
+                      "write-calls",
+                      "delete-calls",
+                      "read-bytes",
+                      "write-bytes",
+                      "delete-bytes"
+                    ]
+                  },
+                  "unit": { "enum": ["count", "bytes"] },
+                  "value": { "type": "number", "minimum": 0 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "reason"],
+          "properties": {
+            "availability": { "const": "missing" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "reason"],
+          "properties": {
+            "availability": { "const": "not-applicable" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "thresholdEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thresholdId", "observedValue", "passed"],
+      "properties": {
+        "thresholdId": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "observedValue": { "type": "number", "minimum": 0 },
+        "passed": { "type": "boolean" }
+      }
+    }
+  }
+}

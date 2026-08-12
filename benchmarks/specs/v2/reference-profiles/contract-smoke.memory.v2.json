@@ -1,0 +1,359 @@
+{
+  "$schema": "../../schema/reference-profile.v2.schema.json",
+  "schemaVersion": "oss-benchmark-reference-profile/v2",
+  "id": "contract-smoke-memory",
+  "revision": 1,
+  "classification": "schema-fixture",
+  "status": "contract-smoke",
+  "qualificationScope": "Contract and threshold-evaluator fixture only; this profile is not a release envelope or a performance SLO.",
+  "backend": "memory",
+  "implementationPath": "searchable",
+  "topology": "embedded",
+  "cases": [
+    {
+      "id": "point-read-hot",
+      "workload": "point-read",
+      "lifecycle": "hot-application-grain",
+      "accessPath": "storage-owner-point-read",
+      "requiredPhases": ["steady-state"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "point-write-warm",
+      "workload": "point-write",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "storage-owner-point-write",
+      "requiredPhases": ["steady-state"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "point-delete-warm",
+      "workload": "point-delete",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "storage-owner-point-delete",
+      "requiredPhases": ["steady-state"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "public-paging-hot",
+      "workload": "public-paging",
+      "lifecycle": "hot-application-grain",
+      "accessPath": "hash-posting",
+      "requiredPhases": ["steady-state"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1024
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "public-facet-warm",
+      "workload": "public-facet",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "facet-candidate-metadata",
+      "requiredPhases": ["steady-state"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1024
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "public-hydration-hot",
+      "workload": "public-hydration",
+      "lifecycle": "hot-application-grain",
+      "accessPath": "hydration-batch",
+      "requiredPhases": ["steady-state"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1024
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "storage-recovery-cold",
+      "workload": "storage-recovery",
+      "lifecycle": "cold-storage-owner",
+      "accessPath": "storage-owner-recovery",
+      "requiredPhases": [
+        "activation",
+        "garbage-collection",
+        "journal-replay",
+        "compaction"
+      ],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1024
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "schema-rebuild-warm",
+      "workload": "schema-rebuild",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "schema-rebuild-coordinator",
+      "requiredPhases": ["schema-rebuild"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1024
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    },
+    {
+      "id": "schema-resume-warm",
+      "workload": "schema-resume",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "schema-resume-checkpoint",
+      "requiredPhases": ["schema-resume"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1024
+      },
+      "providerTelemetryPolicy": "not-applicable"
+    }
+  ],
+  "thresholds": [
+    {
+      "id": "fixture-paging-offered",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "offered-operations",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-paging-completes",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "completed-operations",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-paging-error-rate",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "error-rate",
+      "unit": "ratio",
+      "comparison": "less-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-paging-timeout-rate",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "timeout-rate",
+      "unit": "ratio",
+      "comparison": "less-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-paging-p50",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "latency-p50",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-paging-p95",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "latency-p95",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-paging-p99",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "latency-p99",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-paging-p999",
+      "caseId": "public-paging-hot",
+      "phase": "steady-state",
+      "metric": "latency-p999",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-cold-activation",
+      "caseId": "storage-recovery-cold",
+      "phase": "activation",
+      "metric": "cold-activation-duration",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-retained-memory",
+      "caseId": "storage-recovery-cold",
+      "phase": "activation",
+      "metric": "retained-managed-bytes",
+      "unit": "bytes",
+      "comparison": "less-than-or-equal",
+      "value": 1000000000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-peak-memory",
+      "caseId": "storage-recovery-cold",
+      "phase": "activation",
+      "metric": "peak-managed-bytes",
+      "unit": "bytes",
+      "comparison": "less-than-or-equal",
+      "value": 1000000000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-memory-headroom",
+      "caseId": "storage-recovery-cold",
+      "phase": "activation",
+      "metric": "memory-headroom-bytes",
+      "unit": "bytes",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-gc-pause",
+      "caseId": "storage-recovery-cold",
+      "phase": "garbage-collection",
+      "metric": "gc-pause-duration",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-recovery-duration",
+      "caseId": "storage-recovery-cold",
+      "phase": "journal-replay",
+      "metric": "recovery-duration",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-replay-is-bounded",
+      "caseId": "storage-recovery-cold",
+      "phase": "journal-replay",
+      "metric": "replayed-entries",
+      "unit": "count",
+      "comparison": "less-than-or-equal",
+      "value": 16,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-compaction-pause",
+      "caseId": "storage-recovery-cold",
+      "phase": "compaction",
+      "metric": "compaction-pause-duration",
+      "unit": "milliseconds",
+      "comparison": "less-than-or-equal",
+      "value": 1000,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-point-read-call",
+      "caseId": "point-read-hot",
+      "phase": "steady-state",
+      "metric": "logical-orleans-read-calls",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-point-write-call",
+      "caseId": "point-write-warm",
+      "phase": "steady-state",
+      "metric": "logical-orleans-write-calls",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-point-delete-call",
+      "caseId": "point-delete-warm",
+      "phase": "steady-state",
+      "metric": "logical-orleans-delete-calls",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-facet-values",
+      "caseId": "public-facet-warm",
+      "phase": "steady-state",
+      "metric": "facet-values",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-hydrated-grains",
+      "caseId": "public-hydration-hot",
+      "phase": "steady-state",
+      "metric": "hydrated-grains",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-schema-rebuilt-records",
+      "caseId": "schema-rebuild-warm",
+      "phase": "schema-rebuild",
+      "metric": "rebuilt-records",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    },
+    {
+      "id": "fixture-schema-resume-checkpoint",
+      "caseId": "schema-resume-warm",
+      "phase": "schema-resume",
+      "metric": "resume-checkpoints",
+      "unit": "count",
+      "comparison": "greater-than-or-equal",
+      "value": 1,
+      "purpose": "Schema-fixture evaluator exercise only; not a release SLO."
+    }
+  ]
+}

@@ -52,6 +52,42 @@ public sealed class SpecSchemaTests
     }
 
     [Fact]
+    public async Task EveryCheckedInVersionTwoContractFixtureConformsToItsCheckedInJsonSchema()
+    {
+        var specsRoot = Path.Combine(AppContext.BaseDirectory, "specs");
+        var schemaRoot = Path.Combine(specsRoot, "schema");
+        var profileSchema = await LoadSchemaAsync(Path.Combine(schemaRoot, "reference-profile.v2.schema.json"));
+        var resultSchema = await LoadSchemaAsync(Path.Combine(schemaRoot, "result.v2.schema.json"));
+        var versionTwoRoot = Path.Combine(specsRoot, "v2");
+        var fixtures = Directory
+            .EnumerateFiles(Path.Combine(versionTwoRoot, "reference-profiles"), "*.json")
+            .Select(path => (Path: path, Schema: profileSchema))
+            .Concat(Directory
+                .EnumerateFiles(versionTwoRoot, "*.result.v2.json")
+                .Select(path => (Path: path, Schema: resultSchema)))
+            .OrderBy(static fixture => fixture.Path, StringComparer.Ordinal)
+            .ToArray();
+        Assert.NotEmpty(fixtures);
+
+        var failures = new List<string>();
+        foreach (var (path, schema) in fixtures)
+        {
+            using var instance = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+            var result = schema.Evaluate(
+                instance.RootElement,
+                new EvaluationOptions { OutputFormat = OutputFormat.Hierarchical });
+            if (!result.IsValid)
+            {
+                failures.Add($"{path}:{Environment.NewLine}{FormatFailure(result)}");
+            }
+        }
+
+        Assert.True(
+            failures.Count == 0,
+            $"Checked-in benchmark v2 fixtures must conform to their schemas:{Environment.NewLine}{string.Join(Environment.NewLine, failures)}");
+    }
+
+    [Fact]
     public async Task ScenarioSchemaRejectsAuditWithoutPopulation()
     {
         var specsRoot = Path.Combine(AppContext.BaseDirectory, "specs");

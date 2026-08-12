@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "oss-benchmark-contract-fixture-raw/v1",
+  "id": "contract-smoke-memory",
+  "synthetic": true,
+  "purpose": "Content-addressed raw-artifact plumbing fixture; not measured performance evidence."
+}

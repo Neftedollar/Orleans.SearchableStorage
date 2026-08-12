@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "oss-benchmark-contract-fixture-raw/v1",
+  "id": "contract-smoke-postgresql",
+  "synthetic": true,
+  "providerContacted": false,
+  "purpose": "Content-addressed provider-telemetry plumbing fixture; no PostgreSQL service was contacted."
+}
