@@ -92,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          checks=$(gh api \
+          checks=$(gh api --paginate --slurp \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100")
@@ -103,7 +103,7 @@ jobs:
             "Source secret scan" \
             "CodeQL C# analysis"; do
             if ! jq --exit-status --arg required "$required" \
-              '[.check_runs[] | select(
+              '[.[].check_runs[] | select(
                 .name == $required
                 and .conclusion == "success"
                 and .app.slug == "github-actions"
