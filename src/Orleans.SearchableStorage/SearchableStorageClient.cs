@@ -679,6 +679,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var responseRequirements = QueryResponseRequirements.Create(query);
         var schema = _stateRegistry.Find(_providerName, stateName)?.Schema;
         var calls = new PartitionPageCall[owners.Length];
         for (var index = 0; index < owners.Length; index++)
@@ -713,6 +714,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         cancellationToken.ThrowIfCancellationRequested();
         return ValidateAndMergeResponses(
             responses,
+            responseRequirements,
             queryFingerprint,
             layout,
             layoutFingerprint,
@@ -773,6 +775,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
 
     private static PageAttemptResult ValidateAndMergeResponses(
         PartitionQueryPageResult[] responses,
+        QueryResponseRequirements responseRequirements,
         byte[] queryFingerprint,
         StorageLayoutSnapshot layout,
         byte[] layoutFingerprint,
@@ -791,6 +794,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
                 ValidatePartitionResponse(
                     index,
                     response,
+                    responseRequirements,
                     queryFingerprint,
                     layout,
                     layoutFingerprint,
@@ -821,6 +825,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     private static void ValidatePartitionResponse(
         int responseIndex,
         PartitionQueryPageResult response,
+        QueryResponseRequirements responseRequirements,
         byte[] queryFingerprint,
         StorageLayoutSnapshot layout,
         byte[] layoutFingerprint,
@@ -854,11 +859,12 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             throw InvalidPartitionResponse(responseIndex, "omitted a required payload");
         }
 
+        var totalOperationCount = response.Work.TotalOperationCount;
         if (response.Items.Length > policy.PartitionResponseItemLimit
             || response.ItemByteCount < 0
             || response.ItemByteCount > policy.PartitionResponseByteLimit
             || HasNegativeWorkComponent(response.Work)
-            || response.Work.TotalOperationCount > policy.PartitionWorkBudget)
+            || totalOperationCount > policy.PartitionWorkBudget)
         {
             throw InvalidPartitionResponse(responseIndex, "exceeded its effective response policy");
         }
@@ -870,6 +876,22 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             || (response.Exhausted && !response.Frontier.IsDefault))
         {
             throw InvalidPartitionResponse(responseIndex, "returned an invalid frontier or stop reason");
+        }
+
+        if (!Enum.IsDefined(response.Work.AccessPath)
+            || response.Work.AccessPath == PartitionQueryAccessPath.None)
+        {
+            throw InvalidPartitionResponse(responseIndex, "returned an invalid scalar access path");
+        }
+
+        if (!HasConsistentWorkEvidence(
+                response,
+                responseRequirements,
+                policy,
+                totalOperationCount,
+                cursor.HasAfter))
+        {
+            throw InvalidPartitionResponse(responseIndex, "returned inconsistent scalar work evidence");
         }
 
         if (response.HasFrontier
@@ -924,7 +946,125 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
             || work.PostingSeekCount < 0
             || work.RangeBucketVisitCount < 0
             || work.RangeMergeOperationCount < 0
-            || work.ResultMaterializationCount < 0;
+            || work.ResultMaterializationCount < 0
+            || work.PlannerNodeVisitCount < 0
+            || work.PlannerMetadataReadCount < 0
+            || work.PostingCandidateVisitCount < 0
+            || work.CatalogCandidateVisitCount < 0
+            || work.HeapOperationCount < 0
+            || work.UnionOperationCount < 0;
+    }
+
+    private static bool HasConsistentWorkEvidence(
+        PartitionQueryPageResult response,
+        QueryResponseRequirements requirements,
+        QueryExecutionPolicy policy,
+        long totalOperationCount,
+        bool hasInputBoundary)
+    {
+        var work = response.Work;
+        if (work.PlannerNodeVisitCount != requirements.WireNodeCount
+            || !requirements.Allows(work.AccessPath)
+            || (response.StopReason == PartitionQueryPageStopReason.WorkBudget
+                && totalOperationCount != policy.PartitionWorkBudget)
+            || (response.StopReason == PartitionQueryPageStopReason.ItemLimit
+                && response.Items.Length != policy.PartitionResponseItemLimit)
+            || (response.StopReason == PartitionQueryPageStopReason.ByteLimit
+                && response.Items.Length == 0)
+            || work.ResultMaterializationCount != response.Items.LongLength
+            || work.ResultMaterializationCount > work.RecordProbeCount
+            || work.ResultMaterializationCount > work.PredicateNodeProbeCount
+            || work.ResultMaterializationCount > work.OwnershipProbeCount
+            || work.OwnershipProbeCount > work.OrderedCandidateVisitCount
+            || (response.HasFrontier && work.OwnershipProbeCount == 0)
+            || (work.RecordProbeCount > 0 && work.OwnershipProbeCount == 0)
+            || (work.PredicateNodeProbeCount > 0 && work.RecordProbeCount == 0)
+            || (work.IndexEntryProbeCount > 0 && work.PredicateNodeProbeCount == 0)
+            || (work.PostingCandidateVisitCount > 0
+                && work.OrderedCandidateVisitCount == 0)
+            || (work.CatalogCandidateVisitCount > 0
+                && work.OrderedCandidateVisitCount == 0)
+            || (work.HeapOperationCount > 0 && work.PostingCandidateVisitCount == 0)
+            || (work.RangeMergeOperationCount > 0 && work.PostingCandidateVisitCount == 0)
+            || (work.UnionOperationCount > 0 && work.PostingCandidateVisitCount == 0)
+            || !requirements.HasMinimumMaterializedPredicateWork(
+                response.Items.LongLength,
+                work))
+        {
+            return false;
+        }
+
+        var unownedCandidateCount =
+            work.OrderedCandidateVisitCount - work.OwnershipProbeCount;
+        var unpredicatedRecordCount = Math.Max(
+            0,
+            work.RecordProbeCount - work.PredicateNodeProbeCount);
+        // A work-budget stop may occur after the cursor exposes one candidate but before its
+        // ownership charge fits, or after one record probe but before its root predicate charge.
+        // Only one stage can be incomplete, and every other successful stop follows complete
+        // candidate groups.
+        var maximumIncompleteStageCount =
+            response.StopReason == PartitionQueryPageStopReason.WorkBudget ? 1 : 0;
+        if (unownedCandidateCount > maximumIncompleteStageCount
+            || unpredicatedRecordCount
+                > maximumIncompleteStageCount - unownedCandidateCount)
+        {
+            return false;
+        }
+
+        // Empty planning can still charge node, metadata, seek, and range-bucket discovery work.
+        // It cannot emit evidence from an opened candidate source or record evaluation.
+        return work.AccessPath switch
+        {
+            PartitionQueryAccessPath.Empty =>
+                requirements.MeetsEmptyPlanningLowerBound(work)
+                && response.Exhausted
+                && !response.HasFrontier
+                && response.Frontier.IsDefault
+                && response.Items.Length == 0
+                && work.OrderedCandidateVisitCount == 0
+                && work.RecordProbeCount == 0
+                && work.PredicateNodeProbeCount == 0
+                && work.IndexEntryProbeCount == 0
+                && work.OwnershipProbeCount == 0
+                && work.ResultMaterializationCount == 0
+                && work.PostingCandidateVisitCount == 0
+                && work.CatalogCandidateVisitCount == 0
+                && work.HeapOperationCount == 0
+                && work.UnionOperationCount == 0
+                && work.RangeMergeOperationCount == 0,
+            PartitionQueryAccessPath.ExactPosting =>
+                requirements.MeetsAccessPathPlanningLowerBound(work.AccessPath, work)
+                && (hasInputBoundary || work.OrderedCandidateVisitCount > 0)
+                && work.CatalogCandidateVisitCount == 0
+                && work.HeapOperationCount == 0
+                && work.UnionOperationCount == 0
+                && work.RangeMergeOperationCount == 0
+                && work.PostingCandidateVisitCount >= work.OrderedCandidateVisitCount,
+            PartitionQueryAccessPath.RangeMerge =>
+                requirements.MeetsAccessPathPlanningLowerBound(work.AccessPath, work)
+                && (hasInputBoundary || work.OrderedCandidateVisitCount > 0)
+                && work.RangeBucketVisitCount >= 1
+                && work.CatalogCandidateVisitCount == 0
+                && work.UnionOperationCount == 0
+                && work.PostingCandidateVisitCount >= work.OrderedCandidateVisitCount
+                && work.HeapOperationCount >= work.OrderedCandidateVisitCount
+                && work.RangeMergeOperationCount >= work.OrderedCandidateVisitCount,
+            PartitionQueryAccessPath.Union =>
+                requirements.MeetsAccessPathPlanningLowerBound(work.AccessPath, work)
+                && (hasInputBoundary || work.OrderedCandidateVisitCount > 0)
+                && work.CatalogCandidateVisitCount == 0
+                && work.PostingCandidateVisitCount >= work.OrderedCandidateVisitCount
+                && work.UnionOperationCount >= work.OrderedCandidateVisitCount,
+            PartitionQueryAccessPath.Catalog =>
+                work.PostingSeekCount >= 1
+                && work.PostingCandidateVisitCount == 0
+                && work.HeapOperationCount == 0
+                && work.UnionOperationCount == 0
+                && work.RangeMergeOperationCount == 0
+                && work.CatalogCandidateVisitCount >= work.OrderedCandidateVisitCount,
+            _ => false,
+        };
     }
 
     private static PageAttemptResult MergePartitionResponses(

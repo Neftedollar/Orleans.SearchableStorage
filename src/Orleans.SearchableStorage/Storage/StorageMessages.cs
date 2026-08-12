@@ -668,6 +668,38 @@ internal sealed class PartitionQueryPageWork
     [Id(8)]
     public long RangeMergeOperationCount { get; init; }
 
+    /// <summary>One before visiting an original wire-plan node during canonical preparation.</summary>
+    [Id(9)]
+    public long PlannerNodeVisitCount { get; init; }
+
+    /// <summary>
+    /// One before the planner reads a posting cardinality used to rank access paths.
+    /// </summary>
+    [Id(10)]
+    public long PlannerMetadataReadCount { get; init; }
+
+    /// <summary>One before a candidate is read and advanced from an index posting.</summary>
+    [Id(11)]
+    public long PostingCandidateVisitCount { get; init; }
+
+    /// <summary>One before a candidate is read and advanced from the state catalog.</summary>
+    [Id(12)]
+    public long CatalogCandidateVisitCount { get; init; }
+
+    /// <summary>One before a structural mutation of the range-merge heap.</summary>
+    [Id(13)]
+    public long HeapOperationCount { get; init; }
+
+    /// <summary>
+    /// One before a union input is advanced and one before two union inputs are compared.
+    /// </summary>
+    [Id(14)]
+    public long UnionOperationCount { get; init; }
+
+    /// <summary>Identifies the candidate access path selected for this turn.</summary>
+    [Id(15)]
+    public PartitionQueryAccessPath AccessPath { get; init; }
+
     /// <summary>Gets the checked sum of every logical-work component.</summary>
     public long TotalOperationCount => checked(
         OrderedCandidateVisitCount
@@ -678,7 +710,24 @@ internal sealed class PartitionQueryPageWork
         + PostingSeekCount
         + RangeBucketVisitCount
         + ResultMaterializationCount
-        + RangeMergeOperationCount);
+        + RangeMergeOperationCount
+        + PlannerNodeVisitCount
+        + PlannerMetadataReadCount
+        + PostingCandidateVisitCount
+        + CatalogCandidateVisitCount
+        + HeapOperationCount
+        + UnionOperationCount);
+}
+
+/// <summary>Candidate source selected by the bounded scalar access-path planner.</summary>
+internal enum PartitionQueryAccessPath
+{
+    None = 0,
+    Empty = 1,
+    ExactPosting = 2,
+    RangeMerge = 3,
+    Union = 4,
+    Catalog = 5,
 }
 
 internal enum PartitionQueryPageStopReason

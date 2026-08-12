@@ -12,7 +12,7 @@ internal static class QueryProtocol
 {
     public const int PagingVersion = 1;
     public const int OrderingVersion = 1;
-    public const int WorkPolicyVersion = 1;
+    public const int WorkPolicyVersion = 2;
     public const int ContinuationPayloadVersion = 1;
     public const int FacetValueOrderingVersion = 1;
     public const int FacetWorkPolicyVersion = 1;

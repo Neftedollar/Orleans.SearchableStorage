@@ -109,9 +109,15 @@ duplicate-heavy union, ordered partition frontiers, multi-owner merge, short and
 pages, and concatenation equivalence when no writes occur. It must also cover activation rebuild and
 mutation equivalence for the ordered state catalog/postings, ordered exact drivers,
 candidate-tested exact-and-range intersection, bounded range k-way merge, complete candidate-group
-frontiers, and ordered-catalog fallback. The PR13 materializing evaluator remains the benchmark
-baseline; the ordered implementation matrix adds activation-build, mutation, retained-memory,
-latency, allocation, paging-progress, and work-vector evidence.
+frontiers, canonical sorted/distinct `OR` union, selected-window range admission, deterministic
+charged `AND` selection, every permutation and grouping of three associative operands, composed
+operands at different prepared heights, maximum-depth linear predicate work, bounded large-value
+canonical-preparation allocation, duplicate-heavy eight-bucket range and eight-input union
+source-admission sweeps across their catalog transitions, odd-budget half-turn rounding, small-turn
+fallback-minimum precedence, fixed-share permutation invariance, and ordered-catalog fallback. The
+PR13 materializing evaluator remains the benchmark baseline; the ordered implementation matrix adds
+activation-build, mutation, retained-memory, latency, allocation, paging-progress, and work-vector
+evidence.
 
 Facet tests separately cover indexed-selector validation, null exclusion, and materialization of
 every supported CLR shape; canonical distinct-value pages and family-bound tokens; exact filtered
@@ -158,7 +164,8 @@ oracles for query-plan construction/evaluation, wire and journal serialization, 
 replay, and snapshot detachment. It executes small Memory scenarios through searchable closed-loop,
 searchable open-loop, and plain closed-loop point-operation paths and asserts each resulting
 effective mode. It also emits and validates the 62-entry quick ordered-work matrix, four retained-
-managed-memory cells, all nine work components, both range execution strategies, and clean
+managed-memory cells, all 15 grain-page work counters, explicit access-path evidence, range/union/
+catalog strategies, and clean
 `DeterministicEvidence` provenance; these JSON files are correctness evidence, not a timing gate.
 The production facet evaluator adds two BenchmarkDotNet identities across 4,096/65,536 records,
 8/1,024 distinct values, uniform/skewed distributions, and all/selective predicates. Setup uses an
@@ -241,7 +248,8 @@ provider matrix; they do not replace it.
 Serializer and API contract tests freeze the required non-null fields and IDs of the existing
 bounded range message, the IDs and nullable bounds of the new non-persisted query plan, and a nested
 plan round trip through the configured Orleans serializer. They freeze the routed page request,
-partition page result, all nine work-vector fields, stop reason, and budget exception; real Orleans
+partition page result, the preserved work-vector IDs 0 through 8 plus appended IDs 9 through 15,
+stop reason, and budget exception; real Orleans
 round trips cover non-terminal responses and exceptions with non-zero work components. They also freeze every virtual-routing
 envelope, mismatch exception, layout descriptor, identity, snapshot, and durable layout-state field
 ID, including the original `PartitionCount` property identity. Compile-time test implementations

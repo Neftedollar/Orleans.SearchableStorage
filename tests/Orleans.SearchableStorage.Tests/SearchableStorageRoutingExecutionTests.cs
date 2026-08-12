@@ -457,7 +457,19 @@ public sealed class SearchableStorageRoutingExecutionTests
                 Items = items,
                 Exhausted = true,
                 StopReason = PartitionQueryPageStopReason.Exhausted,
-                Work = new PartitionQueryPageWork(),
+                Work = new PartitionQueryPageWork
+                {
+                    OrderedCandidateVisitCount = items.Length,
+                    RecordProbeCount = items.Length,
+                    PredicateNodeProbeCount = items.Length,
+                    IndexEntryProbeCount = items.Length,
+                    OwnershipProbeCount = items.Length,
+                    PostingSeekCount = 1,
+                    ResultMaterializationCount = items.Length,
+                    PlannerNodeVisitCount = CountQueryNodes(request.Query),
+                    CatalogCandidateVisitCount = items.Length,
+                    AccessPath = PartitionQueryAccessPath.Catalog,
+                },
                 ItemByteCount = items.Sum(GrainIdCanonicalOrder.GetEncodedLength),
                 ProtocolVersion = request.ProtocolVersion,
                 OrderingVersion = request.OrderingVersion,
@@ -468,6 +480,13 @@ public sealed class SearchableStorageRoutingExecutionTests
                 LayoutFormatVersion = request.LayoutFormatVersion,
                 LayoutFingerprint = [.. request.LayoutFingerprint],
             };
+        }
+
+        private static int CountQueryNodes(PartitionQueryPlan query)
+        {
+            return query.Operation is PartitionQueryOperation.And or PartitionQueryOperation.Or
+                ? checked(1 + CountQueryNodes(query.Left!) + CountQueryNodes(query.Right!))
+                : 1;
         }
 
         public Task CompactAsync() => throw new NotSupportedException();

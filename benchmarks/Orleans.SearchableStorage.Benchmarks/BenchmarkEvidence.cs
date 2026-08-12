@@ -82,25 +82,29 @@ internal static class BenchmarkEvidence
 
         if (!quick)
         {
-            var conservativeBoundary = entries.SingleOrDefault(static entry =>
+            var selectedWindowBoundary = entries.SingleOrDefault(static entry =>
                 entry.Dataset == QueryEvaluationDataset.ShortIds64K
                 && entry.Distribution == QueryEvaluationDistribution.Uniform
                 && entry.Scenario == QueryEvaluationScenario.Range
                 && entry.Variant == QueryEvaluationVariant.OrderedMaximumPolicyPartitionPage);
-            if (conservativeBoundary is null
-                || conservativeBoundary.RangeExecutionStrategy
-                    != QueryRangeExecutionStrategy.CatalogFallback
-                || conservativeBoundary.FirstPage.Work.PostingSeekCount < 2
-                || conservativeBoundary.FirstPage.Work.RangeBucketVisitCount != 0
-                || conservativeBoundary.FirstPage.Work.RangeMergeOperationCount != 0)
+            if (selectedWindowBoundary is null
+                || selectedWindowBoundary.RangeExecutionStrategy
+                    != QueryRangeExecutionStrategy.OrderedRangeMerge
+                || selectedWindowBoundary.FirstPage.AccessPath
+                    != PartitionQueryAccessPath.RangeMerge
+                || selectedWindowBoundary.FirstPage.Work.RangeBucketVisitCount <= 0
+                || selectedWindowBoundary.FirstPage.Work.RangeBucketVisitCount
+                    >= selectedWindowBoundary.RecordCount
+                || selectedWindowBoundary.FirstPage.Work.RangeMergeOperationCount <= 0
+                || selectedWindowBoundary.FirstPage.Work.CatalogCandidateVisitCount != 0)
             {
                 throw new InvalidOperationException(
-                    "The query work evidence omitted the conservative 65K whole-scope range fallback boundary.");
+                    "The query work evidence omitted the 65K selected-window range-merge boundary.");
             }
         }
 
         var document = new QueryWorkMatrixDocument(
-            SchemaVersion: "oss-query-work-matrix/v1",
+            SchemaVersion: "oss-query-work-matrix/v2",
             CapturedAtUtc: DateTimeOffset.UtcNow,
             Quick: quick,
             DefaultLegacyItemWindow: checked(

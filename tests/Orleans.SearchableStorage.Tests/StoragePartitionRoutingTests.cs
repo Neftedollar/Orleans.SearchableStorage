@@ -317,7 +317,8 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
             initial.Exhausted.Should().BeTrue();
             initial.HasFrontier.Should().BeFalse();
             initial.StopReason.Should().Be(PartitionQueryPageStopReason.Exhausted);
-            initial.Work.TotalOperationCount.Should().Be(7);
+            initial.Work.TotalOperationCount.Should().Be(11);
+            initial.Work.AccessPath.Should().Be(PartitionQueryAccessPath.ExactPosting);
             initial.ItemByteCount.Should().Be(GrainIdCanonicalOrder.GetEncodedLength(grainId));
             initial.ProtocolVersion.Should().Be(QueryProtocol.PagingVersion);
             initial.OrderingVersion.Should().Be(QueryProtocol.OrderingVersion);
@@ -334,7 +335,8 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
             range.Work.PostingSeekCount.Should().Be(2);
             range.Work.RangeBucketVisitCount.Should().Be(1);
             range.Work.RangeMergeOperationCount.Should().Be(1);
-            range.Work.TotalOperationCount.Should().Be(11);
+            range.Work.TotalOperationCount.Should().Be(16);
+            range.Work.AccessPath.Should().Be(PartitionQueryAccessPath.RangeMerge);
 
             await _fixture.Cluster.DeactivateAsync(partition);
             partition = GetPartition(context.ProviderName, partitionIndex: 0);
@@ -413,6 +415,16 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
         Func<Task> capCall = async () => await partition.QueryPageRoutedAsync(oversizedWork);
         await capCall.Should().ThrowAsync<ArgumentOutOfRangeException>()
             .WithMessage("*work budget must be between*");
+
+        QueryProtocol.WorkPolicyVersion.Should().Be(2);
+        var versionOneWorkPolicy = CopyPageRequest(
+            CreatePageRequest(context.Layout, stateName, plan),
+            epoch: staleEpoch,
+            workPolicyVersion: 1);
+        Func<Task> versionOneCall = async () =>
+            await partition.QueryPageRoutedAsync(versionOneWorkPolicy);
+        await versionOneCall.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithMessage("*work-policy version*");
 
         var validButStale = CopyPageRequest(
             CreatePageRequest(context.Layout, stateName, plan),
@@ -677,6 +689,7 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
         PartitionQueryPlan? query = null,
         long? epoch = null,
         long? workBudget = null,
+        int? workPolicyVersion = null,
         byte[]? queryFingerprint = null,
         byte[]? layoutFingerprint = null)
     {
@@ -691,7 +704,7 @@ public sealed class StoragePartitionRoutingTests : IClassFixture<MemoryStorageFi
             ByteLimit = source.ByteLimit,
             ProtocolVersion = source.ProtocolVersion,
             OrderingVersion = source.OrderingVersion,
-            WorkPolicyVersion = source.WorkPolicyVersion,
+            WorkPolicyVersion = workPolicyVersion ?? source.WorkPolicyVersion,
             ResponseFamily = source.ResponseFamily,
             QueryFingerprint = queryFingerprint ?? source.QueryFingerprint,
             LayoutFormatVersion = source.LayoutFormatVersion,

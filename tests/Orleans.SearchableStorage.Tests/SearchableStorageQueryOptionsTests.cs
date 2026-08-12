@@ -250,6 +250,7 @@ public sealed class SearchableStorageQueryOptionsTests
         var options = new SearchableStorageQueryOptions
         {
             PageSizeLimit = 1,
+            PartitionWorkBudget = 7,
         };
         options.ContinuationProtection.CurrentKey = Key("captured", 7);
         options.ContinuationProtection.DecryptionKeys.Add(Key("captured-old", 8));
@@ -325,7 +326,17 @@ public sealed class SearchableStorageQueryOptionsTests
                 Frontier = GrainId.Create("snapshot-frontier", "after"),
                 Exhausted = false,
                 StopReason = PartitionQueryPageStopReason.WorkBudget,
-                Work = new PartitionQueryPageWork { OrderedCandidateVisitCount = 1 },
+                Work = new PartitionQueryPageWork
+                {
+                    OrderedCandidateVisitCount = 1,
+                    RecordProbeCount = 1,
+                    PredicateNodeProbeCount = 1,
+                    OwnershipProbeCount = 1,
+                    PostingSeekCount = 1,
+                    PlannerNodeVisitCount = CountQueryNodes(request.Query),
+                    CatalogCandidateVisitCount = 1,
+                    AccessPath = PartitionQueryAccessPath.Catalog,
+                },
                 ProtocolVersion = request.ProtocolVersion,
                 OrderingVersion = request.OrderingVersion,
                 WorkPolicyVersion = request.WorkPolicyVersion,
@@ -335,6 +346,13 @@ public sealed class SearchableStorageQueryOptionsTests
                 LayoutFormatVersion = request.LayoutFormatVersion,
                 LayoutFingerprint = [.. request.LayoutFingerprint],
             });
+        }
+
+        private static int CountQueryNodes(PartitionQueryPlan query)
+        {
+            return query.Operation is PartitionQueryOperation.And or PartitionQueryOperation.Or
+                ? checked(1 + CountQueryNodes(query.Left!) + CountQueryNodes(query.Right!))
+                : 1;
         }
 
         public Task<PartitionDistinctFacetPageResult> QueryDistinctFacetPageRoutedAsync(

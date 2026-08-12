@@ -6,9 +6,12 @@ materializing-evaluator work baseline and protocol design; PR14 adds the ordered
 public paging API, bounded compatibility terminals, authenticated-encrypted continuations, and
 implementation-specific benchmarks. PR15 adds typed indexed-facet response families, bounded
 distinct-value paging, exact or certified-approximate top-N counts, and exact extrema tracked by
-[issue #9](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/9).
+[issue #9](https://github.com/Neftedollar/Orleans.SearchableStorage/issues/9). The scalar access-path
+planner tracked by issue #25 advances only the `GrainId` page work policy to version 2; facet work
+policy remains version 1.
 
-The keywords **must**, **must not**, **should**, and **may** are normative for protocol version 1.
+The keywords **must**, **must not**, **should**, and **may** are normative for the versioned paging
+and work-policy contracts named below.
 
 ## Required properties
 
@@ -68,7 +71,8 @@ assertion that every component has equal physical cost; latency and allocation r
 outputs alongside it.
 
 That baseline observes work after whole-plan evaluation; it remains comparative instrumentation, not
-the bounded page budget. Work-policy version 1 charges this production page vector:
+the bounded page budget. Grain-page work-policy version 2 preserves version-1 field IDs 0 through 8
+and appends the following production-page evidence:
 
 | Component | Charge rule |
 | --- | --- |
@@ -81,9 +85,17 @@ the bounded page budget. Work-policy version 1 charges this production page vect
 | `RangeBucketVisitCount` | One before accessing each selected ordered range bucket. |
 | `ResultMaterializationCount` | One before adding a matching `GrainId` to a response. |
 | `RangeMergeOperationCount` | One before loading each range-posting candidate occurrence and before each canonical comparison used to merge or group occurrences. |
+| `PlannerNodeVisitCount` | One before turn-local canonical preparation visits one original wire-plan node. |
+| `PlannerMetadataReadCount` | One before reading one posting cardinality used to rank a candidate path. |
+| `PostingCandidateVisitCount` | One before reading and advancing one candidate from an exact or range posting. Range candidates retain their version-1 `RangeMergeOperationCount` charge as well. |
+| `CatalogCandidateVisitCount` | One before reading and advancing one candidate from the state catalog. |
+| `HeapOperationCount` | One before a structural mutation of the range-merge heap. |
+| `UnionOperationCount` | One before advancing a union input and one before comparing two populated union inputs. |
+| `AccessPath` | Non-numeric evidence: `Empty`, `ExactPosting`, `RangeMerge`, `Union`, or `Catalog`. `None` and unknown values are invalid in a response. |
 
-Its checked `TotalOperationCount` is the sum of all nine fields. The partition charges before each
-data-dependent step and stops at a safe cursor boundary before the effective budget would be
+Its checked `TotalOperationCount` is the sum of the 15 count fields; `AccessPath` is not added to the
+total. The partition charges before each data-dependent step and stops at a safe cursor boundary
+before the effective budget would be
 exceeded. Bulk collection and vectorized operations charge their logical contents, not one operation
 for an arbitrarily large input. A future representation which introduces another kind of work must
 map it to an exact documented rule or increment the work-policy version with a new non-zero field.
@@ -199,28 +211,59 @@ nominated exact posting in bounded canonical `GrainId` slices. The activation-bu
 mutation benchmarks retain the materializing representation as a comparison and gate the total
 counter under both uniform/high-cardinality and hot/low-cardinality distributions.
 
-The baseline query access paths are:
+The work-policy-2 scalar access paths are:
 
-- an exact leaf streams its ordered exact posting;
-- a selective exact `AND` range query uses the ordered exact posting as its driver and tests the
-  remaining range predicate for each candidate instead of materializing the broad range side;
+- before any data-dependent planning, the validated wire tree is visited once under
+  `PlannerNodeVisitCount`. Same-operation `AND` and `OR` trees are flattened into operand sequences.
+  A linear-space bottom-up descriptor rank orders those operands without hash collisions over the
+  query's semantic `IndexValue` order and equivalence: prepared height is the primary global key;
+  leaves then use operation, scope, kind, and semantically ordered values, while Boolean nodes use
+  operation, arity, and the exact child-rank sequence. Semantically equal descriptors share a rank.
+  The prepared form and its ranks are turn-local and do not alter raw wire-plan or fingerprint bytes;
+- after preparation, speculative descriptor construction receives at most half of the remaining
+  turn work. Work-policy 2 reserves `ceil(remaining / 2)` for source execution or catalog fallback;
+  on smaller turns the query-specific fallback minimum (at least 16 operations) takes precedence.
+  Boolean operands receive the same fixed per-operand cap over the available planning slice, so
+  unused work from a cheap operand remains execution headroom instead of being consumed by a later
+  broad descriptor;
+- an exact leaf reads its posting cardinality under a metadata charge and streams that ordered
+  posting when selected;
+- `AND` plans every usable flattened operand in canonical rank order, ranks completed candidates by
+  charged candidate upper bound, bounded source-initialization cost, path kind, and canonical plan
+  tie-break, then uses the cheapest path as a superset driver. Binary grouping and operand
+  permutation therefore cannot select a different driver;
 - a range leaf performs a bounded k-way merge of the ordered postings in its selected buckets;
   bucket enumeration, posting seeks, heap initialization, comparisons, and duplicate candidates all
-  consume logical work, and a query which cannot initialize that merge within its budget falls back
-  to the ordered state catalog. Version 1 admits the merge with a conservative whole-scope bucket
-  bound because the underlying balanced tree does not expose an O(log N) selected-range rank; a
-  narrow range over a high-cardinality scope can therefore choose the catalog fallback even when
-  only a small bucket window would match;
-- `OR` and a general plan without a proven selective driver fall back to a bounded scan of the
-  ordered state catalog and test the complete predicate for each candidate.
+  consume logical work. Admission uses only the actually traversed ordered range window, including
+  charged visits to equal open endpoints, and the included buckets retained from that traversal. It
+  never reserves the scope's total bucket count. Admission reserves worst-case heap initialization,
+  draining the first distinct source candidate across all selected buckets, and the minimum
+  successful evaluator group. A descriptor which cannot fit that work is discarded before opening
+  any posting;
+- `OR` opens deterministic flattened operand paths whose candidates are already in canonical
+  `GrainId` order, then performs an N-input sorted streaming union. Equal candidates are collapsed
+  before ownership and predicate work, so each final candidate is exposed once;
+- the ordered state catalog remains the universal safe fallback. Planning preserves bounded
+  fallback headroom; an incomplete range or boolean descriptor retains its already charged work but
+  no partial cursor. The catalog seek and every catalog advance are then charged normally.
 
-An implementation may select another driver only when it proves that the driver is a superset of the
-remaining matches and preserves canonical order. Every occurrence for one candidate `GrainId`,
+The complete predicate remains authoritative for every selected path; path metadata is only a
+candidate upper bound and never proves a record match. It evaluates the same prepared operand order
+used by planning, visits each reached prepared node at most once per candidate, and performs no
+recursive canonical comparison per candidate. An implementation may select another driver only when
+it proves that the driver is a superset of the remaining matches and preserves canonical order. Every
+occurrence for one candidate `GrainId`,
 including duplicates from several range buckets or boolean branches, forms one candidate group. The
 group and every required predicate probe must complete before the result is emitted or the frontier
 advances. If the remaining work cannot cover the complete group, execution stops at the preceding
 frontier; it must not serialize an internal heap, bucket cursor, or partial predicate state into the
 public token.
+
+Source admission removes budget cliffs caused solely by selective setup, duplicate range draining,
+or N-input union priming. It does not promise that every admitted query can finish its first
+candidate: an `AND` driver can nominate a false positive, and one `GrainId` can own many records or
+records with many index entries. If that data-dependent predicate group exceeds the remaining work,
+the documented no-progress `PartitionQueryBudgetTooSmallException` still applies.
 
 Benchmarks report ordered-catalog and posting rebuild time, steady mutation latency and
 allocation, retained activation memory, page latency/allocation, and the complete work vector for
@@ -339,8 +382,9 @@ authentication tag. The clear envelope contains only the token-envelope version,
 id, nonce, ciphertext, and tag. Canonical provider identity, envelope version, algorithm id, and key
 id are authenticated as associated data. The response-specific frontier, query/layout fingerprints,
 and all other cursor fields remain inside the ciphertext because a nonmatching frontier can otherwise
-reveal catalog or index existence. Family-1 version-1 tokens issued by the PR14 codec remain decodable
-under the same key and binding; a checked-in captured-token oracle freezes that compatibility.
+reveal catalog or index existence. A family-1 token authenticates its work-policy version; tokens
+issued with grain-page work-policy version 1 now fail closed after the version-2 bump, including the
+checked-in captured PR14 oracle. Facet continuations remain on their separate work-policy version 1.
 
 Every nonce is generated by a cryptographic random-number generator; nonce reuse under one key is
 forbidden. Keys come only from application secret configuration. They are not persisted in layout or
@@ -596,8 +640,12 @@ The test and benchmark suites prove:
 - stopping immediately before and after every work, item, and byte boundary without an omitted key;
 - ordered partition-prefix invariants and global frontier merge over multiple owners;
 - activation rebuild and mutation equivalence for the ordered state catalog and ordered postings;
-- ordered exact drivers, candidate-tested exact-and-range intersection, bounded range k-way merge,
-  duplicate candidate groups, and ordered-catalog fallbacks;
+- charged cardinality selection with canonical `AND` tie-breaks, ordered exact drivers,
+  all permutations and binary groupings of associative three-operand plans, composed operands at
+  different prepared heights, candidate-tested exact-and-range intersection, selected-window range
+  k-way merge, sorted/distinct `OR` union, duplicate candidate groups, maximum-depth linear work,
+  bounded large-value preparation allocation, source-admission transition sweeps, odd/minimum
+  execution-reserve boundaries, and ordered-catalog fallbacks;
 - non-terminal short and empty pages, final-page detection, and no-write concatenation equivalence;
 - the documented insert, update, delete, replay, and concurrent-turn weak-consistency cases;
 - missing or inconsistent key-ring configuration, duplicate/unknown key ids, key rotation, nonce
