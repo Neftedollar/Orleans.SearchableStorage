@@ -20,6 +20,8 @@ The reviewer must map changed behavior to tests instead of approving a raw test 
 - deterministic execution across more than one storage partition;
 - facet value ordering, exactness/approximation certificates, owner-version pinning, and aggregate
   limit behavior;
+- exact collection-membership declaration/extraction, supported `Contains` shapes, scalar
+  `WhereIn` bounds/snapshotting, and rejection of every collection selector surface;
 - cancellation and retry behavior where applicable;
 - user-facing samples at their executable boundary;
 - every physical backend claimed as supported.
@@ -30,7 +32,7 @@ Missing coverage must be called out explicitly in the pull request with a reason
 
 ### Value and metadata tests
 
-Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, open and bounded range traversal, query expression translation, deferred captured values, reversed operands, compiler-generated integral, decimal, enum, and BCL-operator promotions, rejected semantic-changing conversions and custom comparison methods, fractional and adjacent floating-point bounds, NaN and infinity, out-of-domain numeric bounds, all equal-bound inclusivity combinations, bound combination, unsupported syntax, and query-plan simplification. Boundary tests use the production plan constants to cover accepted and rejected depth and node counts, conversion-chain limits, balanced and chained predicates, order-preserving AND/OR rebalancing, semantic and wire cycles or shared subtrees, hidden child graphs, and payload on the wrong wire node kind.
+Fast unit tests protect index-value normalization, comparison/hash equivalence, ordering, supported CLR types, PolyType model construction and caching, inherited and nullable property shapes, attribute metadata, selector validation, recursive version-independent and cached scope identities, comparer-based range-bucket canonicalization, open and bounded range traversal, query expression translation, deferred captured values, reversed operands, compiler-generated integral, decimal, enum, and BCL-operator promotions, rejected semantic-changing conversions and custom comparison methods, fractional and adjacent floating-point bounds, NaN and infinity, out-of-domain numeric bounds, all equal-bound inclusivity combinations, bound combination, unsupported syntax, and query-plan simplification. Membership metadata tests cover exact SZ `T[]` and exact `List<T>`, the supported scalar/nullable element domain, Hash-only enforcement, null collection/element omission, empty strings, canonical sort/deduplication, fingerprint formats, and the rejected collection-shape matrix. Translation tests admit only exact array/list `Contains`; they reject reverse, interface, comparer, indirect, nested, direct-comparison, direct Find/Range, and facet-selector shapes. `WhereIn` tests cover its public marker contract, immediate snapshot, raw 64/65 boundary, null rejection, empty/exact/balanced-OR lowering, canonical deduplication/order, scalar Hash/Range selectors, collection-selector rejection, and cross-resume continuation binding. Boundary tests use the production plan constants to cover accepted and rejected depth and node counts, conversion-chain limits, balanced and chained predicates, order-preserving AND/OR rebalancing, semantic and wire cycles or shared subtrees, hidden child graphs, and payload on the wrong wire node kind.
 
 Managed-schema tests freeze deterministic fingerprints, the application-owned version, codec
 identities, generation-bound scopes, duplicate registration rejection, direct-client registry
@@ -182,9 +184,12 @@ executing an agent. These are correctness gates with no wall-clock threshold. De
 capacity workflows retain raw artifacts;
 see [benchmarks.md](benchmarks.md) for environment and comparison requirements.
 Focused guardrail tests separately pin the fixed logical capacity limits, representative inclusive
-and next-byte/next-element boundaries, fail-before-authority ordering, healthy retry, and fail-closed durable
-recovery described in [storage-capacity-limits.md](storage-capacity-limits.md). Those are safety and
-contract tests, not throughput or provider-capacity evidence.
+and next-byte/next-element boundaries, membership's exactly-64/65-unique boundary, duplicate-heavy
+raw extraction, fail-before-partition-mutation/WAL-authority ordering, healthy retry, and fail-closed
+durable recovery described in [storage-capacity-limits.md](storage-capacity-limits.md). They also pin
+the managed gate precedence: schema/layout authority may be consulted before indexed extraction,
+while an unmanaged zero-registration first write rejects capacity before layout initialization.
+Those are safety and contract tests, not throughput or provider-capacity evidence.
 
 ### Storage contract tests
 
@@ -207,6 +212,15 @@ upgrade to format 5, verifies the preserved ETag and hash/range results, compact
 partition and schema control, then exercises a managed update and clear. Memory, PostgreSQL, Redis,
 and Azure Blob/Azurite run that same state/serializer path; it demonstrates backend portability of
 the implemented protocol, not equivalent performance or disaster-recovery behavior.
+
+That inherited contract also registers an isolated one-partition membership schema. It writes exact
+array/list entries, verifies both public `Contains` predicates, compacts and reactivates WAL/snapshot
+state, and moves the live slot before reactivating both participants and rechecking point and
+membership results. Focused Memory acceptance adds live write/update/remove/clear, null and duplicate
+canonical extraction, scalar-facet filtering, `WhereIn` paging/cancellation, resumable schema rebuild,
+and rejection of collection facets/direct Find/Range. The same inherited fact runs through Memory,
+PostgreSQL, Redis, and Azure Blob rather than substituting an in-memory membership engine for Orleans
+storage.
 
 The shared contract also executes distinct, exact/approximate top-N, and min/max terminals through
 real generated Orleans dispatch before and after activation rehydration. It verifies that persisted
@@ -258,7 +272,10 @@ round trips cover non-terminal responses and exceptions with non-zero work compo
 envelope, mismatch exception, layout descriptor, identity, snapshot, and durable layout-state field
 ID, including the original `PartitionCount` property identity. Compile-time test implementations
 keep the old direct-client interface independent from the opt-in query and paging interfaces and
-exercise external public async, paging, and facet terminal providers. Facet serializer coverage
+exercise external public async, paging, facet terminal, and `WhereIn` marker providers. The API
+sample compatibility test compiles the documented exact array/list `Contains` forms and inspects the
+deferred `WhereIn` marker to prove immediate input snapshotting and the public raw-value ceiling
+without changing the sample's persisted `VacancyState` schema. Facet serializer coverage
 freezes all four response-family values, the distinct/candidate/count request and result IDs, their
 data-version fields, candidate page/total raw counts, the nine-component facet work vector, and the
 concurrent-change exception.
@@ -283,8 +300,8 @@ External fixture lifecycle tests use a recording cluster abstraction to verify o
 The package versions and conditional-test pattern follow the Orleans 10.2.2 repository: `Xunit.SkippableFact` marks the reusable external contract, and fixture preconditions skip it unless `ORLEANS_SEARCHABLE_STORAGE_RUN_BACKEND_TESTS` is explicitly enabled. Npgsql, Azure.Storage.Blobs, and StackExchange.Redis are direct test dependencies because the fixtures prepare and remove backend resources in addition to configuring the Orleans providers.
 
 CI writes four independently filtered TRX files using the `Backend` trait. The workflow stores the
-99-case shared contract count once, then derives the exact profile totals: memory has 100 cases
-(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 101 (shared
+100-case shared contract count once, then derives the exact profile totals: memory has 101 cases
+(shared plus one provider assertion), while PostgreSQL, Redis, and Azure Blob each have 102 (shared
 plus provider and cleanup assertions). The small `eng/validate-trx.sh` gate requires one `Counters`
 element, the exact total, executed and passed counts, zero failed and not-executed summary counts,
 no `NotExecuted` result, and no non-passed result element. Missing files, empty filters, partial
@@ -309,7 +326,9 @@ then re-verifies the same record through point, index, and facet reads. This sup
 same-record move-chain oracle rather than treating reverse cleanup as best effort. Invalid admin
 inputs return HTTP 400, while durable state conflicts return 409. A keyed blocking query client
 verifies that HTTP request cancellation reaches every search and facet endpoint and its async
-terminal while it is in flight.
+terminal while it is in flight. A separate compile-time compatibility case keeps the runnable
+membership/`WhereIn` README snippet aligned with the public expression surface while deliberately
+leaving the hosted sample's managed schema unchanged.
 
 ## Coverage artifacts
 

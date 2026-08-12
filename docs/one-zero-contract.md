@@ -1,13 +1,11 @@
 # 1.0 product and query contract
 
 This document is the human-readable contract candidate for Orleans.SearchableStorage 1.0. It has
-three deliberately separate purposes:
+two deliberately separate purposes:
 
 - **Implemented now** records behavior provided and tested by the current codebase.
-- **Accepted before 1.0** records a narrow product decision which still needs implementation and
-  executable evidence.
-- **Freeze for 1.0** is the implemented scalar surface plus that accepted bounded membership slice,
-  once its remaining decision gate has closed and the implementation has landed.
+- **Freeze for 1.0** records the implemented scalar and bounded-membership boundary proposed for the
+  release contract.
 
 This is not a claim that version 1.0 has been released, and it does not create compatibility
 promises before that release. A discrepancy between this matrix, the public API, and an executable
@@ -41,20 +39,16 @@ indexes and an active snapshot in memory, and compaction has a whole-partition b
 important sizing properties even though mutation journals, page work, response sizes, and movement
 pages are bounded separately.
 
-### Accepted before 1.0, not implemented now
+### Implemented bounded membership slice
 
 The 1.0 candidate includes one deliberately narrow extension to the scalar surface: bounded Hash
-membership for explicitly supported collection index shapes, together with a canonical bounded
-`IN`/`WhereIn` query form. It must have hard admission, cardinality, wire-size, and execution-work
-limits and must fail without an unbounded or client-side fallback.
+membership for exact SZ `T[]` and exact `List<T>` properties, plus the canonical bounded scalar
+`WhereIn` operator. Both lower to existing exact/Boolean query plans and share the normal bounded
+page engine; there is no unbounded scan, new wire opcode, or client-side fallback.
 
-The exact collection shapes, element domains, duplicate/null semantics, API spelling, and limits
-are the dedicated membership-implementation gate. This document does not guess them. Until that
-gate is resolved and the slice is implemented, documented, and covered end to end,
-collection-valued indexes and `Contains`/`IN` remain unsupported current behavior and this 1.0
-contract remains a candidate.
-`StartsWith` and other text-search operators are explicitly deferred; they are not part of that
-membership decision.
+The supported shapes, null/duplicate behavior, admission limits, and API spelling are frozen below.
+`StartsWith`, text search, arbitrary collection interfaces, and other LINQ membership shapes remain
+explicitly deferred.
 
 ## Public surface
 
@@ -66,6 +60,7 @@ membership decision.
 | Direct exact lookup | `ISearchableStorageClient.FindAsync` | Complete, sorted, distinct `GrainId` result or an exception; no truncation. |
 | Direct bounded-range lookup | `ISearchableStorageClient.RangeAsync` | Same all-or-throw result contract; the selected property must use a range index. |
 | Deferred query | `ISearchableStorageQueryClient.Query<TState>` | Creates an expression root for the focused predicate subset below. |
+| Bounded scalar membership | `WhereIn` | Snapshots at most 64 raw non-null values for one scalar Hash or Range index and creates a deferred canonical exact/OR predicate. |
 | Bounded identifier page | `ToGrainIdPageAsync` | Preferred terminal for a result which can be large. |
 | Compatibility identifier result | `ToGrainIdsAsync` | Collects bounded pages and returns all results or throws at an aggregate ceiling. |
 | Distinct facet page | `ToDistinctFacetValuePageAsync` | Returns non-null indexed values in canonical value order. |
@@ -86,14 +81,15 @@ Fields, write-only properties, nested selector paths, and duplicate effective in
 rejected. A scalar, collection, or other non-object state remains a valid Orleans storage value but
 cannot declare indexed properties.
 
-Null is not an index key. A null reference or nullable value contributes no index entry, never
-matches a comparison, and never appears in a facet.
+Null is not an index key. A null scalar, null collection, or null collection element contributes no
+index entry, never matches a predicate, and never appears in a facet.
 
 ### CLR type matrix
 
 This is the closed built-in **scalar** index-value set implemented now and proposed as the scalar
-part of the 1.0 freeze. `Hash` supports equality and all facet terminals. `Range` adds relational
-query operators.
+part of the 1.0 freeze. A scalar `Hash` index supports equality and all facet terminals. `Range`
+adds relational query operators. A collection `Hash` index supports only the exact membership
+predicate described below.
 
 | CLR property type | Hash | Range | Canonical behavior |
 | --- | :---: | :---: | --- |
@@ -111,10 +107,10 @@ query operators.
 | `Nullable<T>` for a supported value type | same as `T` | same as `T` | Non-null values use `T`; null is omitted. |
 
 Representative scalar types outside this closed set include `TimeSpan`, `DateOnly`, `TimeOnly`,
-`Half`, `Int128`, `UInt128`, `nint`, and `nuint`. All arrays and collections are also unsupported
-by the current implementation. Adding a scalar type—or admitting the explicitly planned, bounded
-collection membership shapes—is a deliberate contract, codec, schema-fingerprint, documentation,
-and test change, not an incidental converter refactor.
+`Half`, `Int128`, `UInt128`, `nint`, and `nuint`. Arrays and collections are unsupported except for
+the exact membership shapes below. Adding another scalar, collection shape, or element domain is a
+deliberate contract, codec, schema-fingerprint, documentation, and test change, not an incidental
+converter refactor.
 
 Additional value rules:
 
@@ -130,11 +126,38 @@ Additional value rules:
   A query value cannot be encoded beyond the limit, and a facet which reaches an incompatible
   stored value fails without a partial result. See the bounded protocol for exact failure details.
 
+### Collection membership declaration
+
+Only these property shapes can declare a collection membership index:
+
+- an exact one-dimensional, zero-based SZ array `T[]`;
+- an exact `System.Collections.Generic.List<T>`.
+
+`T` must be one scalar type in the matrix above, including `Nullable<TValue>` when `TValue` is a
+supported value type. The property must use `SearchableIndexKind.Hash`. Range membership, jagged or
+multidimensional/non-SZ arrays, nested collections, collection interfaces, other generic collection
+types, and derived/custom list shapes are rejected.
+
+Extraction reads the collection once. A null collection contributes zero entries. Null elements are
+omitted; an empty string is indexed. Remaining values are converted through the scalar codec,
+canonically sorted, and deduplicated. One record may contribute at most 64 unique entries to one
+membership scope. More than 64 raw elements are valid when canonical deduplication leaves at most
+64. A managed write performs the active-schema gate before invoking indexed getters, so it may
+consult schema/layout authority first. After that gate succeeds, the 65th unique value throws
+`SearchableStorageCapacityExceededException` before any partition mutation or WAL authority. For an
+unmanaged namespace with no registrations, a first over-capacity write fails before layout
+initialization or routing. The record-wide entry and canonical-byte limits still apply
+independently.
+
+Collection indexes are predicate-only. They cannot be selected by direct `FindAsync` or
+`RangeAsync`, by `WhereIn`, or by any facet terminal.
+
 ## Focused query expression matrix
 
-Identifier queries must contain at least one `Queryable.Where`. More than one `Where` is combined as
-logical AND. Facet terminals may execute directly on the query root to aggregate every indexed
-value, or use the same filtered predicate subset.
+Identifier queries must contain at least one `Queryable.Where` predicate or `WhereIn` marker.
+Additional `Where`/`WhereIn` calls are combined as logical AND. Facet terminals may execute directly
+on the query root to aggregate every scalar indexed value, or use the same filtered predicate
+subset.
 
 | Expression shape | Supported | Notes |
 | --- | :---: | --- |
@@ -146,8 +169,12 @@ value, or use the same filtered predicate subset.
 | Constant value | yes | Evaluated during translation. |
 | Captured field/property or static field/property | yes | The member chain must not depend on the state parameter. |
 | Built-in conversion which preserves the indexed domain | yes | Includes safe compiler integral and enum promotions. |
+| `Enumerable.Contains(state.Array, value)` | yes | Exact two-argument generic `Enumerable.Contains<T>` over a direct exact `T[]` Hash membership property. |
+| `state.List.Contains(value)` | yes | Exact instance `List<T>.Contains(T)` over a direct exact `List<T>` Hash membership property. |
+| `query.WhereIn(state => state.Scalar, values)` | yes | Direct scalar Hash or Range property; at most 64 raw non-null values, snapshotted immediately and canonically deduplicated/sorted during translation. Empty input is an empty plan. |
+| `values.Contains(state.Scalar)` | no | Use the bounded `WhereIn` operator; arbitrary collection-driven LINQ is not translated. |
+| Other collection `Contains` shapes | no | No interface, nested, custom method, comparer overload, indirect property, or collection-to-collection form. |
 | `!=`, unary `!`, or Boolean shorthand | no | Complement would require a partition-wide set complement. |
-| `Contains`, `IN`, or `WhereIn` membership | no now | A bounded Hash-only slice is accepted before 1.0; exact shapes and limits remain the dedicated membership-implementation gate. |
 | Text methods such as `StartsWith` | no | Explicitly deferred beyond the 1.0 candidate. |
 | Arithmetic or another calculation in the expression | no | Precompute the value outside the expression and capture it. |
 | Nested or unindexed state property | no | The state side must be one directly declared indexed property. |
@@ -191,6 +218,7 @@ claims. A deployment may configure a smaller effective limit.
 | Limit | Default | Hard maximum |
 | --- | ---: | ---: |
 | Compatibility traversal page size | 128 | Internal choice; public requests use the next row. |
+| Raw values accepted by one `WhereIn` call | 64 | 64 |
 | Accepted requested page size (`PageSizeLimit`) | 1,024 | 1,024 |
 | Logical work per partition turn | 65,536 | 1,048,576 |
 | Items per partition response | 1,024 | 4,096 |
@@ -246,7 +274,9 @@ does not turn them into a partial success.
 The active generation binds index scopes, queries, facets, pages, snapshots, records, and movement
 payloads to a deterministic schema fingerprint. The fingerprint includes the state identity,
 positive application-owned version, effective index names and kinds, CLR value domains, and built-in
-codec identities.
+codec identities. A schema containing membership indexes also binds property multiplicity and the
+membership extractor version. Schema keys remain version 1 for all schemas; scalar-only fingerprints
+remain byte-for-byte v1, while membership fingerprints use v2.
 
 Once the provider-wide managed-schema capability is enabled:
 
@@ -299,9 +329,9 @@ Before the 1.0 release, a change to this candidate contract should answer all of
 5. Does it retain generation, layout, replay, cancellation, and no-partial-result safety?
 6. Do focused contract tests, backend tests where relevant, samples, XML docs, and runbooks agree?
 
-For the accepted membership slice, its implementation review must answer the exact collection shapes, public
-query form, element/null/duplicate semantics, deterministic schema identity, and every admission,
-wire, work, and result bound before the matrix can be called implemented or frozen.
+For the bounded membership slice, any future expansion must re-answer the exact collection shapes,
+public query form, element/null/duplicate semantics, deterministic schema identity, and every
+admission, wire, work, and result bound rather than treating another LINQ shape as equivalent.
 
 After 1.0 is actually released, normal SemVer review decides whether a contract change is
 compatible. Until then, this matrix is the review target, not a substitute for release policy.

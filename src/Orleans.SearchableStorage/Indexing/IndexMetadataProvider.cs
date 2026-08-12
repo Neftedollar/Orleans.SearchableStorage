@@ -4,6 +4,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using Orleans.SearchableStorage.Storage;
+using PolyType;
 using PolyType.Abstractions;
 using PolyType.ReflectionProvider;
 
@@ -35,22 +36,28 @@ internal static class IndexMetadataProvider
 
         var model = GetTypeModel<TState>();
         var entries = new List<IndexEntry>(model.Indexes.Count);
+        var values = new List<IndexValue>();
         foreach (var index in model.Indexes)
         {
-            var value = index.Read(ref state);
-            if (value is null)
+            values.Clear();
+            index.AppendValues(ref state, values);
+            if (values.Count == 0)
             {
                 continue;
             }
 
-            entries.Add(new IndexEntry
+            var scope = schemaFingerprint is null
+                ? index.GetScope(stateName)
+                : IndexSchemaIdentity.BindScope(index.GetScope(stateName), schemaFingerprint);
+            foreach (var value in values)
             {
-                Scope = schemaFingerprint is null
-                    ? index.GetScope(stateName)
-                    : IndexSchemaIdentity.BindScope(index.GetScope(stateName), schemaFingerprint),
-                Kind = index.Kind,
-                Value = value,
-            });
+                entries.Add(new IndexEntry
+                {
+                    Scope = scope,
+                    Kind = index.Kind,
+                    Value = value,
+                });
+            }
         }
 
         return entries;
@@ -87,10 +94,48 @@ internal static class IndexMetadataProvider
             throw new ArgumentException("The index selector must select one state property.", nameof(expression));
         }
 
-        return GetSelectedIndex<TState>(stateName, property, nameof(expression), schemaFingerprint);
+        return GetSelectedIndex<TState>(
+            stateName,
+            property,
+            nameof(expression),
+            schemaFingerprint);
     }
 
     public static SelectedIndex GetSelectedIndex<TState>(
+        string stateName,
+        PropertyInfo property,
+        string parameterName,
+        byte[]? schemaFingerprint = null)
+    {
+        var index = GetDeclaredIndex<TState>(stateName, property, parameterName, schemaFingerprint);
+        if (index.Multiplicity != IndexValueMultiplicity.Scalar)
+        {
+            throw new ArgumentException(
+                $"Indexed property '{property.Name}' is a collection membership index; this operation requires a scalar index.",
+                parameterName);
+        }
+
+        return index;
+    }
+
+    public static SelectedIndex GetCollectionMembershipIndex<TState>(
+        string stateName,
+        PropertyInfo property,
+        string parameterName,
+        byte[]? schemaFingerprint = null)
+    {
+        var index = GetDeclaredIndex<TState>(stateName, property, parameterName, schemaFingerprint);
+        if (index.Multiplicity != IndexValueMultiplicity.CollectionMembership)
+        {
+            throw new ArgumentException(
+                $"Indexed property '{property.Name}' is a scalar index; collection Contains requires a collection membership index.",
+                parameterName);
+        }
+
+        return index;
+    }
+
+    public static SelectedIndex GetDeclaredIndex<TState>(
         string stateName,
         PropertyInfo property,
         string parameterName,
@@ -117,7 +162,8 @@ internal static class IndexMetadataProvider
             scope,
             index.Kind,
             index.Converter,
-            property.Name);
+            property.Name,
+            index.Multiplicity);
     }
 
     private static bool IsSameProperty(MemberInfo indexedMember, PropertyInfo selectedProperty)
@@ -206,7 +252,15 @@ internal static class IndexMetadataProvider
                     $"Indexed property '{typeof(TState).FullName}.{property.Name}' has unsupported type '{property.PropertyType.Type}'.");
             }
 
-            if (attribute.Kind == SearchableIndexKind.Range && !index.Converter.SupportsRange)
+            if (attribute.Kind == SearchableIndexKind.Range
+                && index.Multiplicity == IndexValueMultiplicity.CollectionMembership)
+            {
+                throw new NotSupportedException(
+                    $"Collection property '{typeof(TState).FullName}.{property.Name}' supports only "
+                    + $"{nameof(SearchableIndexKind.Hash)} indexes.");
+            }
+
+            if (attribute.Kind == SearchableIndexKind.Range && !index.SupportsRange)
             {
                 throw new NotSupportedException(
                     $"Range-indexed property '{typeof(TState).FullName}.{property.Name}' has unordered type '{property.PropertyType.Type}'.");
@@ -323,14 +377,24 @@ internal static class IndexMetadataProvider
             var context = (PropertyBuildContext?)state
                 ?? throw new ArgumentNullException(nameof(state));
             var converter = IndexValueConverterProvider.GetConverter(propertyShape.PropertyType);
-            if (converter is null)
-            {
-                return null;
-            }
-
             var memberInfo = propertyShape.MemberInfo
                 ?? throw new InvalidOperationException(
                     $"PolyType did not expose member identity for '{typeof(TState).FullName}.{propertyShape.Name}'.");
+
+            if (converter is null)
+            {
+                if (propertyShape.PropertyType.Kind != TypeShapeKind.Enumerable)
+                {
+                    return null;
+                }
+
+                return propertyShape.PropertyType.Accept(
+                    CollectionPropertyIndexBuilder<TState>.Instance,
+                    new CollectionPropertyBuildContext<TState, TValue>(
+                        context,
+                        memberInfo,
+                        propertyShape.GetGetter()));
+            }
 
             return new PropertyIndexMetadata<TState, TValue>(
                 context.TypeIdentity,
@@ -339,6 +403,53 @@ internal static class IndexMetadataProvider
                 context.Kind,
                 CreateTypeIdentity(propertyShape.PropertyType.Type),
                 propertyShape.GetGetter(),
+                converter);
+        }
+    }
+
+    private sealed record CollectionPropertyBuildContext<TState, TCollection>(
+        PropertyBuildContext Property,
+        MemberInfo MemberInfo,
+        Getter<TState, TCollection> Getter);
+
+    private sealed class CollectionPropertyIndexBuilder<TState> : TypeShapeVisitor
+    {
+        public static CollectionPropertyIndexBuilder<TState> Instance { get; } = new();
+
+        public override object? VisitEnumerable<TCollection, TElement>(
+            IEnumerableTypeShape<TCollection, TElement> enumerableShape,
+            object? state = null)
+        {
+            var context = (CollectionPropertyBuildContext<TState, TCollection>?)state
+                ?? throw new ArgumentNullException(nameof(state));
+            var collectionType = typeof(TCollection);
+            var isExactArray = collectionType.IsSZArray
+                && collectionType.GetElementType() == typeof(TElement);
+            var isExactList = collectionType.IsGenericType
+                && collectionType.GetGenericTypeDefinition() == typeof(List<>)
+                && collectionType.GetGenericArguments()[0] == typeof(TElement);
+            if ((!isExactArray && !isExactList)
+                || enumerableShape.Rank != 1
+                || enumerableShape.IsAsyncEnumerable
+                || enumerableShape.IsSetType)
+            {
+                return null;
+            }
+
+            var converter = IndexValueConverterProvider.GetConverter(enumerableShape.ElementType);
+            if (converter is null)
+            {
+                return null;
+            }
+
+            return new CollectionPropertyIndexMetadata<TState, TCollection, TElement>(
+                context.Property.TypeIdentity,
+                context.MemberInfo,
+                context.Property.Name,
+                context.Property.Kind,
+                CreateTypeIdentity(typeof(TCollection)),
+                context.Getter,
+                enumerableShape.GetGetEnumerable(),
                 converter);
         }
     }
@@ -354,7 +465,9 @@ internal abstract class PropertyIndexMetadata<TState>(
     string name,
     SearchableIndexKind kind,
     string valueTypeIdentity,
-    IndexValueConverter converter)
+    IndexValueConverter converter,
+    IndexValueMultiplicity multiplicity = IndexValueMultiplicity.Scalar,
+    int extractorVersion = 0)
 {
     private readonly ConcurrentDictionary<string, string> _scopes = new(StringComparer.Ordinal);
     private readonly string _typeIdentity = typeIdentity;
@@ -368,6 +481,13 @@ internal abstract class PropertyIndexMetadata<TState>(
     public string ValueTypeIdentity { get; } = valueTypeIdentity;
 
     public IndexValueConverter Converter { get; } = converter;
+
+    public bool SupportsRange { get; } = multiplicity == IndexValueMultiplicity.Scalar
+        && converter.SupportsRange;
+
+    public IndexValueMultiplicity Multiplicity { get; } = multiplicity;
+
+    public int ExtractorVersion { get; } = extractorVersion;
 
     public string GetScope(string stateName)
     {
@@ -384,7 +504,7 @@ internal abstract class PropertyIndexMetadata<TState>(
             (TypeIdentity: _typeIdentity, IndexName: Name));
     }
 
-    public abstract IndexValue? Read(ref TState state);
+    public abstract void AppendValues(ref TState state, List<IndexValue> destination);
 }
 
 internal sealed class PropertyIndexMetadata<TState, TValue>(
@@ -403,14 +523,75 @@ internal sealed class PropertyIndexMetadata<TState, TValue>(
         valueTypeIdentity,
         converter)
 {
-    public override IndexValue? Read(ref TState state)
+    public override void AppendValues(ref TState state, List<IndexValue> destination)
     {
-        return converter.Convert(getter(ref state));
+        var value = converter.Convert(getter(ref state));
+        if (value is not null)
+        {
+            destination.Add(value);
+        }
     }
+}
+
+internal sealed class CollectionPropertyIndexMetadata<TState, TCollection, TElement>(
+    string typeIdentity,
+    MemberInfo memberInfo,
+    string name,
+    SearchableIndexKind kind,
+    string valueTypeIdentity,
+    Getter<TState, TCollection> getter,
+    Func<TCollection, IEnumerable<TElement>> getEnumerable,
+    IndexValueConverter<TElement> converter)
+    : PropertyIndexMetadata<TState>(
+        typeIdentity,
+        memberInfo,
+        name,
+        kind,
+        valueTypeIdentity,
+        converter,
+        IndexValueMultiplicity.CollectionMembership,
+        IndexSchemaDefinition.MembershipExtractorVersion)
+{
+    public override void AppendValues(ref TState state, List<IndexValue> destination)
+    {
+        var collection = getter(ref state);
+        if (collection is null)
+        {
+            return;
+        }
+
+        var unique = new HashSet<IndexValue>();
+        foreach (var element in getEnumerable(collection))
+        {
+            var value = converter.Convert(element);
+            if (value is null || !unique.Add(value))
+            {
+                continue;
+            }
+
+            if (unique.Count > SearchableStorageCapacityLimits.MaximumIndexEntriesPerScope)
+            {
+                throw new SearchableStorageCapacityExceededException(
+                    StorageCapacityGuardrails.RecordScopeIndexEntries,
+                    unique.Count,
+                    SearchableStorageCapacityLimits.MaximumIndexEntriesPerScope);
+            }
+        }
+
+        destination.AddRange(unique);
+        destination.Sort();
+    }
+}
+
+internal enum IndexValueMultiplicity
+{
+    Scalar = 0,
+    CollectionMembership = 1,
 }
 
 internal sealed record SelectedIndex(
     string Scope,
     SearchableIndexKind Kind,
     IndexValueConverter Converter,
-    string PropertyName);
+    string PropertyName,
+    IndexValueMultiplicity Multiplicity = IndexValueMultiplicity.Scalar);

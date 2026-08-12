@@ -1,3 +1,5 @@
+using System.Linq.Expressions;
+using System.Reflection;
 using Orleans.Runtime;
 
 namespace Orleans.SearchableStorage;
@@ -8,13 +10,136 @@ namespace Orleans.SearchableStorage;
 public static class SearchableStorageQueryableExtensions
 {
     /// <summary>
-    /// Executes one stable value-ordered page of distinct values from an indexed property.
+    /// Filters a searchable-storage query to records whose scalar indexed property equals one of
+    /// a bounded set of values.
+    /// </summary>
+    /// <typeparam name="TState">The persisted state type being queried.</typeparam>
+    /// <typeparam name="TValue">The exact scalar property and value type.</typeparam>
+    /// <param name="source">A searchable-storage query.</param>
+    /// <param name="propertySelector">A direct scalar Hash or Range indexed property.</param>
+    /// <param name="values">
+    /// At most <see cref="SearchableStorageQueryLimits.MaximumWhereInValues"/> non-null values. The
+    /// values are snapshotted immediately.
+    /// </param>
+    /// <returns>A deferred query lowered to existing exact-match and OR query nodes.</returns>
+    /// <remarks>
+    /// The built-in provider validates the index and removes duplicates using canonical index
+    /// equality when the deferred expression is translated. It also orders values canonically, so
+    /// input order does not change the built-in query fingerprint. Other providers receive the
+    /// <c>WhereIn</c> method-call expression and own its execution semantics. This is a bounded
+    /// convenience operator, not general LINQ <c>Contains</c> translation.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">An argument is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// The selector is not one directly typed property, or <paramref name="values"/> contains null.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="values"/> contains more than
+    /// <see cref="SearchableStorageQueryLimits.MaximumWhereInValues"/> items.
+    /// </exception>
+    public static IQueryable<TState> WhereIn<TState, TValue>(
+        this IQueryable<TState> source,
+        Expression<Func<TState, TValue>> propertySelector,
+        IReadOnlyList<TValue> values)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(propertySelector);
+        ArgumentNullException.ThrowIfNull(values);
+
+        if (propertySelector.Parameters.Count != 1
+            || propertySelector.Body is not MemberExpression
+            {
+                Member: PropertyInfo property,
+                Expression: ParameterExpression parameter,
+            }
+            || parameter != propertySelector.Parameters[0]
+            || property.PropertyType != typeof(TValue))
+        {
+            throw new ArgumentException(
+                "WhereIn requires a directly typed scalar indexed property selector.",
+                nameof(propertySelector));
+        }
+
+        var valueCount = values.Count;
+        if (valueCount > SearchableStorageQueryLimits.MaximumWhereInValues)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(values),
+                valueCount,
+                $"WhereIn accepts at most {SearchableStorageQueryLimits.MaximumWhereInValues} raw values.");
+        }
+
+        var snapshot = new TValue[valueCount];
+        for (var index = 0; index < valueCount; index++)
+        {
+            var value = values[index];
+            if (value is null)
+            {
+                throw new ArgumentException("WhereIn values cannot contain null.", nameof(values));
+            }
+
+            snapshot[index] = value;
+        }
+
+        var expression = Expression.Call(
+            WhereInMethodDefinition.MakeGenericMethod(typeof(TState), typeof(TValue)),
+            source.Expression,
+            Expression.Quote(propertySelector),
+            Expression.Constant(
+                new WhereInValueSnapshot<TValue>(snapshot),
+                typeof(IReadOnlyList<TValue>)));
+        return source.Provider.CreateQuery<TState>(expression);
+    }
+
+    internal static bool IsWhereInMethod(MethodInfo method)
+    {
+        ArgumentNullException.ThrowIfNull(method);
+        return method.IsGenericMethod
+            && method.GetGenericMethodDefinition() == WhereInMethodDefinition;
+    }
+
+    private static readonly MethodInfo WhereInMethodDefinition = typeof(SearchableStorageQueryableExtensions)
+        .GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .Single(static method => method.Name == nameof(WhereIn)
+            && method.IsGenericMethodDefinition
+            && method.GetGenericArguments().Length == 2
+            && method.GetParameters() is
+            [
+                { ParameterType: { IsGenericType: true } source },
+                { ParameterType: { IsGenericType: true } selector },
+                { ParameterType: { IsGenericType: true } values },
+            ]
+            && source.GetGenericTypeDefinition() == typeof(IQueryable<>)
+            && selector.GetGenericTypeDefinition() == typeof(Expression<>)
+            && values.GetGenericTypeDefinition() == typeof(IReadOnlyList<>));
+
+    private sealed class WhereInValueSnapshot<TValue>(TValue[] values)
+        : IReadOnlyList<TValue>, IWhereInValueSnapshot
+    {
+        private readonly TValue[] _values = values;
+
+        public int Count => _values.Length;
+
+        Type IWhereInValueSnapshot.ElementType => typeof(TValue);
+
+        public TValue this[int index] => _values[index];
+
+        object? IWhereInValueSnapshot.GetValue(int index) => _values[index];
+
+        public IEnumerator<TValue> GetEnumerator() => ((IEnumerable<TValue>)_values).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            _values.GetEnumerator();
+    }
+
+    /// <summary>
+    /// Executes one stable value-ordered page of distinct values from a scalar indexed property.
     /// </summary>
     /// <remarks>
     /// Null values are not indexed and therefore never appear. Pages are weakly consistent; a
     /// non-terminal page can be short or empty, so continue until the token is null.
     /// </remarks>
-    /// <exception cref="ArgumentException">The selector is not a directly typed indexed property, or an argument is invalid.</exception>
+    /// <exception cref="ArgumentException">The selector is not a directly typed scalar indexed property, selects a collection membership property, or an argument is invalid.</exception>
     /// <exception cref="NotSupportedException">The query or provider does not support facets.</exception>
     /// <exception cref="SearchableStorageQueryConfigurationException">Continuation protection or a bounded policy is invalid.</exception>
     /// <exception cref="SearchableStorageInvalidContinuationTokenException">The continuation is invalid or belongs to another facet/policy.</exception>
@@ -40,14 +165,14 @@ public static class SearchableStorageQueryableExtensions
     }
 
     /// <summary>
-    /// Executes a bounded top-N count facet over an indexed property.
+    /// Executes a bounded top-N count facet over a scalar indexed property.
     /// </summary>
     /// <remarks>
     /// Returned counts are always exact. Approximate mode may omit a winner, but reports a
     /// certified inclusive upper bound for every omitted value through
     /// <see cref="SearchableStorageFacetResult{TValue}.MaximumOmittedCount"/>.
     /// </remarks>
-    /// <exception cref="ArgumentException">The selector is not a directly typed indexed property, or an argument is invalid.</exception>
+    /// <exception cref="ArgumentException">The selector is not a directly typed scalar indexed property, selects a collection membership property, or an argument is invalid.</exception>
     /// <exception cref="NotSupportedException">The query or provider does not support facets.</exception>
     /// <exception cref="SearchableStorageQueryConfigurationException">The bounded facet policy is invalid.</exception>
     /// <exception cref="SearchableStorageQueryLimitExceededException">The terminal cannot complete within its aggregate ceilings.</exception>
@@ -71,10 +196,10 @@ public static class SearchableStorageQueryableExtensions
     }
 
     /// <summary>
-    /// Executes an exact minimum/maximum facet over an indexed property.
+    /// Executes an exact minimum/maximum facet over a scalar indexed property.
     /// </summary>
     /// <returns>A minimum/maximum pair, or <see langword="null"/> when no non-null value matches.</returns>
-    /// <exception cref="ArgumentException">The selector is not a directly typed indexed property, or an argument is invalid.</exception>
+    /// <exception cref="ArgumentException">The selector is not a directly typed scalar indexed property, selects a collection membership property, or an argument is invalid.</exception>
     /// <exception cref="NotSupportedException">The query or provider does not support facets.</exception>
     /// <exception cref="SearchableStorageQueryConfigurationException">The bounded facet policy is invalid.</exception>
     /// <exception cref="SearchableStorageQueryLimitExceededException">The terminal cannot complete within its aggregate ceilings.</exception>
@@ -140,7 +265,11 @@ public static class SearchableStorageQueryableExtensions
     /// <returns>A sorted, distinct list of matching grain identifiers.</returns>
     /// <remarks>
     /// Supported predicates use <c>==</c>, <c>&lt;</c>, <c>&lt;=</c>, <c>&gt;</c>, or
-    /// <c>&gt;=</c> on indexed properties and combine them with <c>&amp;&amp;</c> or <c>||</c>.
+    /// <c>&gt;=</c> on scalar indexed properties; exact collection membership through
+    /// two-argument <c>Enumerable.Contains(state.Array, value)</c> on an exact <c>T[]</c> Hash index
+    /// or <c>state.List.Contains(value)</c> on an exact <c>List&lt;T&gt;</c> Hash index; and bounded
+    /// scalar <see cref="WhereIn{TState, TValue}(IQueryable{TState}, Expression{Func{TState, TValue}}, IReadOnlyList{TValue})"/>.
+    /// Predicates combine with <c>&amp;&amp;</c> or <c>||</c>.
     /// The built-in provider collects bounded pages and returns the complete result or throws
     /// <see cref="SearchableStorageQueryLimitExceededException"/> without a partial list. Use
     /// <see cref="ToGrainIdPageAsync{TState}(IQueryable{TState}, SearchableStorageQueryPageRequest, CancellationToken)"/>
@@ -174,4 +303,13 @@ public static class SearchableStorageQueryableExtensions
                 + "ISearchableStorageQueryClient or an IQueryable provider which implements "
                 + "ISearchableStorageFacetQueryProvider.");
     }
+}
+
+internal interface IWhereInValueSnapshot
+{
+    Type ElementType { get; }
+
+    int Count { get; }
+
+    object? GetValue(int index);
 }

@@ -1,9 +1,10 @@
 # Managed index schema lifecycle
 
 Searchable index entries are derived data, but their interpretation is durable. An indexed property
-name, index kind, CLR value domain, canonical codec, state type, state name, and application-owned
-schema version together identify one index generation. Changing the index/type/version identity
-without rebuilding can mix incompatible entries or make older records disappear from queries.
+name, index kind, CLR value domain, scalar or membership multiplicity, canonical codec/extractor,
+state type, state name, and application-owned schema version together identify one index generation.
+Changing that identity without rebuilding can mix incompatible entries or make older records
+disappear from queries.
 
 Renaming the Orleans persistent `stateName` is different: record keys, the partition catalog, and
 the schema-control key all contain that name. A rebuild under the new name cannot discover records
@@ -62,10 +63,12 @@ siloBuilder.AddSearchableStorageState<VacancyState>(
     applicationSchemaVersion: 2);
 ```
 
-The fingerprint changes automatically when the state type identity, state name, sorted index
-names, index kinds, CLR value identities, or built-in codec versions change. Runtime values and
-serialized application records are not fingerprint inputs. `applicationSchemaVersion` exists for
-semantic changes outside those structural inputs; increment it deliberately, not on every deploy.
+The fingerprint changes automatically when the state type identity, state name, sorted index names,
+index kinds, CLR value identities, multiplicity, or built-in codec/extractor versions change. Schema
+keys remain version 1 for all schemas; scalar-only fingerprints remain byte-for-byte v1, while
+membership fingerprints use v2. Runtime values and serialized application records are not
+fingerprint inputs. `applicationSchemaVersion` exists for semantic changes outside those structural
+inputs; increment it deliberately, not on every deploy.
 
 Registration is deliberately fail-closed, not a passive compatibility declaration. From startup,
 writes, clears, and queries for that registered state require its exact fingerprint to be active in
@@ -135,6 +138,13 @@ catalog records, while the public helper may run any number of pages before acti
 also trigger the provider's existing retained whole-partition compaction, so 64 is a record-page
 limit, not a hard work, memory, or wall-clock bound. Cancellation stops only the calling loop; an
 in-flight turn can still commit, and calling the same method again resumes the durable intent.
+
+For a Hash membership index, rebuild extraction accepts only the registered exact SZ `T[]` or exact
+`List<T>` shape. It omits a null collection and null elements, preserves the empty string, then
+canonically sorts and deduplicates converted elements. One record may retain at most 64 unique
+entries in one membership scope; a duplicate-heavy collection may contain more than 64 raw elements
+when no more than 64 unique canonical values remain. This storage-entry ceiling is independent of
+the 64-record scan-page limit.
 
 The first advance creates or resumes a layout maintenance intent keyed by the rebuild
 identifier before touching an owner. Current owners are upgraded to format 5 one at a time, then all
@@ -213,6 +223,16 @@ deliberately omitted from the remote diagnostic. That failed record page does no
 durable control cursor or count. Preserve the rebuild id, repair the serializer/type/data, and
 resume the same rebuild; do not start a competing generation to hide the failure.
 
+If collection extraction retains a 65th unique value, its local materializer reaches the
+`record-scope-index-entries` boundary before that record's partition mutation or WAL authority. Like
+other rebuild getter/materialization failures, the Orleans proxy reports a sanitized
+`InvalidOperationException` with the underlying exception type and record location, not the public
+capacity exception's `Boundary`/`Actual`/`Limit` fields. The durable page cursor and count do not
+advance, although earlier records in the same attempted page can already carry the target
+fingerprint. Use the reported location to reduce or rewrite the offending collection to at most 64
+unique canonical elements through a reviewed application-data repair, then resume the same rebuild.
+Do not discard the rebuild intent or raise the application schema version to conceal the record.
+
 Point reads do not validate an index generation, but they still use the application's serializer.
 "Point reads remain available" therefore means the index gate does not block them; it is not a
 promise that an incompatible payload can be deserialized.
@@ -230,6 +250,10 @@ generation change is invalid after activation of the new fingerprint; discard it
 page sequence. Do not interpret this as the routing-specific
 `SearchableStorageStaleContinuationTokenException`: a schema change normally fails token binding as
 an invalid continuation, while a routing-epoch change has its own stale-token contract.
+
+Exact collection `Contains` and scalar `WhereIn` use those same generation-bound scopes and
+continuations. Canonical `WhereIn` order and duplicates produce the same built-in plan binding, but
+a token from a different schema generation never resumes across activation.
 
 ## Durable formats and retention
 
@@ -254,6 +278,10 @@ physical provider as the layout and partitions. It is small but load-bearing: in
 restore, replication, and retention policies. Do not apply TTLs or lifecycle expiry independently
 to control, layout, manifest, journal, or snapshot values, and do not clear a control document after
 activation merely to save space.
+
+Collection membership does not add a layout or partition-persistence format. Schema keys remain
+version 1 for scalar and membership schemas; scalar-only fingerprint bytes remain format 1, while a
+schema containing membership uses fingerprint format 2 to bind multiplicity and extractor version.
 
 If a control document alone is lost while layout and partition data survive, the provider remains
 schema-enabled. A restarted process or any participant with a cold validation cache reads the

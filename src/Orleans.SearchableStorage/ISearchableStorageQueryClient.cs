@@ -12,8 +12,12 @@ public interface ISearchableStorageQueryClient : ISearchableStorageClient
     /// <param name="stateName">The Orleans persistent-state name.</param>
     /// <returns>A query root which can be filtered and executed with <see cref="SearchableStorageQueryableExtensions.ToGrainIdsAsync{TState}(IQueryable{TState}, CancellationToken)"/>.</returns>
     /// <remarks>
-    /// The query supports indexed comparisons combined with boolean AND and OR. It does not support
-    /// synchronous enumeration or the general LINQ operator set.
+    /// The query supports scalar indexed comparisons, exact collection membership through
+    /// two-argument <c>Enumerable.Contains(state.Array, value)</c> on an exact <c>T[]</c> Hash index
+    /// or <c>state.List.Contains(value)</c> on an exact <c>List&lt;T&gt;</c> Hash index, and bounded
+    /// scalar <see cref="SearchableStorageQueryableExtensions.WhereIn{TState, TValue}(IQueryable{TState}, System.Linq.Expressions.Expression{Func{TState, TValue}}, IReadOnlyList{TValue})"/>.
+    /// Predicates can be combined with boolean AND and OR. The query does not support synchronous
+    /// enumeration or the general LINQ operator set.
     /// </remarks>
     /// <exception cref="ArgumentException"><paramref name="stateName"/> is empty.</exception>
     IQueryable<TState> Query<TState>(string stateName);

@@ -556,7 +556,7 @@ public sealed class QueryTranslatorTests
         var action = () => QueryTranslator.Translate<QueryState>("state", expression);
 
         action.Should().Throw<NotSupportedException>()
-            .WithMessage("*at least one Where predicate*");
+            .WithMessage("*at least one Where or WhereIn filter*");
     }
 
     [Fact]

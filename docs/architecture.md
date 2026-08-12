@@ -15,8 +15,9 @@ of bounded journal-segment grains, and two reusable snapshot-slot grains. All fo
 through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
 Application grains never address those implementation grains directly.
 
-`SearchableStorageClient` supports direct exact/range primitives and a focused `IQueryable`
-boundary. `QueryTranslator` produces an explicit Empty/Exact/Range/And/Or plan. The paged terminal
+`SearchableStorageClient` supports direct scalar exact/range primitives and a focused `IQueryable`
+boundary. `QueryTranslator` accepts scalar comparisons, exact array/list membership predicates, and
+bounded scalar `WhereIn`, then produces the existing explicit Empty/Exact/Range/And/Or plan. The paged terminal
 sends one bounded request to every distinct owner in one immutable layout snapshot. Each partition
 validates the route and fingerprints, evaluates only a configured logical-work slice against one
 serially consistent activation view, and returns a sorted local prefix plus a safe frontier. The
@@ -244,6 +245,17 @@ Each bucket stores its posting cardinality as scalar metadata; facet candidate n
 enumerate posting members. These structures remain activation-derived and add no durable index
 representation.
 
+A Hash membership property produces multiple entries in one scope. The type model admits only exact
+SZ `T[]` and exact `List<T>` shapes over a supported scalar/nullable element domain. Extraction
+omits a null collection and null elements, preserves the empty string, and converts, canonically
+sorts, and deduplicates before materializing at most 64 unique entries. The fixed storage guardrail
+runs after the managed active-schema gate, which can consult schema/layout authority, but before any
+partition mutation or WAL authority. With no managed registrations, a first over-capacity write is
+rejected before layout initialization or routing. Derived index entries do not retain enumeration
+order; the authoritative serialized grain-state payload is unchanged and may retain it. Updates and
+clears use the same ordinary record/index mutation path; recovery, snapshots, schema rebuild, and
+movement replay those entries without a separate membership subsystem.
+
 Once a successful write returns, that partition's activation already contains the committed state
 and corresponding index entries. No asynchronous index-maintenance pipeline exists in this version;
 recovery deterministically derives the same indexes from snapshot records plus committed journal
@@ -255,12 +267,31 @@ entries.
 
 Facet terminals opt in independently through `ISearchableStorageFacetQueryProvider`, preserving the
 existing async and paging provider contracts for external implementations. Their selector must map
-the query element directly to one declared index. `IndexValueMaterializer` uses that selected
+the query element directly to one declared scalar index; membership properties are predicate-only.
+`IndexValueMaterializer` uses that selected
 index's converter to reconstruct the exact public CLR type from the canonical wire value; the
 internal value kind alone is insufficient for shared representations such as enum/integer,
 nullable/non-nullable, `char`/string, or `DateTime`/`DateTimeOffset`.
 
-Translation accepts one or more `Queryable.Where` calls. Predicate leaves must compare one direct indexed property with a constant or captured value using equality or an ordered comparison. Boolean `AndAlso` and `OrElse` become plan intersection and union. Reversed operands are normalized. Intersected bounds on the same index are combined before execution; contradictory bounds become an empty plan. Equality can use either index kind, while ordered comparisons require a range index. Null comparison is rejected because null index values are deliberately omitted. An empty plan still validates persisted layout compatibility and cancellation, but skips partition fan-out.
+Translation accepts one or more top-level `Queryable.Where` or `WhereIn` calls. `Where` predicate
+leaves may compare one direct
+scalar indexed property with a constant or captured value, call the exact two-argument generic
+`Enumerable.Contains<T>` on a direct exact `T[]` membership property, or call exact instance
+`List<T>.Contains(T)` on a direct exact `List<T>` membership property. Both collection forms require
+a Hash membership index and an exact closed scalar operand. Boolean `AndAlso` and `OrElse` become
+plan intersection and union. Reversed comparison operands are normalized. Intersected bounds on the
+same scalar index are combined before execution; contradictory bounds become an empty plan. Equality
+can use either scalar index kind, while ordered comparisons require a range index. Null comparison
+and null membership operands are rejected because null index values are deliberately omitted. An
+empty plan still validates persisted layout compatibility and cancellation, but skips partition
+fan-out.
+
+The public `WhereIn` marker snapshots at most 64 raw non-null values immediately. For the built-in
+provider, translation resolves one direct scalar Hash or Range property, converts the snapshot
+through that index's canonical codec, deduplicates and sorts it, and builds balanced existing Exact/Or
+nodes; an empty snapshot becomes Empty. The marker is deliberately visible to external query
+providers so they can own their execution semantics. `values.Contains(state.Property)`, collection
+selectors, and arbitrary `Contains` calls are not aliases for it, and no new wire operation exists.
 
 The closed value side is intentionally narrow: constants, captured fields or properties, and built-in conversion nodes are evaluated using the expression interpreter. Method calls, calculations, user-defined value conversions, state-to-state comparisons, nested state member access, and arbitrary LINQ operators are rejected with `NotSupportedException`. Compiler-generated integral and enum promotions are normalized through the indexed property's PolyType-derived value domain. A conversion of the indexed property is accepted only when it represents that complete domain exactly and preserves equality and ordering. Out-of-domain integral equality becomes an empty plan, and ordered bounds are saturated to a correct full or empty domain window. Boxing, reference, narrowing, user-defined, and lossy floating-point conversions of the indexed property are rejected rather than silently changing C# semantics. Custom binary comparison methods are also rejected; only the corresponding BCL operators for supported built-in value types are accepted.
 
@@ -304,7 +335,11 @@ entire page and no partial items or token escape. Non-canceled attempts classify
 failures deterministically in sorted-owner order. Cancellation interrupts the local wait, not the
 Orleans RPCs already in flight; a detached observer still observes their aggregate completion.
 
-`ISearchableStorageClient` intentionally retains only the existing direct `FindAsync` and `RangeAsync` surface. `ISearchableStorageQueryClient` derives from it and adds `Query<TState>`. The keyed registrations for both interfaces point to the same `SearchableStorageClient` instance, which keeps existing direct-client implementations source compatible while making the new expression surface opt-in.
+`ISearchableStorageClient` intentionally retains only the existing direct scalar `FindAsync` and
+`RangeAsync` surface; selecting a membership property there is rejected. `ISearchableStorageQueryClient`
+derives from it and adds `Query<TState>`. The keyed registrations for both interfaces point to the
+same `SearchableStorageClient` instance, which keeps existing direct-client implementations source
+compatible while making the new expression surface opt-in.
 
 ### Bounded paging protocol
 
@@ -342,13 +377,14 @@ and response-family values are in the
 
 Public readable state properties marked with `SearchableIndexAttribute` are indexed. Index scope combines a length-prefixed persisted state-type identity, Orleans state name, and stable index name. A named type identity contains its assembly simple name, culture, public-key token, and full type name. Constructed generic identities contain the generic definition followed by recursively encoded argument identities; arrays encode their shape and element identity. Assembly versions are deliberately excluded. Length prefixes make every boundary unambiguous and prevent unrelated states from sharing buckets accidentally.
 
-`IndexMetadataProvider` builds one `SearchableTypeModel<TState>` through PolyType's reflection provider and caches each valid model for the process lifetime. A non-object PolyType shape, such as a collection or scalar state type, produces an empty model and remains writable through the provider. An object model contains the indexed member identity, index kind, normalized index name, value converter, stable persisted type identity, and a strongly typed PolyType getter delegate. Each indexed property caches its complete scope per Orleans state name. Steady-state writes therefore neither call `PropertyInfo.GetValue` nor repeat assembly identity reflection; they invoke the cached getter, converter, and scope. Failed model construction is not cached so an invalid state declaration continues to produce its direct validation exception.
+`IndexMetadataProvider` builds one `SearchableTypeModel<TState>` through PolyType's reflection provider and caches each valid model for the process lifetime. A non-object PolyType shape, such as a collection or scalar state type, produces an empty model and remains writable through the provider. An object model contains the indexed member identity, index kind, normalized index name, scalar value converter, multiplicity/extractor identity, stable persisted type identity, and a strongly typed PolyType getter delegate. Each indexed property caches its complete scope per Orleans state name. Steady-state writes therefore neither call `PropertyInfo.GetValue` nor repeat assembly identity reflection; they invoke the cached getter, converter, extractor, and scope. Failed model construction is not cached so an invalid state declaration continues to produce its direct validation exception.
 
 PolyType usage is contained behind the indexing model. Storage grains and persisted messages do not depend on type-shape objects. Query selectors and predicates are expression trees: the expression boundary reads the selected `PropertyInfo` only to match it to the member identity supplied by PolyType, while persisted value discovery and access remain type-shape operations. The same model is used by writes and queries, so index kind, converter, and scope have one definition.
 
 The runtime reflection provider is intentional. Orleans `IGrainStorage` accepts unconstrained application state types, and this project does not require consumers to annotate those types for PolyType source generation. Native AOT and trimming are not supported.
 
-Null values are omitted. String ordering is ordinal. The canonical facet wire representation accepts
+Null scalar values, null collections, and null collection elements are omitted. Empty strings remain
+normal index values, and string ordering is ordinal. The canonical facet wire representation accepts
 at most 16,384 bytes of valid strict UTF-8 for string/`char` values. Writes retain their older CLR
 domain and do not enforce this wire limit; a facet traversal which reaches an overlong value or
 unpaired surrogate fails atomically with `SearchableStorageQueryLimitExceededException`, so
@@ -358,10 +394,13 @@ Floating-point NaN values are rejected because they do not provide a useful tota
 indexes.
 
 Index names, index kinds, indexed property types, codec versions, and a positive application-owned
-version are persisted schema. Applications register exactly one CLR type/version for every
-provider/state-name pair. The deterministic fingerprint binds those inputs to physical scopes and
-is stored on each rebuilt record. A separate per-state control grain stores the active fingerprint,
-last completed count, and one resumable rebuild cursor. Partitions commit page-limited `Reindex` WAL
+version are persisted schema. For a schema containing membership, multiplicity and the membership
+extractor version are also fingerprint inputs. Schema keys remain version 1 for all schemas;
+scalar-only fingerprints remain byte-for-byte v1, while membership fingerprints use v2.
+Applications register exactly one CLR type/version for every provider/state-name pair. The
+deterministic fingerprint binds those inputs to physical scopes and is stored on each rebuilt record.
+A separate per-state control grain stores the active fingerprint, last completed count, and one
+resumable rebuild cursor. Partitions commit page-limited `Reindex` WAL
 entries which preserve payload, `GrainId`, ETag, and the object-version allocator. A page covers at
 most 64 catalog records but can trigger retained whole-partition compaction, so it is not a strict
 work, memory, or wall-clock bound.
@@ -498,6 +537,9 @@ maintenance transitions. It also covers one live move under routed writes, point
 membership during and after the epoch change, source/target reactivation, and single authority. A
 shared schema case upgrades a real format-3 record to persistence format 5, preserves its ETag,
 compacts/reactivates partition and control state, and verifies managed update and clear behavior.
+The inherited contract additionally writes array/list membership entries, compacts and reactivates
+them, then transfers them through a real slot move and verifies point state plus both membership
+predicates after source and target reactivation.
 
 The contract runs unchanged against Orleans memory, ADO.NET/PostgreSQL, Redis, and Azure Blob
 providers. A compatible physical provider must offer atomic whole-state writes, authoritative point

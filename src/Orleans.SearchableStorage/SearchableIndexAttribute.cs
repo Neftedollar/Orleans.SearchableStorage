@@ -1,7 +1,9 @@
 namespace Orleans.SearchableStorage;
 
 /// <summary>
-/// Identifies a grain-state property which is maintained in a secondary index.
+/// Identifies a grain-state property which is maintained in a secondary index. Supported scalar
+/// properties can use either index kind; an exact SZ <c>T[]</c> or exact <c>List&lt;T&gt;</c>
+/// membership property must use <see cref="SearchableIndexKind.Hash"/>.
 /// </summary>
 [AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = true)]
 public sealed class SearchableIndexAttribute : Attribute
@@ -32,7 +34,8 @@ public sealed class SearchableIndexAttribute : Attribute
 public enum SearchableIndexKind
 {
     /// <summary>
-    /// Maps one exact value to matching grain identifiers.
+    /// Maps one exact scalar value, or each retained exact value from a supported <c>T[]</c> or
+    /// <c>List&lt;T&gt;</c> membership property, to matching grain identifiers.
     /// </summary>
     Hash = 0,
 
