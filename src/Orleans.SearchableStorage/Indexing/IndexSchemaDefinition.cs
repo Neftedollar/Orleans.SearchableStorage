@@ -16,6 +16,8 @@ internal sealed record IndexSchemaDefinition(
     IReadOnlyList<IndexPropertyDefinition> Indexes)
 {
     public const int DefinitionVersion = 1;
+    public const int MembershipFingerprintFormatVersion = 2;
+    public const int MembershipExtractorVersion = 1;
     public const int FingerprintLength = 32;
 }
 
@@ -28,7 +30,9 @@ internal sealed record IndexPropertyDefinition(
     string ValueTypeIdentity,
     IndexKeyCodecId CodecId,
     int CodecVersion,
-    bool SupportsRange);
+    bool SupportsRange,
+    IndexValueMultiplicity Multiplicity = IndexValueMultiplicity.Scalar,
+    int ExtractorVersion = 0);
 
 /// <summary>
 /// Produces deterministic identities for the managed index-schema protocol.
@@ -58,9 +62,13 @@ internal static class IndexSchemaIdentity
                 index.ValueTypeIdentity,
                 index.Converter.CodecId,
                 index.Converter.CodecVersion,
-                index.Converter.SupportsRange))
+                index.Converter.SupportsRange,
+                index.Multiplicity,
+                index.ExtractorVersion))
             .OrderBy(static definition => definition.Name, StringComparer.Ordinal)
             .ToArray();
+        var hasMembershipIndexes = indexes.Any(
+            static index => index.Multiplicity == IndexValueMultiplicity.CollectionMembership);
 
         var schemaKey = Compute(
             writer =>
@@ -72,7 +80,9 @@ internal static class IndexSchemaIdentity
         var fingerprint = Compute(
             writer =>
             {
-                writer.WriteInt32(IndexSchemaDefinition.DefinitionVersion);
+                writer.WriteInt32(hasMembershipIndexes
+                    ? IndexSchemaDefinition.MembershipFingerprintFormatVersion
+                    : IndexSchemaDefinition.DefinitionVersion);
                 writer.WriteInt32(applicationSchemaVersion);
                 writer.WriteString(model.TypeIdentity, MaximumComponentBytes);
                 writer.WriteString(stateName, MaximumComponentBytes);
@@ -85,6 +95,11 @@ internal static class IndexSchemaIdentity
                     writer.WriteInt32((int)index.CodecId);
                     writer.WriteInt32(index.CodecVersion);
                     writer.WriteBoolean(index.SupportsRange);
+                    if (hasMembershipIndexes)
+                    {
+                        writer.WriteInt32((int)index.Multiplicity);
+                        writer.WriteInt32(index.ExtractorVersion);
+                    }
                 }
             });
 

@@ -102,6 +102,11 @@ internal static class QueryTranslator
         int depth)
     {
         budget.Visit(depth);
+        if (expression is ConstantExpression { Value: false })
+        {
+            return EmptyQueryPlan.Instance;
+        }
+
         return expression.NodeType switch
         {
             ExpressionType.AndAlso when expression is BinaryExpression binary =>
@@ -118,6 +123,13 @@ internal static class QueryTranslator
             ExpressionType.GreaterThan or
             ExpressionType.GreaterThanOrEqual when expression is BinaryExpression comparison =>
                 TranslateComparison<TState>(stateName, comparison, parameter, schemaFingerprint, budget),
+            ExpressionType.Call when expression is MethodCallExpression methodCall =>
+                TranslateCollectionContains<TState>(
+                    stateName,
+                    methodCall,
+                    parameter,
+                    schemaFingerprint,
+                    budget),
             ExpressionType.NotEqual or ExpressionType.Not =>
                 throw new NotSupportedException(
                     "Predicate negation is not supported because it requires a partition-wide set complement. " +
@@ -126,6 +138,97 @@ internal static class QueryTranslator
                 $"Predicate expression '{expression.NodeType}' is not supported. " +
                 "Use indexed comparisons combined with && or ||."),
         };
+    }
+
+    private static QueryPlan TranslateCollectionContains<TState>(
+        string stateName,
+        MethodCallExpression methodCall,
+        ParameterExpression parameter,
+        byte[]? schemaFingerprint,
+        TranslationBudget budget)
+    {
+        Expression source;
+        Expression valueExpression;
+        Type elementType;
+        var declaringType = methodCall.Method.DeclaringType;
+        if (methodCall.Object is not null
+            && declaringType is { IsGenericType: true }
+            && declaringType.GetGenericTypeDefinition() == typeof(List<>)
+            && methodCall.Method.Name == nameof(List<int>.Contains)
+            && methodCall.Method.ReturnType == typeof(bool)
+            && methodCall.Method.GetParameters() is [{ ParameterType: var parameterType }]
+            && parameterType == declaringType.GetGenericArguments()[0]
+            && methodCall.Arguments.Count == 1)
+        {
+            source = methodCall.Object;
+            valueExpression = methodCall.Arguments[0];
+            elementType = parameterType;
+        }
+        else if (methodCall.Object is null
+            && methodCall.Method.IsGenericMethod
+            && methodCall.Method.GetGenericMethodDefinition() == EnumerableContainsMethod
+            && methodCall.Arguments.Count == 2)
+        {
+            source = methodCall.Arguments[0];
+            valueExpression = methodCall.Arguments[1];
+            elementType = methodCall.Method.GetGenericArguments()[0];
+        }
+        else
+        {
+            throw UnsupportedContains(methodCall);
+        }
+
+        if (!TryGetDirectProperty(source, parameter, out var propertyAccess)
+            || propertyAccess.Conversions.Count != 0)
+        {
+            throw new NotSupportedException(
+                "Collection membership requires a direct indexed array or List<T> state property.");
+        }
+
+        var property = propertyAccess.Property;
+        var isExactList = property.PropertyType.IsGenericType
+            && property.PropertyType.GetGenericTypeDefinition() == typeof(List<>)
+            && property.PropertyType.GetGenericArguments()[0] == elementType
+            && methodCall.Object is not null;
+        var isExactArray = property.PropertyType.IsSZArray
+            && property.PropertyType.GetElementType() == elementType
+            && methodCall.Object is null;
+        if (!isExactList && !isExactArray)
+        {
+            throw UnsupportedContains(methodCall);
+        }
+
+        SelectedIndex index;
+        try
+        {
+            index = IndexMetadataProvider.GetSelectedIndex<TState>(
+                stateName,
+                property,
+                nameof(methodCall),
+                schemaFingerprint,
+                IndexValueMultiplicity.CollectionMembership);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new NotSupportedException(
+                $"Property '{property.Name}' is not a searchable collection membership index.",
+                exception);
+        }
+
+        if (index.Kind != SearchableIndexKind.Hash)
+        {
+            throw new NotSupportedException(
+                $"Collection membership property '{property.Name}' must use a hash index.");
+        }
+
+        var value = EvaluateClosedValue(valueExpression, parameter, budget);
+        if (value is null)
+        {
+            throw new NotSupportedException(
+                $"Null membership operands are not supported because property '{property.Name}' does not index null elements.");
+        }
+
+        return QueryComparisonPlanFactory.Create(index, ExpressionType.Equal, value);
     }
 
     private static QueryPlan TranslateComparison<TState>(
@@ -327,6 +430,19 @@ internal static class QueryTranslator
             $"LINQ operator '{operatorName}' is not supported by the current query stage. " +
             "Use Where followed by ToGrainIdsAsync.");
     }
+
+    private static NotSupportedException UnsupportedContains(MethodCallExpression methodCall)
+    {
+        return new NotSupportedException(
+            $"Contains method '{methodCall.Method}' is not supported. Use exact List<T>.Contains(value) "
+            + "or two-argument Enumerable.Contains<T>(directArrayProperty, value) on a direct indexed collection property.");
+    }
+
+    private static readonly MethodInfo EnumerableContainsMethod = typeof(Enumerable)
+        .GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .Single(static method => method.Name == nameof(Enumerable.Contains)
+            && method.IsGenericMethodDefinition
+            && method.GetParameters().Length == 2);
 
     private readonly record struct PropertyAccess(
         PropertyInfo Property,

@@ -1,4 +1,6 @@
+using System.Linq.Expressions;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Indexing;
 
 namespace Orleans.SearchableStorage;
 
@@ -7,6 +9,126 @@ namespace Orleans.SearchableStorage;
 /// </summary>
 public static class SearchableStorageQueryableExtensions
 {
+    /// <summary>
+    /// Filters a searchable-storage query to records whose scalar indexed property equals one of
+    /// a bounded set of values.
+    /// </summary>
+    /// <typeparam name="TState">The persisted state type being queried.</typeparam>
+    /// <typeparam name="TValue">The exact scalar property and value type.</typeparam>
+    /// <param name="source">A searchable-storage query.</param>
+    /// <param name="propertySelector">A direct scalar Hash or Range indexed property.</param>
+    /// <param name="values">At most 64 non-null values. The values are snapshotted immediately.</param>
+    /// <returns>A deferred query lowered to existing exact-match and OR query nodes.</returns>
+    /// <remarks>
+    /// Duplicate values are removed using the index's canonical equality and the remaining values
+    /// are ordered canonically, so input order does not affect the query fingerprint. This is a
+    /// bounded convenience operator, not general LINQ <c>Contains</c> translation.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">An argument is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// The selector is not one directly typed scalar index, or <paramref name="values"/> contains null.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="values"/> contains more than 64 items.</exception>
+    public static IQueryable<TState> WhereIn<TState, TValue>(
+        this IQueryable<TState> source,
+        Expression<Func<TState, TValue>> propertySelector,
+        IReadOnlyList<TValue> values)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(propertySelector);
+        ArgumentNullException.ThrowIfNull(values);
+
+        if (propertySelector.Parameters.Count != 1
+            || propertySelector.Body is not MemberExpression
+            {
+                Member: System.Reflection.PropertyInfo,
+                Expression: ParameterExpression parameter,
+            }
+            || parameter != propertySelector.Parameters[0])
+        {
+            throw new ArgumentException(
+                "WhereIn requires a directly typed scalar indexed property selector.",
+                nameof(propertySelector));
+        }
+
+        var selected = IndexMetadataProvider.GetSelectedIndex(
+            "where-in-selector-validation",
+            propertySelector);
+        if (selected.Converter.ValueType != typeof(TValue))
+        {
+            throw new ArgumentException(
+                $"WhereIn selector type '{typeof(TValue)}' must exactly match scalar indexed property type "
+                + $"'{selected.Converter.ValueType}'; conversions and boxing are not supported.",
+                nameof(propertySelector));
+        }
+
+        if (values.Count > SearchableStorageCapacityLimits.MaximumWhereInValues)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(values),
+                values.Count,
+                $"WhereIn accepts at most {SearchableStorageCapacityLimits.MaximumWhereInValues} raw values.");
+        }
+
+        var canonical = new SortedDictionary<IndexValue, TValue>();
+        for (var index = 0; index < values.Count; index++)
+        {
+            var value = values[index];
+            if (value is null)
+            {
+                throw new ArgumentException("WhereIn values cannot contain null.", nameof(values));
+            }
+
+            var converted = selected.Converter.ConvertObject(value)
+                ?? throw new InvalidOperationException("A non-null WhereIn value unexpectedly converted to null.");
+            canonical.TryAdd(converted, value);
+        }
+
+        var predicateBody = BuildWhereInPredicate(propertySelector.Body, canonical.Values);
+        var predicate = Expression.Lambda<Func<TState, bool>>(
+            predicateBody,
+            propertySelector.Parameters);
+        return Queryable.Where(source, predicate);
+    }
+
+    private static Expression BuildWhereInPredicate<TValue>(
+        Expression property,
+        IEnumerable<TValue> values)
+    {
+        var current = values
+            .Select(value => Expression.Equal(property, CreateTypedConstant(value)))
+            .Cast<Expression>()
+            .ToList();
+        if (current.Count == 0)
+        {
+            return Expression.Constant(false);
+        }
+
+        while (current.Count > 1)
+        {
+            var next = new List<Expression>((current.Count + 1) / 2);
+            for (var index = 0; index < current.Count; index += 2)
+            {
+                next.Add(index + 1 < current.Count
+                    ? Expression.OrElse(current[index], current[index + 1])
+                    : current[index]);
+            }
+
+            current = next;
+        }
+
+        return current[0];
+    }
+
+    private static Expression CreateTypedConstant<TValue>(TValue value)
+    {
+        var targetType = typeof(TValue);
+        var runtimeConstant = Expression.Constant(value);
+        return runtimeConstant.Type == targetType
+            ? runtimeConstant
+            : Expression.Convert(runtimeConstant, targetType);
+    }
+
     /// <summary>
     /// Executes one stable value-ordered page of distinct values from an indexed property.
     /// </summary>

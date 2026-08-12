@@ -29,6 +29,9 @@ public static class SearchableStorageCapacityLimits
     /// <summary>The maximum number of index entries produced for one scope in one record.</summary>
     public const int MaximumIndexEntriesPerScope = 64;
 
+    /// <summary>The maximum raw input item count accepted by one <c>WhereIn</c> operator.</summary>
+    public const int MaximumWhereInValues = MaximumIndexEntriesPerScope;
+
     /// <summary>The maximum canonical byte count for one index entry.</summary>
     public const int MaximumIndexEntryCanonicalBytes = 64 * 1_024;
 
