@@ -8,6 +8,7 @@ import fnmatch
 import hashlib
 import json
 import re
+import stat
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
@@ -20,6 +21,8 @@ CORE_PROPERTIES_PATTERN = "package/services/metadata/core-properties/*.psmdcp"
 CORE_PROPERTIES_CANONICAL = "package/services/metadata/core-properties/{generated}.psmdcp"
 MAX_ENTRY_BYTES = 64 * 1024 * 1024
 MAX_PACKAGE_BYTES = 128 * 1024 * 1024
+MAX_PACKAGE_FILE_BYTES = 128 * 1024 * 1024
+MAX_PACKAGE_ENTRIES = 128
 
 
 def child(element: ET.Element, name: str) -> ET.Element:
@@ -45,7 +48,7 @@ def normalize_xml(element: ET.Element) -> bytes:
 
 
 def canonical_entry(name: str, data: bytes) -> tuple[str, bytes]:
-    if fnmatch.fnmatchcase(name, CORE_PROPERTIES_PATTERN):
+    if matches(CORE_PROPERTIES_PATTERN, name):
         root = ET.fromstring(data)
         for node in root.iter():
             if node.tag.endswith("}created") or node.tag == "created":
@@ -55,7 +58,7 @@ def canonical_entry(name: str, data: bytes) -> tuple[str, bytes]:
         root = ET.fromstring(data)
         for relationship in root.iter():
             target = relationship.attrib.get("Target")
-            if target and fnmatch.fnmatchcase(target.lstrip("/"), CORE_PROPERTIES_PATTERN):
+            if target and matches(CORE_PROPERTIES_PATTERN, target.lstrip("/")):
                 relationship.attrib["Target"] = "/" + CORE_PROPERTIES_CANONICAL
                 # NuGet generates both the core-properties path and its relationship id afresh for
                 # each pack. Neither carries semantic package content; normalize the pair together.
@@ -65,8 +68,16 @@ def canonical_entry(name: str, data: bytes) -> tuple[str, bytes]:
 
 
 def matches(pattern: str, name: str) -> bool:
-    """Match exact allowlist entries literally; only * and ? opt into a glob."""
-    return fnmatch.fnmatchcase(name, pattern) if "*" in pattern or "?" in pattern else name == pattern
+    """Match exact entries literally and glob each path segment independently."""
+    if "*" not in pattern and "?" not in pattern:
+        return name == pattern
+
+    pattern_parts = PurePosixPath(pattern).parts
+    name_parts = PurePosixPath(name).parts
+    return len(pattern_parts) == len(name_parts) and all(
+        fnmatch.fnmatchcase(name_part, pattern_part)
+        for pattern_part, name_part in zip(pattern_parts, name_parts, strict=True)
+    )
 
 
 def validate_nuspec(
@@ -160,24 +171,40 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        package_file_bytes = args.package.stat().st_size
+        if package_file_bytes > MAX_PACKAGE_FILE_BYTES:
+            raise ValueError(
+                f"package file exceeds {MAX_PACKAGE_FILE_BYTES} bytes before ZIP inspection"
+            )
         patterns = load_allowlist(args.allowlist)
         canonical_entries: dict[str, dict[str, object]] = {}
         total_bytes = 0
         nuspec_data: bytes | None = None
         with zipfile.ZipFile(args.package) as package:
-            names = package.namelist()
+            entries = package.infolist()
+            if len(entries) > MAX_PACKAGE_ENTRIES:
+                raise ValueError(f"package contains more than {MAX_PACKAGE_ENTRIES} ZIP entries")
+            names = [entry.filename for entry in entries]
             if len(names) != len(set(names)):
                 raise ValueError("package contains duplicate ZIP entry names")
-            for name in names:
+            for info in entries:
+                name = info.filename
                 path = PurePosixPath(name)
                 if name.endswith("/") or path.is_absolute() or ".." in path.parts or "\\" in name:
                     raise ValueError(f"unsafe or unexpected package entry name: {name!r}")
+                unix_mode = (info.external_attr >> 16) & 0xFFFF
+                file_type = stat.S_IFMT(unix_mode)
+                if file_type not in {0, stat.S_IFREG}:
+                    raise ValueError(f"package entry {name!r} is not a regular file")
+                if info.flag_bits & 0x1:
+                    raise ValueError(f"package entry {name!r} is encrypted")
+                if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+                    raise ValueError(f"package entry {name!r} uses an unsupported compression method")
                 matched = [pattern for pattern in patterns if matches(pattern, name)]
                 if len(matched) != 1:
                     raise ValueError(
                         f"package entry {name!r} must match exactly one allowlist pattern; matched {matched}"
                     )
-                info = package.getinfo(name)
                 if info.file_size > MAX_ENTRY_BYTES:
                     raise ValueError(f"package entry {name!r} exceeds {MAX_ENTRY_BYTES} bytes")
                 total_bytes += info.file_size

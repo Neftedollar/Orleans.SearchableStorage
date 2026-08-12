@@ -181,7 +181,7 @@ type public enum Orleans.SearchableStorage.SearchableStorageIndexSchemaState
   field public const Orleans.SearchableStorage.SearchableStorageIndexSchemaState Uninitialized = Orleans.SearchableStorage.SearchableStorageIndexSchemaState(0)
 type public sealed class Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus
   base System.Object
-  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] public Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus()
+  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] [System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute("RequiredMembers")] public Orleans.SearchableStorage.SearchableStorageIndexSchemaStatus()
   property public Orleans.SearchableStorage.SearchableStorageIndexSchemaRebuildPhase? RebuildPhase { get; init; }
   property public System.Guid? RebuildId { get; init; }
   property public System.Int32? ScannedOwnerCount { get; init; }
@@ -199,7 +199,7 @@ type public sealed class Orleans.SearchableStorage.SearchableStorageInvalidConti
   ctor public Orleans.SearchableStorage.SearchableStorageInvalidContinuationTokenException(System.String message, System.Exception innerException)
 type public sealed class Orleans.SearchableStorage.SearchableStorageLayout
   base System.Object
-  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] public Orleans.SearchableStorage.SearchableStorageLayout()
+  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] [System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute("RequiredMembers")] public Orleans.SearchableStorage.SearchableStorageLayout()
   property public Orleans.SearchableStorage.SearchableStorageMovementState MovementState { get; init; }
   property public Orleans.SearchableStorage.SearchableStorageSlotMoveProgress? ActiveMove { get; init; }
   property public System.Int32 IndexSchemaProtocolVersion { get; init; }
@@ -241,7 +241,7 @@ type public sealed class Orleans.SearchableStorage.SearchableStorageOptions
   property public virtual Orleans.Storage.IGrainStorageSerializer GrainStorageSerializer { get; set; }
 type public sealed class Orleans.SearchableStorage.SearchableStoragePartitionLayout
   base System.Object
-  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] public Orleans.SearchableStorage.SearchableStoragePartitionLayout()
+  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] [System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute("RequiredMembers")] public Orleans.SearchableStorage.SearchableStoragePartitionLayout()
   property public required System.Int32 PartitionIndex { get; init; }
   property public required System.Int32 SlotCount { get; init; }
 type public sealed class Orleans.SearchableStorage.SearchableStorageQueryConfigurationException
@@ -334,7 +334,7 @@ type public static class Orleans.SearchableStorage.SearchableStorageQueryableExt
   method public static System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Orleans.Runtime.GrainId>> ToGrainIdsAsync<TState>(this System.Linq.IQueryable<TState?> source, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken))
 type public sealed class Orleans.SearchableStorage.SearchableStorageRebalancePlan
   base System.Object
-  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] public Orleans.SearchableStorage.SearchableStorageRebalancePlan()
+  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] [System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute("RequiredMembers")] public Orleans.SearchableStorage.SearchableStorageRebalancePlan()
   property public Orleans.SearchableStorage.SearchableStorageSlotMovePlan? NextMove { get; init; }
   property public Orleans.SearchableStorage.SearchableStorageSlotMoveProgress? ActiveMove { get; init; }
   property public required System.Int32 RequiredMoveCount { get; init; }
@@ -374,13 +374,13 @@ type public enum Orleans.SearchableStorage.SearchableStorageSlotMovePhase
   field public const Orleans.SearchableStorage.SearchableStorageSlotMovePhase TargetVersionFenced = Orleans.SearchableStorage.SearchableStorageSlotMovePhase(2)
 type public sealed class Orleans.SearchableStorage.SearchableStorageSlotMovePlan
   base System.Object
-  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] public Orleans.SearchableStorage.SearchableStorageSlotMovePlan()
+  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] [System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute("RequiredMembers")] public Orleans.SearchableStorage.SearchableStorageSlotMovePlan()
   property public required System.Int32 Slot { get; init; }
   property public required System.Int32 SourcePartitionIndex { get; init; }
   property public required System.Int32 TargetPartitionIndex { get; init; }
 type public sealed class Orleans.SearchableStorage.SearchableStorageSlotMoveProgress
   base System.Object
-  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] public Orleans.SearchableStorage.SearchableStorageSlotMoveProgress()
+  ctor [System.ObsoleteAttribute(message="Constructors of types with required members are not supported in this version of your compiler.", error=true, diagnosticId=null, urlFormat=null)] [System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute("RequiredMembers")] public Orleans.SearchableStorage.SearchableStorageSlotMoveProgress()
   property public required Orleans.SearchableStorage.SearchableStorageSlotMovePhase Phase { get; init; }
   property public required System.Boolean CanAbort { get; init; }
   property public required System.Boolean IsComplete { get; init; }

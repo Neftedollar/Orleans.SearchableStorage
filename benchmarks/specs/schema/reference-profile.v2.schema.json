@@ -25,18 +25,20 @@
     "revision": { "type": "integer", "minimum": 1 },
     "classification": { "enum": ["schema-fixture", "qualification"] },
     "status": { "enum": ["contract-smoke", "frozen"] },
-    "qualificationScope": { "type": "string", "minLength": 1 },
+    "qualificationScope": { "type": "string", "minLength": 1, "maxLength": 2048 },
     "backend": { "$ref": "#/$defs/backend" },
     "implementationPath": { "enum": ["searchable", "plain"] },
     "topology": { "enum": ["embedded", "external"] },
     "cases": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 64,
       "items": { "$ref": "#/$defs/case" }
     },
     "thresholds": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 2048,
       "items": { "$ref": "#/$defs/threshold" }
     }
   },
@@ -142,6 +144,7 @@
         "requiredPhases": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 16,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/phase" }
         },

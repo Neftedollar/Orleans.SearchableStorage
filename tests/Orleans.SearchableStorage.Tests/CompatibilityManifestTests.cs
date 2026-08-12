@@ -48,6 +48,14 @@ public sealed class CompatibilityManifestTests
             .Should().Be(QueryProtocol.FacetWorkPolicyVersion);
         CompatibilityManifest.GetInt("protocols", "continuationToken", "envelope")
             .Should().Be(ContinuationTokenCodec.EnvelopeVersion);
+        CompatibilityManifest.GetInt("protocols", "continuationToken", "aes256GcmAlgorithm")
+            .Should().Be(ContinuationTokenCodec.Aes256GcmAlgorithm);
+        CompatibilityManifest.GetInt("protocols", "continuationToken", "nonceBytes")
+            .Should().Be(ContinuationTokenCodec.NonceBytes);
+        CompatibilityManifest.GetInt("protocols", "continuationToken", "authenticationTagBytes")
+            .Should().Be(ContinuationTokenCodec.AuthenticationTagBytes);
+        CompatibilityManifest.GetInt("protocols", "continuationToken", "fingerprintBytes")
+            .Should().Be(ContinuationTokenCodec.FingerprintBytes);
 
         CompatibilityManifest.GetInt("protocols", "managedIndexSchema", "protocol")
             .Should().Be(StorageIndexSchema.ProtocolVersion);
@@ -79,15 +87,22 @@ public sealed class CompatibilityManifestTests
         AssertEnumMap<PartitionQueryAccessPath>("partitionQueryAccessPath");
         AssertEnumMap<PartitionQueryResponseFamily>("partitionQueryResponseFamily");
         AssertEnumMap<PartitionQueryPageStopReason>("partitionQueryPageStopReason");
+        AssertEnumMap<SearchableIndexKind>("searchableIndexKind");
+        AssertEnumMap<IndexValueKind>("indexValueKind");
+        AssertEnumMap<StorageJournalOperation>("storageJournalOperation");
+        AssertEnumMap<StoragePartitionMoveRole>("storagePartitionMoveRole");
+        AssertEnumMap<StoragePartitionMovePhase>("storagePartitionMovePhase");
+        AssertEnumMap<StorageMoveDeleteMode>("storageMoveDeleteMode");
+        AssertEnumMap<StorageMoveRetirementKind>("storageMoveRetirementKind");
         AssertEnumMap<SearchableStorageMovementState>("movementState");
         AssertEnumMap<SearchableStorageSlotMovePhase>("movementPhase");
     }
 
     [Fact]
-    public void ReviewedFieldIdContractsNameExecutableTests()
+    public void ReviewedWireContractsNameExecutableTests()
     {
         var assembly = typeof(CompatibilityManifestTests).Assembly;
-        foreach (var testName in CompatibilityManifest.GetStrings("fieldIdContractTests"))
+        foreach (var testName in CompatibilityManifest.GetStrings("executableWireContractTests"))
         {
             var separator = testName.LastIndexOf('.');
             separator.Should().BeGreaterThan(0);

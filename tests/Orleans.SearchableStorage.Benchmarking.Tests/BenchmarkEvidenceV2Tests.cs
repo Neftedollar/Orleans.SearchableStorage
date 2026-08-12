@@ -50,6 +50,7 @@ public sealed class BenchmarkEvidenceV2Tests
     [InlineData("plain-secondary-index-surface")]
     [InlineData("duplicate-profile-case")]
     [InlineData("qualification-zero-commit")]
+    [InlineData("qualification-rehashed-external-scale-shape")]
     [InlineData("scale-claim-small-record-count")]
     [InlineData("scale-claim-single-silo")]
     [InlineData("provider-call-zero")]
@@ -161,6 +162,14 @@ public sealed class BenchmarkEvidenceV2Tests
             case "qualification-zero-commit":
                 PromoteToQualification(fixture.Root, result);
                 break;
+            case "qualification-rehashed-external-scale-shape":
+                PromoteToQualification(fixture.Root, result);
+                result["run"]!["gitCommit"] = "0123456789abcdef0123456789abcdef01234567";
+                result["run"]!["recordCount"] = 10_000_000;
+                result["run"]!["siloCount"] = 2;
+                result["run"]!["clientCount"] = 2;
+                result["scaleClaim"] = true;
+                break;
             case "scale-claim-small-record-count":
                 PromoteToQualification(fixture.Root, result);
                 result["run"]!["gitCommit"] = "0123456789abcdef0123456789abcdef01234567";
@@ -201,6 +210,181 @@ public sealed class BenchmarkEvidenceV2Tests
 
         await Assert.ThrowsAsync<InvalidDataException>(
             () => BenchmarkArtifactValidator.ValidateAsync(resultPath, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task VersionTwoValidatorRejectsOversizedProfileBeforeReadingIt()
+    {
+        using var fixture = FixtureCopy.Create();
+        var resultPath = Path.Combine(fixture.Root, "contract-smoke.memory.result.v2.json");
+        var result = JsonNode.Parse(await File.ReadAllTextAsync(resultPath))!.AsObject();
+        var profilePath = Path.Combine(fixture.Root, result["profile"]!["path"]!.GetValue<string>());
+        await using (var stream = new FileStream(profilePath, FileMode.Open, FileAccess.Write, FileShare.None))
+        {
+            stream.SetLength(BenchmarkEvidenceV2Validator.MaximumProfileBytes + 1L);
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => BenchmarkArtifactValidator.ValidateAsync(resultPath, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task VersionTwoValidatorRejectsOversizedRawArtifactBeforeHashingIt()
+    {
+        using var fixture = FixtureCopy.Create();
+        var resultPath = Path.Combine(fixture.Root, "contract-smoke.memory.result.v2.json");
+        var rawPath = Path.Combine(fixture.Root, "results", "evidence", "contract-smoke.memory.raw.json");
+        await using (var stream = new FileStream(rawPath, FileMode.Open, FileAccess.Write, FileShare.None))
+        {
+            stream.SetLength(BenchmarkEvidenceV2Validator.MaximumRawArtifactBytes + 1L);
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => BenchmarkArtifactValidator.ValidateAsync(resultPath, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task VersionTwoValidatorRejectsNestedRawArtifactSymlink()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var fixture = FixtureCopy.Create();
+        var resultPath = Path.Combine(fixture.Root, "contract-smoke.memory.result.v2.json");
+        var evidenceDirectory = Path.Combine(fixture.Root, "results", "evidence");
+        var targetDirectory = Path.Combine(fixture.Root, "actual-evidence");
+        Directory.Move(evidenceDirectory, targetDirectory);
+        try
+        {
+            Directory.CreateSymbolicLink(evidenceDirectory, targetDirectory);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => BenchmarkArtifactValidator.ValidateAsync(resultPath, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task VersionDispatchFindsLateVersionAfterWhitespaceAndLongRootString()
+    {
+        var json = new string(' ', 5_000) +
+            "{\"noise\":\"" + new string('x', 70_000) +
+            "\",\"schemaVersion\":\"oss-benchmark-result/v2\"}";
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+
+        Assert.True(await BenchmarkArtifactValidator.IsVersionTwoForTestsAsync(
+            stream,
+            CancellationToken.None));
+        Assert.Throws<InvalidDataException>(() => BenchmarkArtifactValidator.ValidateVersionTwoLength(
+            isVersionTwo: true,
+            BenchmarkEvidenceV2Validator.MaximumResultBytes + 1L));
+    }
+
+    [Fact]
+    public async Task VersionDispatchCarriesPropertyAndValueAcrossReadBoundary()
+    {
+        const int bufferSize = 64 * 1024;
+        const string property = "\"schemaVersion\"";
+        var json = "{" + new string(' ', bufferSize - 1 - property.Length) + property +
+            ":\"oss-benchmark-result/v2\"}";
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+
+        Assert.True(await BenchmarkArtifactValidator.IsVersionTwoForTestsAsync(
+            stream,
+            CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(
+        "{\"schemaVersion\":\"oss-benchmark-result/v1\",\"schema\\u0056ersion\":\"oss-benchmark-result/v1\"}",
+        false)]
+    [InlineData(
+        "{\"schemaVersion\":\"oss-benchmark-result/v2\",\"schema\\u0056ersion\":\"oss-benchmark-result/v1\"}",
+        false)]
+    [InlineData(
+        "{\"schemaVersion\":\"oss-benchmark-result/v1\",\"schema\\u0056ersion\":\"oss-benchmark-result/v2\"}",
+        true)]
+    public async Task VersionDispatchUsesTheLastSemanticSchemaVersionLikeJsonDocument(
+        string json,
+        bool expectedVersionTwo)
+    {
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+
+        Assert.Equal(
+            expectedVersionTwo,
+            await BenchmarkArtifactValidator.IsVersionTwoForTestsAsync(stream, CancellationToken.None));
+        if (expectedVersionTwo)
+        {
+            Assert.Throws<InvalidDataException>(() => BenchmarkArtifactValidator.ValidateVersionTwoLength(
+                isVersionTwo: true,
+                BenchmarkEvidenceV2Validator.MaximumResultBytes + 1L));
+        }
+        else
+        {
+            BenchmarkArtifactValidator.ValidateVersionTwoLength(
+                isVersionTwo: false,
+                BenchmarkEvidenceV2Validator.MaximumResultBytes + 1L);
+        }
+    }
+
+    [Fact]
+    public async Task VersionDispatchDoesNotApplyVersionTwoCapToLargeVersionOneString()
+    {
+        var json = "{\"note\":\"oss-benchmark-result/v2" + new string('x', 70_000) +
+            "\",\"schemaVersion\":\"oss-benchmark-result/v1\"}";
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+
+        Assert.False(await BenchmarkArtifactValidator.IsVersionTwoForTestsAsync(
+            stream,
+            CancellationToken.None));
+        BenchmarkArtifactValidator.ValidateVersionTwoLength(
+            isVersionTwo: false,
+            BenchmarkEvidenceV2Validator.MaximumResultBytes + 1L);
+    }
+
+    [Fact]
+    public async Task VersionDispatchRejectsOversizedVersionTwoWithLateVersionBeforeAllocation()
+    {
+        var resultPath = Path.Combine(
+            Path.GetTempPath(),
+            $"oss-oversized-v2-{Guid.NewGuid():N}.json");
+        try
+        {
+            await using (var stream = new FileStream(
+                             resultPath,
+                             FileMode.CreateNew,
+                             FileAccess.Write,
+                             FileShare.None,
+                             bufferSize: 64 * 1024,
+                             useAsync: true))
+            {
+                await stream.WriteAsync("{\"noise\":\""u8.ToArray());
+                var block = new byte[64 * 1024];
+                Array.Fill(block, (byte)'x');
+                var remaining = BenchmarkEvidenceV2Validator.MaximumResultBytes;
+                while (remaining > 0)
+                {
+                    var count = Math.Min(block.Length, remaining);
+                    await stream.WriteAsync(block.AsMemory(0, count));
+                    remaining -= count;
+                }
+
+                await stream.WriteAsync(
+                    "\",\"schemaVersion\":\"oss-benchmark-result/v2\"}"u8.ToArray());
+            }
+
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                BenchmarkArtifactValidator.ValidateAsync(resultPath, CancellationToken.None));
+        }
+        finally
+        {
+            File.Delete(resultPath);
+        }
     }
 
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };

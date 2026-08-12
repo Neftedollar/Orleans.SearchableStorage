@@ -15,6 +15,12 @@ internal static class BenchmarkEvidenceV2Validator
     private const string ProfileSchemaVersion = "oss-benchmark-reference-profile/v2";
     private const string ResultSchemaFileName = "result.v2.schema.json";
     private const string ProfileSchemaFileName = "reference-profile.v2.schema.json";
+    internal const int MaximumResultBytes = 16 * 1024 * 1024;
+    internal const int MaximumProfileBytes = 2 * 1024 * 1024;
+    internal const int MaximumRawArtifactBytes = 64 * 1024 * 1024;
+    internal const int MaximumRawEvidenceBytes = 128 * 1024 * 1024;
+    internal const int MaximumRawArtifactCount = 16;
+    private const int MaximumJsonDepth = 32;
 
     private static readonly Dictionary<string, string> MetricUnits =
         new Dictionary<string, string>(StringComparer.Ordinal)
@@ -85,9 +91,12 @@ internal static class BenchmarkEvidenceV2Validator
         ArgumentException.ThrowIfNullOrWhiteSpace(resultPath);
         ArgumentNullException.ThrowIfNull(resultBytes);
         cancellationToken.ThrowIfCancellationRequested();
+        Require(
+            resultBytes.Length <= MaximumResultBytes,
+            $"Benchmark evidence result exceeds the {MaximumResultBytes}-byte v2 input limit.");
 
         ValidateAgainstSchema(resultBytes, ResultSchema.Value, ResultSchemaFileName, "benchmark evidence result");
-        using var resultDocument = JsonDocument.Parse(resultBytes);
+        using var resultDocument = ParseJson(resultBytes);
         var result = resultDocument.RootElement;
         Require(
             GetString(result, "schemaVersion") == ResultSchemaVersion,
@@ -96,7 +105,7 @@ internal static class BenchmarkEvidenceV2Validator
         var profileReference = result.GetProperty("profile");
         var profileBytes = await LoadProfileAsync(resultPath, profileReference, cancellationToken);
         ValidateAgainstSchema(profileBytes, ProfileSchema.Value, ProfileSchemaFileName, "reference profile");
-        using var profileDocument = JsonDocument.Parse(profileBytes);
+        using var profileDocument = ParseJson(profileBytes);
         await ValidateRawEvidenceArtifactsAsync(
             resultPath,
             result.GetProperty("run"),
@@ -115,8 +124,19 @@ internal static class BenchmarkEvidenceV2Validator
             resultDirectory,
             GetString(profileReference, "path"),
             "Reference profile");
-        var bytes = await File.ReadAllBytesAsync(profilePath, cancellationToken);
-        Require(bytes.Length > 0, "Reference profile is empty.");
+        await using var stream = new FileStream(
+            profilePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 64 * 1024,
+            useAsync: true);
+        Require(stream.Length > 0, "Reference profile is empty.");
+        Require(
+            stream.Length <= MaximumProfileBytes,
+            $"Reference profile exceeds the {MaximumProfileBytes}-byte v2 input limit.");
+        var bytes = new byte[checked((int)stream.Length)];
+        await stream.ReadExactlyAsync(bytes, cancellationToken);
         Require(
             Convert.ToHexStringLower(SHA256.HashData(bytes)) == GetString(profileReference, "sha256"),
             "Reference profile SHA-256 does not match its bytes.");
@@ -153,6 +173,22 @@ internal static class BenchmarkEvidenceV2Validator
             GetString(run, "implementationPath") == GetString(profile, "implementationPath"),
             "Run implementation path differs from the reference profile.");
         Require(topology == GetString(profile, "topology"), "Run topology differs from the reference profile.");
+
+        Require(
+            classification == "schema-fixture",
+            "Qualification certification is intentionally unavailable: no reviewed frozen qualification profile catalog and typed raw-evidence adapters are shipped yet.");
+        Require(profileStatus == "contract-smoke", "Schema fixtures require a contract-smoke reference profile.");
+        Require(!qualified, "Schema fixtures can exercise evaluation but cannot be qualified.");
+        Require(!scaleClaim, "Schema fixtures cannot make a scale claim.");
+        Require(topology == "embedded", "Schema fixtures must use the embedded contract-smoke topology.");
+        Require(
+            GetString(run, "gitCommit") == new string('0', 40),
+            "Schema fixtures must use the explicit zero source commit sentinel.");
+        Require(!run.GetProperty("gitDirty").GetBoolean(), "Schema fixtures must use a deterministic clean sentinel.");
+        var rawArtifacts = run.GetProperty("rawEvidenceArtifacts").EnumerateArray().ToArray();
+        Require(
+            rawArtifacts.Length == 1 && GetString(rawArtifacts[0], "kind") == "contract-fixture",
+            "Schema fixtures must reference exactly one synthetic contract-fixture raw artifact.");
 
         if (classification == "schema-fixture")
         {
@@ -582,7 +618,11 @@ internal static class BenchmarkEvidenceV2Validator
             run.GetProperty("rawEvidenceArtifacts"),
             "path",
             "raw evidence artifact path");
+        Require(
+            artifacts.Count <= MaximumRawArtifactCount,
+            $"A v2 result cannot reference more than {MaximumRawArtifactCount} raw evidence artifacts.");
 
+        long aggregateBytes = 0;
         foreach (var (relativePath, artifact) in artifacts)
         {
             var artifactPath = ResolveContentAddressedPath(
@@ -597,11 +637,47 @@ internal static class BenchmarkEvidenceV2Validator
                 bufferSize: 64 * 1024,
                 useAsync: true);
             Require(stream.Length > 0, $"Raw evidence artifact '{relativePath}' is empty.");
+            Require(
+                stream.Length <= MaximumRawArtifactBytes,
+                $"Raw evidence artifact '{relativePath}' exceeds the {MaximumRawArtifactBytes}-byte v2 input limit.");
+            aggregateBytes = checked(aggregateBytes + stream.Length);
+            Require(
+                aggregateBytes <= MaximumRawEvidenceBytes,
+                $"Raw evidence exceeds the {MaximumRawEvidenceBytes}-byte aggregate v2 input limit.");
             var actualSha256 = Convert.ToHexStringLower(
                 await SHA256.HashDataAsync(stream, cancellationToken));
             Require(
                 actualSha256 == GetString(artifact, "sha256"),
                 $"Raw evidence artifact '{relativePath}' SHA-256 does not match its bytes.");
+
+            if (GetString(artifact, "kind") == "contract-fixture")
+            {
+                stream.Position = 0;
+                using var fixtureDocument = await JsonDocument.ParseAsync(
+                    stream,
+                    new JsonDocumentOptions
+                    {
+                        AllowTrailingCommas = false,
+                        CommentHandling = JsonCommentHandling.Disallow,
+                        MaxDepth = MaximumJsonDepth,
+                    },
+                    cancellationToken);
+                var fixture = fixtureDocument.RootElement;
+                Require(
+                    GetString(fixture, "schemaVersion") == "oss-benchmark-contract-fixture-raw/v1" &&
+                    fixture.GetProperty("synthetic").GetBoolean(),
+                    $"Contract fixture '{relativePath}' must be explicitly versioned and synthetic.");
+                Require(
+                    GetString(fixture, "id") == GetString(run, "runId"),
+                    $"Contract fixture '{relativePath}' run id differs from the result.");
+                if (GetString(run, "backend") != "memory")
+                {
+                    Require(
+                        fixture.TryGetProperty("providerContacted", out var providerContacted) &&
+                        !providerContacted.GetBoolean(),
+                        $"Durable-provider contract fixture '{relativePath}' must state that no provider was contacted.");
+                }
+            }
         }
     }
 
@@ -1002,7 +1078,7 @@ internal static class BenchmarkEvidenceV2Validator
         string schemaFileName,
         string label)
     {
-        using var document = JsonDocument.Parse(bytes);
+        using var document = ParseJson(bytes);
         var evaluation = schema.Evaluate(
             document.RootElement,
             new EvaluationOptions { OutputFormat = OutputFormat.Hierarchical });
@@ -1032,6 +1108,16 @@ internal static class BenchmarkEvidenceV2Validator
             new BuildOptions { SchemaRegistry = new SchemaRegistry() },
             baseUri: new Uri(schemaPath));
     }
+
+    private static JsonDocument ParseJson(ReadOnlyMemory<byte> bytes) =>
+        JsonDocument.Parse(
+            bytes,
+            new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = MaximumJsonDepth,
+            });
 
     private static void CollectSchemaErrors(EvaluationResults result, ICollection<string> errors)
     {

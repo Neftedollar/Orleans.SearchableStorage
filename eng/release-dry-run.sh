@@ -38,6 +38,19 @@ cleanup_release_temp_dir() {
 }
 trap cleanup_release_temp_dir EXIT
 
+release_input_package=${OSS_RELEASE_INPUT_PACKAGE:-}
+if [[ -n "$release_input_package" ]]; then
+  release_input_package=$(realpath "$release_input_package")
+  if [[ ! -f "$release_input_package" ]]; then
+    echo "OSS_RELEASE_INPUT_PACKAGE does not name a package file: $release_input_package" >&2
+    exit 1
+  fi
+  python3 eng/validate-package.py "$release_input_package" \
+    --expected-version "$release_version" \
+    --expected-commit "$release_commit" \
+    --canonical-output "$release_temp_dir/input.canonical.json"
+fi
+
 if [[ "${OSS_RELEASE_NO_BUILD:-false}" != "true" ]]; then
   dotnet restore Orleans.SearchableStorage.slnx
   dotnet build src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj \
@@ -69,12 +82,24 @@ if ! cmp --silent "$release_temp_dir/first.canonical.json" "$release_temp_dir/se
   exit 1
 fi
 
+if [[ -n "$release_input_package" ]] \
+  && ! cmp --silent "$release_temp_dir/input.canonical.json" "$release_temp_dir/first.canonical.json"; then
+  echo "The supplied release package differs from a canonical repack of the same source." >&2
+  diff --unified "$release_temp_dir/input.canonical.json" "$release_temp_dir/first.canonical.json" >&2 || true
+  exit 1
+fi
+
+if [[ -z "$release_input_package" ]]; then
+  release_input_package="$release_temp_dir/first/Orleans.SearchableStorage.$release_version.nupkg"
+fi
+release_input_directory=$(dirname "$release_input_package")
+
 cat >"$release_temp_dir/NuGet.Config" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <packageSources>
     <clear />
-    <add key="release-candidate" value="$release_temp_dir/first" />
+    <add key="release-candidate" value="$release_input_directory" />
     <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
   </packageSources>
   <packageSourceMapping>

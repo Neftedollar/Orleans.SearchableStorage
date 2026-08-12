@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using Orleans.SearchableStorage.ApiContract;
 
@@ -102,6 +103,36 @@ public sealed class PublicApiManifestTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void FormatterCapturesCompilerSignificantApiMetadata()
+    {
+        var fixture = typeof(PublicApiManifestTests).GetNestedType(
+            "AdvancedFormatterFixture`4",
+            System.Reflection.BindingFlags.Public)
+            ?? throw new InvalidOperationException("Advanced formatter fixture type is missing.");
+        var manifest = PublicApiManifest.GenerateType(fixture);
+        Assert.Contains("  generic TUnmanaged : unmanaged", manifest, StringComparison.Ordinal);
+        Assert.Contains("  generic TNullable : class?", manifest, StringComparison.Ordinal);
+        Assert.Contains("  generic TAllows : allows ref struct", manifest, StringComparison.Ordinal);
+        Assert.Contains(
+            "[System.Diagnostics.CodeAnalysis.SetsRequiredMembersAttribute]",
+            manifest,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[System.Runtime.CompilerServices.DynamicAttribute",
+            manifest,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[System.Runtime.CompilerServices.TupleElementNamesAttribute",
+            manifest,
+            StringComparison.Ordinal);
+        Assert.Contains("write-nullability=nullable", manifest, StringComparison.Ordinal);
+        Assert.Contains(
+            "System.Diagnostics.CodeAnalysis.AllowNullAttribute",
+            manifest,
+            StringComparison.Ordinal);
+    }
+
     [Obsolete(
         "fixture type",
         error: true,
@@ -134,6 +165,26 @@ public sealed class PublicApiManifestTests
             int limit = DefaultCount,
             CancellationToken cancellationToken = default)
             where TValue : class, IDisposable, new();
+    }
+
+    public sealed class AdvancedFormatterFixture<TUnmanaged, TNotNull, TNullable, TAllows>
+        where TUnmanaged : unmanaged
+        where TNotNull : notnull
+        where TNullable : class?
+        where TAllows : allows ref struct
+    {
+        [SetsRequiredMembers]
+        public AdvancedFormatterFixture()
+        {
+            RequiredName = string.Empty;
+        }
+
+        public required string RequiredName { get; init; }
+
+        [AllowNull]
+        public string Name { get; set; } = string.Empty;
+
+        public dynamic Transform((int Count, string? Label) value, dynamic input) => input;
     }
 
     [Flags]

@@ -24,17 +24,19 @@
     "classification": { "enum": ["schema-fixture", "qualification"] },
     "qualified": { "type": "boolean" },
     "scaleClaim": { "type": "boolean" },
-    "qualificationReason": { "type": "string", "minLength": 1 },
+    "qualificationReason": { "type": "string", "minLength": 1, "maxLength": 1024 },
     "profile": { "$ref": "#/$defs/profileReference" },
     "run": { "$ref": "#/$defs/run" },
     "cases": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 64,
       "items": { "$ref": "#/$defs/caseResult" }
     },
     "thresholdEvaluations": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 2048,
       "items": { "$ref": "#/$defs/thresholdEvaluation" }
     }
   },
@@ -126,7 +128,7 @@
       "required": ["id", "path", "sha256"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
-        "path": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
         "sha256": { "$ref": "#/$defs/sha256" }
       }
     },
@@ -164,6 +166,7 @@
         "rawEvidenceArtifacts": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 16,
           "items": { "$ref": "#/$defs/rawEvidenceArtifact" }
         }
       }
@@ -226,7 +229,7 @@
             "contract-fixture"
           ]
         },
-        "path": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
         "sha256": { "$ref": "#/$defs/sha256" }
       }
     },
@@ -261,6 +264,7 @@
         "phases": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 16,
           "items": { "$ref": "#/$defs/phaseEvidence" }
         },
         "logicalOrleansCalls": {
@@ -300,6 +304,7 @@
         "durationMilliseconds": { "type": "number", "minimum": 0 },
         "metrics": {
           "type": "array",
+          "maxItems": 64,
           "items": { "$ref": "#/$defs/metricObservation" }
         }
       }
@@ -356,6 +361,7 @@
             "observations": {
               "type": "array",
               "minItems": 1,
+              "maxItems": 6,
               "items": {
                 "type": "object",
                 "additionalProperties": false,

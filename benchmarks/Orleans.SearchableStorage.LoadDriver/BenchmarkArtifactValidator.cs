@@ -45,7 +45,29 @@ internal static class BenchmarkArtifactValidator
             throw new FileNotFoundException("Benchmark result does not exist.", resultPath);
         }
 
-        var resultBytes = await File.ReadAllBytesAsync(resultPath, cancellationToken);
+        await using var resultStream = new FileStream(
+            resultPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 64 * 1024,
+            useAsync: true);
+        if (resultStream.Length <= 0)
+        {
+            throw new InvalidDataException("Benchmark result is empty.");
+        }
+
+        var isVersionTwo = await IsVersionTwoAsync(resultStream, cancellationToken);
+        ValidateVersionTwoLength(isVersionTwo, resultStream.Length);
+        if (resultStream.Length > int.MaxValue)
+        {
+            throw new InvalidDataException(
+                "Benchmark result is too large to validate in this process.");
+        }
+
+        resultStream.Position = 0;
+        var resultBytes = new byte[checked((int)resultStream.Length)];
+        await resultStream.ReadExactlyAsync(resultBytes, cancellationToken);
         using (var versionDocument = JsonDocument.Parse(resultBytes))
         {
             if (versionDocument.RootElement.TryGetProperty("schemaVersion", out var schemaVersion) &&
@@ -131,6 +153,328 @@ internal static class BenchmarkArtifactValidator
             view,
             source.Workload.Mode,
             cancellationToken);
+    }
+
+    internal static void ValidateVersionTwoLength(bool isVersionTwo, long resultLength)
+    {
+        if (isVersionTwo && resultLength > BenchmarkEvidenceV2Validator.MaximumResultBytes)
+        {
+            throw new InvalidDataException(
+                $"Benchmark evidence result exceeds the {BenchmarkEvidenceV2Validator.MaximumResultBytes}-byte v2 input limit.");
+        }
+    }
+
+    private static async Task<bool> IsVersionTwoAsync(
+        Stream stream,
+        CancellationToken cancellationToken)
+    {
+        const int bufferSize = 64 * 1024;
+        var buffer = new byte[bufferSize];
+        var rootState = RootProbeState.Start;
+        var stringRole = ProbeStringRole.None;
+        var nestedDepth = 0;
+        var inString = false;
+        var escapePending = false;
+        var unicodeDigitsRemaining = 0;
+        var unicodeValue = 0;
+        var skippingPrimitive = false;
+        var currentPropertyIsSchemaVersion = false;
+        var isVersionTwo = false;
+        var matcher = default(AsciiStringMatcher);
+
+        int bytesRead;
+        while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            for (var index = 0; index < bytesRead; index++)
+            {
+                var value = buffer[index];
+                if (inString)
+                {
+                    if (unicodeDigitsRemaining > 0)
+                    {
+                        unicodeValue = (unicodeValue << 4) | HexValue(value);
+                        unicodeDigitsRemaining--;
+                        if (unicodeDigitsRemaining == 0)
+                        {
+                            matcher.Feed(unicodeValue);
+                        }
+
+                        continue;
+                    }
+
+                    if (escapePending)
+                    {
+                        escapePending = false;
+                        if (value == (byte)'u')
+                        {
+                            unicodeDigitsRemaining = 4;
+                            unicodeValue = 0;
+                        }
+                        else
+                        {
+                            matcher.Feed(value switch
+                            {
+                                (byte)'"' => '"',
+                                (byte)'\\' => '\\',
+                                (byte)'/' => '/',
+                                (byte)'b' => '\b',
+                                (byte)'f' => '\f',
+                                (byte)'n' => '\n',
+                                (byte)'r' => '\r',
+                                (byte)'t' => '\t',
+                                _ => -1,
+                            });
+                        }
+
+                        continue;
+                    }
+
+                    if (value == (byte)'\\')
+                    {
+                        escapePending = true;
+                        continue;
+                    }
+
+                    if (value != (byte)'"')
+                    {
+                        matcher.Feed(value);
+                        continue;
+                    }
+
+                    inString = false;
+                    switch (stringRole)
+                    {
+                        case ProbeStringRole.RootProperty:
+                            currentPropertyIsSchemaVersion = matcher.IsExact;
+                            rootState = RootProbeState.Colon;
+                            break;
+                        case ProbeStringRole.RootValue:
+                            if (currentPropertyIsSchemaVersion)
+                            {
+                                isVersionTwo = matcher.IsExact;
+                            }
+
+                            currentPropertyIsSchemaVersion = false;
+                            rootState = RootProbeState.CommaOrEnd;
+                            break;
+                    }
+
+                    stringRole = ProbeStringRole.None;
+                    continue;
+                }
+
+                if (nestedDepth > 0)
+                {
+                    if (value == (byte)'"')
+                    {
+                        StartString(ProbeStringRole.Nested, target: null);
+                    }
+                    else if (value is (byte)'{' or (byte)'[')
+                    {
+                        nestedDepth++;
+                    }
+                    else if (value is (byte)'}' or (byte)']')
+                    {
+                        nestedDepth--;
+                        if (nestedDepth == 0)
+                        {
+                            currentPropertyIsSchemaVersion = false;
+                            rootState = RootProbeState.CommaOrEnd;
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (skippingPrimitive)
+                {
+                    if (IsJsonWhitespace(value))
+                    {
+                        skippingPrimitive = false;
+                        currentPropertyIsSchemaVersion = false;
+                        rootState = RootProbeState.CommaOrEnd;
+                    }
+                    else if (value == (byte)',')
+                    {
+                        skippingPrimitive = false;
+                        currentPropertyIsSchemaVersion = false;
+                        rootState = RootProbeState.PropertyOrEnd;
+                    }
+                    else if (value == (byte)'}')
+                    {
+                        skippingPrimitive = false;
+                        currentPropertyIsSchemaVersion = false;
+                        rootState = RootProbeState.Done;
+                    }
+
+                    continue;
+                }
+
+                switch (rootState)
+                {
+                    case RootProbeState.Start:
+                        if (IsJsonWhitespace(value) || value is 0xef or 0xbb or 0xbf)
+                        {
+                            continue;
+                        }
+
+                        if (value == (byte)'{')
+                        {
+                            rootState = RootProbeState.PropertyOrEnd;
+                        }
+                        else
+                        {
+                            return false;
+                        }
+
+                        break;
+                    case RootProbeState.PropertyOrEnd:
+                        if (IsJsonWhitespace(value))
+                        {
+                            continue;
+                        }
+
+                        if (value == (byte)'"')
+                        {
+                            StartString(ProbeStringRole.RootProperty, "schemaVersion");
+                        }
+                        else if (value == (byte)'}')
+                        {
+                            rootState = RootProbeState.Done;
+                        }
+
+                        break;
+                    case RootProbeState.Colon:
+                        if (IsJsonWhitespace(value))
+                        {
+                            continue;
+                        }
+
+                        if (value == (byte)':')
+                        {
+                            rootState = RootProbeState.Value;
+                        }
+
+                        break;
+                    case RootProbeState.Value:
+                        if (IsJsonWhitespace(value))
+                        {
+                            continue;
+                        }
+
+                        if (value == (byte)'"')
+                        {
+                            StartString(
+                                ProbeStringRole.RootValue,
+                                currentPropertyIsSchemaVersion
+                                    ? BenchmarkEvidenceV2Validator.ResultSchemaVersion
+                                    : null);
+                        }
+                        else if (value is (byte)'{' or (byte)'[')
+                        {
+                            nestedDepth = 1;
+                        }
+                        else
+                        {
+                            skippingPrimitive = true;
+                        }
+
+                        break;
+                    case RootProbeState.CommaOrEnd:
+                        if (IsJsonWhitespace(value))
+                        {
+                            continue;
+                        }
+
+                        if (value == (byte)',')
+                        {
+                            rootState = RootProbeState.PropertyOrEnd;
+                        }
+                        else if (value == (byte)'}')
+                        {
+                            rootState = RootProbeState.Done;
+                        }
+
+                        break;
+                    case RootProbeState.Done:
+                        break;
+                }
+            }
+        }
+
+        return isVersionTwo;
+
+        void StartString(ProbeStringRole role, string? target)
+        {
+            inString = true;
+            stringRole = role;
+            escapePending = false;
+            unicodeDigitsRemaining = 0;
+            unicodeValue = 0;
+            matcher = new AsciiStringMatcher(target);
+        }
+
+        static int HexValue(byte value) => value switch
+        {
+            >= (byte)'0' and <= (byte)'9' => value - '0',
+            >= (byte)'a' and <= (byte)'f' => value - 'a' + 10,
+            >= (byte)'A' and <= (byte)'F' => value - 'A' + 10,
+            _ => -1,
+        };
+    }
+
+    internal static Task<bool> IsVersionTwoForTestsAsync(
+        Stream stream,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        return IsVersionTwoAsync(stream, cancellationToken);
+    }
+
+    private static bool IsJsonWhitespace(byte value) =>
+        value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n';
+
+    private enum RootProbeState
+    {
+        Start,
+        PropertyOrEnd,
+        Colon,
+        Value,
+        CommaOrEnd,
+        Done,
+    }
+
+    private enum ProbeStringRole
+    {
+        None,
+        Nested,
+        RootProperty,
+        RootValue,
+    }
+
+    private struct AsciiStringMatcher(string? target)
+    {
+        private readonly string? target = target;
+        private int index;
+        private bool possible = target is not null;
+
+        public readonly bool IsExact => possible && index == target!.Length;
+
+        public void Feed(int value)
+        {
+            if (!possible)
+            {
+                return;
+            }
+
+            if (value < 0 || index >= target!.Length || value != target[index])
+            {
+                possible = false;
+                return;
+            }
+
+            index++;
+        }
     }
 
     private static void ValidateResultSchema(byte[] resultBytes)

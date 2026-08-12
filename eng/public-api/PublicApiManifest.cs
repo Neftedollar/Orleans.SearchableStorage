@@ -16,6 +16,39 @@ internal static class PublicApiManifest
     private static readonly Regex ArityPattern = new(
         "`[0-9]+",
         RegexOptions.CultureInvariant);
+    private static readonly HashSet<string> ContractAttributeNames = new(StringComparer.Ordinal)
+    {
+        "System.Diagnostics.CodeAnalysis.AllowNullAttribute",
+        "System.Diagnostics.CodeAnalysis.DisallowNullAttribute",
+        "System.Diagnostics.CodeAnalysis.DoesNotReturnAttribute",
+        "System.Diagnostics.CodeAnalysis.DoesNotReturnIfAttribute",
+        "System.Diagnostics.CodeAnalysis.ExperimentalAttribute",
+        "System.Diagnostics.CodeAnalysis.MaybeNullAttribute",
+        "System.Diagnostics.CodeAnalysis.MaybeNullWhenAttribute",
+        "System.Diagnostics.CodeAnalysis.MemberNotNullAttribute",
+        "System.Diagnostics.CodeAnalysis.MemberNotNullWhenAttribute",
+        "System.Diagnostics.CodeAnalysis.NotNullAttribute",
+        "System.Diagnostics.CodeAnalysis.NotNullIfNotNullAttribute",
+        "System.Diagnostics.CodeAnalysis.NotNullWhenAttribute",
+        "System.Diagnostics.CodeAnalysis.RequiresDynamicCodeAttribute",
+        "System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute",
+        "System.Diagnostics.CodeAnalysis.SetsRequiredMembersAttribute",
+        "System.Diagnostics.CodeAnalysis.StringSyntaxAttribute",
+        "System.Diagnostics.CodeAnalysis.UnscopedRefAttribute",
+        "System.Runtime.CompilerServices.CallerArgumentExpressionAttribute",
+        "System.Runtime.CompilerServices.CallerFilePathAttribute",
+        "System.Runtime.CompilerServices.CallerLineNumberAttribute",
+        "System.Runtime.CompilerServices.CallerMemberNameAttribute",
+        "System.Runtime.CompilerServices.CollectionBuilderAttribute",
+        "System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute",
+        "System.Runtime.CompilerServices.DynamicAttribute",
+        "System.Runtime.CompilerServices.EnumeratorCancellationAttribute",
+        "System.Runtime.CompilerServices.InterpolatedStringHandlerArgumentAttribute",
+        "System.Runtime.CompilerServices.InterpolatedStringHandlerAttribute",
+        "System.Runtime.CompilerServices.OverloadResolutionPriorityAttribute",
+        "System.Runtime.CompilerServices.ScopedRefAttribute",
+        "System.Runtime.CompilerServices.TupleElementNamesAttribute",
+    };
 
     public static string Generate(Assembly assembly)
     {
@@ -358,8 +391,11 @@ internal static class PublicApiManifest
             var initOnly = property.SetMethod.ReturnParameter
                 .GetRequiredCustomModifiers()
                 .Contains(typeof(IsExternalInit));
+            var writeContract = FormatPropertyWriteContract(property, nullability);
             accessorText.Add(
-                AccessorPrefix(property.SetMethod, accessors) + (initOnly ? "init;" : "set;"));
+                AccessorPrefix(property.SetMethod, accessors)
+                + writeContract
+                + (initOnly ? "init;" : "set;"));
         }
 
         return string.Concat(
@@ -372,6 +408,27 @@ internal static class PublicApiManifest
             " { ",
             string.Join(' ', accessorText),
             " }");
+    }
+
+    private static string FormatPropertyWriteContract(PropertyInfo property, NullabilityInfo nullability)
+    {
+        var values = new List<string>();
+        if (nullability.WriteState != nullability.ReadState)
+        {
+            values.Add("write-nullability=" + nullability.WriteState.ToString().ToLowerInvariant());
+        }
+
+        var valueParameter = property.SetMethod?.GetParameters().LastOrDefault();
+        if (valueParameter is not null)
+        {
+            var attributes = FormatContractAttributePrefix(valueParameter.GetCustomAttributesData()).TrimEnd();
+            if (attributes.Length > 0)
+            {
+                values.Add("value-attributes=" + attributes);
+            }
+        }
+
+        return values.Count == 0 ? string.Empty : "[" + string.Join(';', values) + "] ";
     }
 
     private static string FormatEvent(EventInfo @event)
@@ -441,7 +498,9 @@ internal static class PublicApiManifest
                 prefix = readOnly ? "ref readonly " : "ref ";
             }
         }
-        return prefix + FormatType(type, Nullability.Create(parameter));
+        return FormatContractAttributePrefix(parameter.GetCustomAttributesData())
+            + prefix
+            + FormatType(type, Nullability.Create(parameter));
     }
 
     private static string MethodAccessibility(MethodBase method)
@@ -535,13 +594,26 @@ internal static class PublicApiManifest
             }
 
             var special = attributes & GenericParameterAttributes.SpecialConstraintMask;
+            var nullableConstraint = GetNullableConstraint(parameter);
             if (special.HasFlag(GenericParameterAttributes.ReferenceTypeConstraint))
             {
-                values.Add("class");
+                values.Add(nullableConstraint == 2 ? "class?" : "class");
             }
             if (special.HasFlag(GenericParameterAttributes.NotNullableValueTypeConstraint))
             {
-                values.Add("struct");
+                values.Add(HasAttribute(parameter, "System.Runtime.CompilerServices.IsUnmanagedAttribute")
+                    ? "unmanaged"
+                    : "struct");
+            }
+            else if (!special.HasFlag(GenericParameterAttributes.ReferenceTypeConstraint)
+                     && HasAttribute(parameter, "System.Runtime.CompilerServices.DefaultConstraintAttribute"))
+            {
+                values.Add("default");
+            }
+            else if (!special.HasFlag(GenericParameterAttributes.ReferenceTypeConstraint)
+                     && nullableConstraint == 1)
+            {
+                values.Add("notnull");
             }
             values.AddRange(parameter.GetGenericParameterConstraints()
                 .Where(static constraint => constraint != typeof(ValueType))
@@ -551,6 +623,10 @@ internal static class PublicApiManifest
                 && !special.HasFlag(GenericParameterAttributes.NotNullableValueTypeConstraint))
             {
                 values.Add("new()");
+            }
+            if (attributes.HasFlag(GenericParameterAttributes.AllowByRefLike))
+            {
+                values.Add("allows ref struct");
             }
 
             if (values.Count > 0)
@@ -771,10 +847,106 @@ internal static class PublicApiManifest
                     ")]")));
         }
 
+        attributes.AddRange(FormatContractAttributes(member.GetCustomAttributesData()));
+
         return attributes.Count == 0
             ? string.Empty
             : string.Join(' ', attributes.OrderBy(static attribute => attribute.Name, StringComparer.Ordinal)
                 .Select(static attribute => attribute.Text)) + " ";
+    }
+
+    private static bool HasAttribute(Type parameter, string fullName) =>
+        parameter.GetCustomAttributesData().Any(attribute =>
+            string.Equals(attribute.AttributeType.FullName, fullName, StringComparison.Ordinal));
+
+    private static byte? GetNullableConstraint(Type parameter)
+    {
+        var attribute = parameter.GetCustomAttributesData().FirstOrDefault(item =>
+            string.Equals(
+                item.AttributeType.FullName,
+                "System.Runtime.CompilerServices.NullableAttribute",
+                StringComparison.Ordinal));
+        if (attribute is null || attribute.ConstructorArguments.Count != 1)
+        {
+            return null;
+        }
+
+        var argument = attribute.ConstructorArguments[0];
+        if (argument.Value is byte value)
+        {
+            return value;
+        }
+        if (argument.Value is IReadOnlyCollection<CustomAttributeTypedArgument> values
+            && values.FirstOrDefault().Value is byte first)
+        {
+            return first;
+        }
+        return null;
+    }
+
+    private static string FormatContractAttributePrefix(IEnumerable<CustomAttributeData> attributes)
+    {
+        var formatted = FormatContractAttributes(attributes)
+            .OrderBy(static attribute => attribute.Name, StringComparer.Ordinal)
+            .Select(static attribute => attribute.Text)
+            .ToArray();
+        return formatted.Length == 0 ? string.Empty : string.Join(' ', formatted) + " ";
+    }
+
+    private static IEnumerable<(string Name, string Text)> FormatContractAttributes(
+        IEnumerable<CustomAttributeData> attributes)
+    {
+        foreach (var attribute in attributes)
+        {
+            var name = attribute.AttributeType.FullName;
+            if (name is null || !ContractAttributeNames.Contains(name))
+            {
+                continue;
+            }
+
+            var arguments = attribute.ConstructorArguments
+                .Select(FormatAttributeArgument)
+                .Concat(attribute.NamedArguments
+                    .OrderBy(static argument => argument.MemberName, StringComparer.Ordinal)
+                    .Select(argument => argument.MemberName + "=" + FormatAttributeArgument(argument.TypedValue)))
+                .ToArray();
+            var suffix = arguments.Length == 0 ? string.Empty : "(" + string.Join(",", arguments) + ")";
+            yield return (name, "[" + name + suffix + "]");
+        }
+    }
+
+    private static string FormatAttributeArgument(CustomAttributeTypedArgument argument)
+    {
+        if (argument.Value is null)
+        {
+            return "null";
+        }
+        if (argument.Value is IReadOnlyCollection<CustomAttributeTypedArgument> values)
+        {
+            return "[" + string.Join(",", values.Select(FormatAttributeArgument)) + "]";
+        }
+        if (argument.Value is Type type)
+        {
+            return "typeof(" + FormatType(type) + ")";
+        }
+        if (argument.Value is string text)
+        {
+            return JsonSerializer.Serialize(text);
+        }
+        if (argument.Value is char character)
+        {
+            return $"U+{(int)character:X4}";
+        }
+        if (argument.Value is bool boolean)
+        {
+            return boolean ? "true" : "false";
+        }
+        if (argument.ArgumentType.IsEnum)
+        {
+            return FormatDefault(argument.Value, argument.ArgumentType);
+        }
+        return Convert.ToString(argument.Value, CultureInfo.InvariantCulture)
+            ?? throw new InvalidOperationException("Cannot format a contract attribute argument.");
     }
 
 }

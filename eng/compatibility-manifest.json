@@ -23,7 +23,11 @@
       "facetWorkPolicy": 1
     },
     "continuationToken": {
-      "envelope": 1
+      "envelope": 1,
+      "aes256GcmAlgorithm": 1,
+      "nonceBytes": 12,
+      "authenticationTagBytes": 16,
+      "fingerprintBytes": 32
     },
     "managedIndexSchema": {
       "protocol": 1,
@@ -82,6 +86,54 @@
       "ItemLimit": 2,
       "ByteLimit": 3
     },
+    "searchableIndexKind": {
+      "Hash": 0,
+      "Range": 1
+    },
+    "indexValueKind": {
+      "String": 0,
+      "SignedInteger": 1,
+      "UnsignedInteger": 2,
+      "Decimal": 3,
+      "FloatingPoint": 4,
+      "Timestamp": 5,
+      "Guid": 6,
+      "Boolean": 7
+    },
+    "storageJournalOperation": {
+      "Upsert": 0,
+      "Delete": 1,
+      "AdvanceVersion": 2,
+      "Import": 3,
+      "MoveDelete": 4,
+      "Reindex": 5
+    },
+    "storagePartitionMoveRole": {
+      "None": 0,
+      "Source": 1,
+      "Target": 2
+    },
+    "storagePartitionMovePhase": {
+      "None": 0,
+      "SourceFrozen": 1,
+      "SourceHidden": 2,
+      "SourceDeleting": 3,
+      "SourceDeleteComplete": 4,
+      "TargetPrepared": 5,
+      "TargetImporting": 6,
+      "TargetImportComplete": 7,
+      "TargetEnabled": 8,
+      "TargetAbortDeleting": 9,
+      "TargetAbortComplete": 10
+    },
+    "storageMoveDeleteMode": {
+      "SourceCleanup": 1,
+      "TargetAbort": 2
+    },
+    "storageMoveRetirementKind": {
+      "Completed": 1,
+      "Aborted": 2
+    },
     "movementState": {
       "Disabled": 0,
       "Enabling": 1,
@@ -103,13 +155,14 @@
       "Aborted": 12
     }
   },
-  "fieldIdContractTests": [
+  "executableWireContractTests": [
     "Orleans.SearchableStorage.Tests.QueryApiContractTests.BoundedRangeWireMessageKeepsRequiredNonNullableBounds",
     "Orleans.SearchableStorage.Tests.QueryApiContractTests.PartitionQueryWireMessageKeepsStableFieldsAndNullableOpenBounds",
     "Orleans.SearchableStorage.Tests.QueryApiContractTests.VirtualRoutingWireAndLayoutMessagesKeepStableFieldIds",
     "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.DurableManifestAndWalFieldsAreExactlyContiguousAndAppendOnly",
     "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.ManagedIndexSchemaMessagesKeepExactContiguousFieldIds",
-    "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.PartitionMovementMessagesKeepExactContiguousFieldIds"
+    "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.PartitionMovementMessagesKeepExactContiguousFieldIds",
+    "Orleans.SearchableStorage.Tests.StorageMovementWireContractTests.AppendedMovementEnumValuesRemainFrozen"
   ],
   "goldens": {
     "movementPageDigest": {

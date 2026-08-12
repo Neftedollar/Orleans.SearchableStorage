@@ -10,11 +10,16 @@ persisted/protocol compatibility decision.
 2. Review `eng/compatibility-manifest.json`. Every changed value needs a migration or explicit
    rejection plan, updated executable binding/golden evidence, and release-note treatment. The
    manifest holds protocol/format versions, compact codec and wire-enum maps, frozen digests, and
-   names the executable Orleans field-ID contract tests; the large field-ID tables stay in those
-   focused tests instead of being duplicated in JSON.
-3. Review `eng/public-api.txt`. It records every effective public/protected shipping type and member,
-   including accessibility, generic constraints, parameter modifiers/types/defaults, returns,
-   properties, events, bases, and implemented interfaces. After an intentional API decision,
+   names the executable Orleans wire-contract tests; the large field-ID tables stay in those
+   focused tests instead of being duplicated in JSON, while compact enum maps remain visible here.
+3. Review `eng/public-api.txt`. It is a reviewed runtime/binary metadata inventory of every effective
+   public/protected shipping type and member, including accessibility, emitted generic constraints,
+   nullable read/write metadata, compiler-significant tuple/dynamic/required-member attributes,
+   parameter modifiers/types/defaults, returns, properties, events, bases, and implemented
+   interfaces. C# source-only distinctions which the compiler does not emit (notably `notnull`) are
+   outside this reflection gate and still require source review; the final 1.0 API freeze must add a
+   proven source-compatibility baseline before claiming complete source compatibility. After an
+   intentional API decision,
    regenerate it with:
 
    ```bash
@@ -44,7 +49,8 @@ validates local Markdown paths and GitHub-style anchors. The shipping project tr
 XML documentation as an error; tests, samples, benchmarks, generated members, and private/internal
 implementation are not forced into that documentation policy. A focused reflection test separately
 compares the built assembly to `eng/public-api.txt`, so documentation coverage cannot mask an
-accidental binary/source API change.
+accidental emitted binary API change. It is intentionally not described as a complete C#
+source-compatibility checker.
 
 ## Publish and verify
 

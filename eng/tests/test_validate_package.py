@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -22,6 +23,13 @@ class PackageAllowlistTests(unittest.TestCase):
         self.assertTrue(VALIDATOR.matches("[Content_Types].xml", "[Content_Types].xml"))
         self.assertFalse(VALIDATOR.matches("[Content_Types].xml", "C.xml"))
         self.assertTrue(VALIDATOR.matches("core/*.psmdcp", "core/generated.psmdcp"))
+        self.assertFalse(VALIDATOR.matches("core/*.psmdcp", "core/nested/evil.psmdcp"))
+        self.assertFalse(
+            VALIDATOR.matches(
+                "package/services/metadata/core-properties/*.psmdcp",
+                "package/services/metadata/core-properties/nested/evil.psmdcp",
+            )
+        )
 
     def test_validator_accepts_literal_content_types_and_rejects_extra_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -53,6 +61,50 @@ class PackageAllowlistTests(unittest.TestCase):
         self.assertEqual("_rels/.rels", first_name)
         self.assertEqual(first_name, second_name)
         self.assertEqual(first_data, second_data)
+
+    def test_validator_rejects_entry_count_before_reading_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowlist = root / "allowlist.txt"
+            allowlist.write_text("*.txt\n", encoding="utf-8")
+            package = root / "too-many.nupkg"
+            write_zip(
+                package,
+                [f"entry-{index:03}.txt" for index in range(VALIDATOR.MAX_PACKAGE_ENTRIES + 1)],
+            )
+
+            code, error = run_validator(package, allowlist)
+            self.assertEqual(1, code)
+            self.assertIn("ZIP entries", error)
+
+    def test_validator_rejects_oversized_package_before_zip_inspection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowlist = root / "allowlist.txt"
+            allowlist.write_text("payload.txt\n", encoding="utf-8")
+            package = root / "oversized.nupkg"
+            with package.open("wb") as stream:
+                stream.truncate(VALIDATOR.MAX_PACKAGE_FILE_BYTES + 1)
+
+            code, error = run_validator(package, allowlist)
+            self.assertEqual(1, code)
+            self.assertIn("before ZIP inspection", error)
+
+    def test_validator_rejects_symlink_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowlist = root / "allowlist.txt"
+            allowlist.write_text("payload.txt\n", encoding="utf-8")
+            package = root / "symlink.nupkg"
+            with zipfile.ZipFile(package, "w") as archive:
+                entry = zipfile.ZipInfo("payload.txt")
+                entry.create_system = 3
+                entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(entry, b"target")
+
+            code, error = run_validator(package, allowlist)
+            self.assertEqual(1, code)
+            self.assertIn("not a regular file", error)
 
 
 def write_zip(path: Path, entries: list[str]) -> None:

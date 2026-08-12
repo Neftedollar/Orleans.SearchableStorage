@@ -103,7 +103,18 @@ jobs:
         env:
           OSS_RELEASE_NO_BUILD: "true"
           OSS_RELEASE_GIT_COMMIT: ${{ github.sha }}
-        run: bash eng/release-dry-run.sh
+        run: |
+          mapfile -t packages < <(
+            find artifacts/packages -maxdepth 1 -type f \
+              -name 'Orleans.SearchableStorage.*.nupkg' \
+              ! -name '*.symbols.nupkg' \
+              -print
+          )
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            echo "Expected exactly one package, found ${#packages[@]}." >&2
+            exit 1
+          fi
+          OSS_RELEASE_INPUT_PACKAGE="${packages[0]}" bash eng/release-dry-run.sh
 
       - name: Upload test results
         if: always()
