@@ -54,7 +54,8 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             GrainFactory,
             partitionKey,
             PoisonActivation,
-            _logger);
+            _logger,
+            _providerName);
         var records = await _persistence.ActivateAsync();
         if (_persistence.RoutedOperationsRequired)
         {

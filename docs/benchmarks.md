@@ -5,6 +5,15 @@ It separates process-local costs from end-to-end Orleans workloads and preserves
 histograms needed to compare runs later. Issue #8 remains open until dedicated environments have
 produced reviewed provider, 10-million-record, and capacity artifacts.
 
+The checked-in aggregate evidence-v2 documents are deliberately limited to schema and evaluator
+contract fixtures. They are synthetic, unqualified, embedded-topology inputs; they do not certify a
+provider, a record count, or a scale result. The shipping validator rejects every
+`classification: qualification`, `qualified: true`, and `scaleClaim: true` document. Certification
+will remain unavailable until a later reviewed change ships both an independently frozen profile
+catalog and typed raw-evidence adapters which recompute summaries from population/audit data,
+histograms, provider counters, lifecycle traces, and per-producer attestations. Rehashing a
+result-supplied profile or declaring more records/silos cannot create qualification evidence.
+
 ## What is measured
 
 `Orleans.SearchableStorage.Benchmarks` uses BenchmarkDotNet for isolated CPU, allocation, and

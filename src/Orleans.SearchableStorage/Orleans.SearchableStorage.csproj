@@ -8,8 +8,11 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/Neftedollar/Orleans.SearchableStorage</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <WarningsAsErrors>$(WarningsAsErrors);CS1591</WarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Orleans.Runtime" />
@@ -25,10 +28,16 @@
     <None Include="../../docs/benchmarks.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/bounded-query-contract.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/live-movement.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/maintainers.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/index-schema-lifecycle.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/one-zero-contract.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/operations.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/release.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/storage-capacity-limits.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/testing.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../eng/compatibility-manifest.json" Pack="true" PackagePath="/eng/" />
+    <None Include="../../eng/nuget-repository-policy.json" Pack="true" PackagePath="/eng/" />
+    <None Include="../../eng/public-api.txt" Pack="true" PackagePath="/eng/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/README.md" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/requests.http" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />
   </ItemGroup>

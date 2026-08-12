@@ -1,5 +1,6 @@
 using AwesomeAssertions;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Tests.Infrastructure;
 using Orleans.SearchableStorage.Storage;
 
 namespace Orleans.SearchableStorage.Tests;
@@ -115,14 +116,22 @@ public sealed class CollectionMembershipMetadataContractTests
         IndexSchemaDefinition.DefinitionVersion.Should().Be(1);
         IndexSchemaDefinition.MembershipFingerprintFormatVersion.Should().Be(2);
         IndexSchemaDefinition.MembershipExtractorVersion.Should().Be(1);
-        Convert.ToHexString(scalar.SchemaKey).Should().Be(
-            "C1588F71DE04B0864E7D6107EFB6EB105796EF06D9A69FF05C544DA59FF057CB");
-        Convert.ToHexString(scalar.Fingerprint).Should().Be(
-            "BB8DA5199A3F440547BE5BCBC3E4303C7A7D53B9DA63452B0A77C29D774F9162");
-        Convert.ToHexString(membership.SchemaKey).Should().Be(
-            "B38B58BC85BA47E7203197BC1083AB196081B5FB1E1DB8B0CE0C6D8DC37C80C3");
-        Convert.ToHexString(membership.Fingerprint).Should().Be(
-            "729B8BAF6B90944161C1ED084A275B368E237F67D20E8BF9C26F9EDD4E134DA6");
+        Convert.ToHexString(scalar.SchemaKey).Should().Be(CompatibilityManifest.GetString(
+            "goldens",
+            "indexSchema",
+            "scalarSchemaKeyV1"));
+        Convert.ToHexString(scalar.Fingerprint).Should().Be(CompatibilityManifest.GetString(
+            "goldens",
+            "indexSchema",
+            "scalarFingerprintV1"));
+        Convert.ToHexString(membership.SchemaKey).Should().Be(CompatibilityManifest.GetString(
+            "goldens",
+            "indexSchema",
+            "membershipSchemaKeyV1"));
+        Convert.ToHexString(membership.Fingerprint).Should().Be(CompatibilityManifest.GetString(
+            "goldens",
+            "indexSchema",
+            "membershipFingerprintV2"));
         membership.SchemaKey.Should().Equal(nextApplicationVersion.SchemaKey);
         membership.Fingerprint.Should().NotEqual(nextApplicationVersion.Fingerprint);
 

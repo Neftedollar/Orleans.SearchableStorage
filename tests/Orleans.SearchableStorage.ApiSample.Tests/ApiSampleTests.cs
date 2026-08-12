@@ -30,7 +30,7 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         description.Should().NotBeNull();
         description!.Name.Should().Be("Orleans.SearchableStorage API sample");
         description.Storage.Should().Be("Journaled Orleans storage over in-memory physical persistence");
-        description.Endpoints.Should().HaveCount(20);
+        description.Endpoints.Should().HaveCount(21);
     }
 
     [Fact]
@@ -54,6 +54,8 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
     [Fact]
     public async Task HostBootstrapsAndExposesTheManagedVacancySchema()
     {
+        VacancyGrain.ApplicationSchemaVersion.Should().Be(1);
+
         var response = await _client.GetAsync("/storage/index-schemas/vacancies");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -359,6 +361,25 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         firstPage.Ids.Concat(secondPage.Ids)
             .Should().BeEquivalentTo([firstId, secondId]);
 
+        var hydratedFirstPage = await GetHydratedSearchPageAsync(
+            $"/vacancies/search/by-city/hydrated-page?city={encodedCity}&pageSize=1");
+        hydratedFirstPage.Items.Should().ContainSingle();
+        hydratedFirstPage.Items[0].Vacancy.Should().NotBeNull();
+        var hydratedFirstVacancy = hydratedFirstPage.Items[0].Vacancy!;
+        hydratedFirstVacancy.Id.Should().Be(hydratedFirstPage.Items[0].Id);
+        hydratedFirstVacancy.City.Should().Be(city);
+        hydratedFirstPage.ContinuationToken.Should().NotBeNullOrWhiteSpace();
+        var hydratedSecondPage = await GetHydratedSearchPageAsync(
+            $"/vacancies/search/by-city/hydrated-page?city={encodedCity}&pageSize=1"
+            + $"&continuation={Uri.EscapeDataString(hydratedFirstPage.ContinuationToken!)}");
+        hydratedSecondPage.Items.Should().ContainSingle();
+        hydratedSecondPage.Items[0].Vacancy.Should().NotBeNull();
+        hydratedSecondPage.Items[0].Vacancy!.City.Should().Be(city);
+        hydratedSecondPage.ContinuationToken.Should().BeNull();
+        hydratedFirstPage.Items.Concat(hydratedSecondPage.Items)
+            .Select(static item => item.Id)
+            .Should().BeEquivalentTo([firstId, secondId]);
+
         var salaryMatches = await GetSearchAsync(
             "/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false");
         salaryMatches.Ids.Should().BeEquivalentTo([firstId, secondId]);
@@ -376,6 +397,7 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
     [InlineData("PUT", "/vacancies/blank-city", "{\"city\":\" \",\"salary\":1}")]
     [InlineData("PUT", "/vacancies/negative-salary", "{\"city\":\"Helsinki\",\"salary\":-1}")]
     [InlineData("GET", "/vacancies/search/by-salary?lower=8&upper=5", null)]
+    [InlineData("GET", "/vacancies/search/by-city/hydrated-page?city=Helsinki&pageSize=0", null)]
     [InlineData("GET", "/vacancies/facets/cities?pageSize=0", null)]
     [InlineData("GET", "/vacancies/facets/cities/top?topN=0", null)]
     [InlineData("GET", "/vacancies/facets/cities/top?topN=129", null)]
@@ -421,6 +443,15 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
         var response = await _client.GetAsync(path);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var result = await response.Content.ReadFromJsonAsync<SearchPageResponse>();
+        result.Should().NotBeNull();
+        return result!;
+    }
+
+    private async Task<HydratedSearchPageResponse> GetHydratedSearchPageAsync(string path)
+    {
+        var response = await _client.GetAsync(path);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<HydratedSearchPageResponse>();
         result.Should().NotBeNull();
         return result!;
     }
@@ -490,6 +521,12 @@ public sealed class ApiSampleTests : IClassFixture<WebApplicationFactory<Program
     private sealed record SearchResponse(IReadOnlyList<string> Ids);
 
     private sealed record SearchPageResponse(IReadOnlyList<string> Ids, string? ContinuationToken);
+
+    private sealed record HydratedSearchPageItemResponse(string Id, VacancyResponse? Vacancy);
+
+    private sealed record HydratedSearchPageResponse(
+        IReadOnlyList<HydratedSearchPageItemResponse> Items,
+        string? ContinuationToken);
 
     private sealed record DistinctCityFacetResponse(
         IReadOnlyList<string> Values,

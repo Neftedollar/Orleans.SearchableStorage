@@ -19,6 +19,7 @@ The API listens on `http://localhost:5000`. Open [`requests.http`](requests.http
 | `DELETE` | `/vacancies/{id}` | Remove the vacancy and both index entries. |
 | `GET` | `/vacancies/search/by-city?city=Helsinki` | Use the hash index for exact lookup. |
 | `GET` | `/vacancies/search/by-city/page?city=Helsinki&pageSize=1&continuation=...` | Traverse bounded exact-query pages. |
+| `GET` | `/vacancies/search/by-city/hydrated-page?city=Helsinki&pageSize=1&continuation=...` | Hydrate one bounded id page through the application grains. |
 | `GET` | `/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false` | Use the range index with explicit bounds. |
 | `GET` | `/vacancies/facets/cities?pageSize=1&continuation=...` | Traverse distinct indexed cities in canonical value order. |
 | `GET` | `/vacancies/facets/cities/top?topN=2&accuracy=Exact&minimumSalary=7` | Compute filtered exact top-N city counts. |
@@ -87,6 +88,24 @@ hosted service completes `RebuildIndexSchemaAsync<VacancyState>` before ASP.NET 
 That startup shortcut is safe here only because the sample always starts as one fresh process over
 empty in-memory persistence. It makes every subsequent write and query carry the same durable schema
 fingerprint and demonstrates the normal steady-state API without a manual race at startup.
+
+`VacancyGrain.ApplicationSchemaVersion` is the application-owned generation input and is passed
+directly to `AddSearchableStorageState<VacancyState>`. Keep it stable when behavior and indexed state
+shape are unchanged. When the serialized/indexed interpretation changes, review Orleans `[Id]`
+compatibility, increment the constant, and use this production sequence:
+
+1. Quiesce the complete provider and capture the consistent namespace backup described in the
+   [operations index](../../docs/operations.md#backup-and-restore).
+2. Deploy every silo and external query client with the same state type, state name, index
+   declarations, and application schema version; restart them homogeneously.
+3. Read `GET /storage/index-schemas/vacancies` to preserve the old active fingerprint and current
+   progress, then invoke the idempotent rebuild endpoint until it returns `Active`.
+4. Verify the new non-empty fingerprint, processed count, every other registered state, and layout
+   schema protocol before resuming traffic. A failed/interrupted call is resumed, not restarted under
+   another version.
+
+The sample's hosted bootstrap applies the same API only to a fresh empty in-memory namespace. It is
+not the production rollout procedure.
 
 The GET schema endpoint exposes the active fingerprint and the last completed record count. During
 an interrupted rebuild it also reports the durable operation and enabled/scanned owner counts, so
@@ -160,6 +179,14 @@ query surface. This `IQueryable` is deliberately focused: it returns grain ids a
 state objects or support synchronous enumeration, projections, grouping, joins, or caller-defined
 ordering. Every page fans out to all distinct current owners. The current identity map has every
 initial partition as an owner; a moved layout still receives only one query call per distinct owner.
+
+The `/hydrated-page` variant demonstrates the application boundary explicitly. Searchable storage
+first returns one bounded page of `GrainId` values; the endpoint then reads only those identities
+through `IVacancyGrain`, with at most 16 hydration calls in flight and the query page order preserved.
+Cancellation stops the bounded local hydration wait. A grain can change or disappear between the
+weakly consistent index lookup and its authoritative application-grain read, so every result retains
+the searched id and exposes a nullable `vacancy`. Callers must not treat the hydrated page as a
+distributed snapshot or expand it into unbounded N+1 fan-out.
 
 ## Bounded membership and `WhereIn`
 

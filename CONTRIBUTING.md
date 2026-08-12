@@ -21,6 +21,11 @@ Every pull request must include an intentional update to both kinds of documenta
 
 Code comments are part of internal documentation when they explain a local invariant, but they do not replace design documentation for a change which affects multiple components.
 
+Use the [maintainer guide](docs/maintainers.md) to trace the implementation and choose the required
+change recipe. Operator-facing changes should update the [operations index](docs/operations.md) or
+the runbook it links. Public API, persisted/protocol constants, and package/release changes must also
+follow the checked-in baselines and dry-run procedure in [release.md](docs/release.md).
+
 ## Review policy
 
 Every pull request requires a general engineering review. A specialized review, such as a storage, concurrency, serialization, or performance review, supplements the general review and never replaces it.
@@ -41,6 +46,8 @@ Run the following before requesting review:
 dotnet restore Orleans.SearchableStorage.slnx
 dotnet build Orleans.SearchableStorage.slnx --no-restore
 dotnet test Orleans.SearchableStorage.slnx --no-build --collect "XPlat Code Coverage"
+python3 eng/validate-doc-links.py
+bash eng/release-dry-run.sh
 ```
 
 The same storage contract tests will be exercised against multiple physical Orleans persistence providers. PostgreSQL and Redis are required backends. An object-storage backend, such as Azure Blob Storage or an S3-compatible provider, will be tested on a separately configured integration environment.

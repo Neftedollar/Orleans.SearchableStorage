@@ -1,0 +1,107 @@
+{
+  "$schema": "../schema/result.v2.schema.json",
+  "schemaVersion": "oss-benchmark-result/v2",
+  "id": "contract-smoke-postgresql-result",
+  "classification": "schema-fixture",
+  "qualified": false,
+  "scaleClaim": false,
+  "qualificationReason": "Synthetic provider-telemetry contract fixture; no PostgreSQL service was contacted.",
+  "profile": {
+    "id": "contract-smoke-postgresql",
+    "path": "reference-profiles/contract-smoke.postgresql.v2.json",
+    "sha256": "c5fa6a58290413b7f9cfd8258619095d6dd1d359d28f611db9de94c47dc742b4"
+  },
+  "run": {
+    "runId": "contract-smoke-postgresql",
+    "gitCommit": "0000000000000000000000000000000000000000",
+    "gitDirty": false,
+    "backend": "postgresql",
+    "implementationPath": "searchable",
+    "topology": "embedded",
+    "recordCount": 1,
+    "physicalOwnerCount": 1,
+    "virtualSlotCount": 1,
+    "siloCount": 1,
+    "clientCount": 1,
+    "provenance": {
+      "driverVersion": "fixture-only",
+      "frameworkDescription": ".NET fixture",
+      "runtimeVersion": "10.0-fixture",
+      "osDescription": "fixture-os",
+      "osArchitecture": "x64",
+      "processArchitecture": "x64",
+      "processorCount": 1,
+      "cpuModel": "fixture-cpu",
+      "physicalMemoryBytes": 1000000,
+      "serverGc": true,
+      "concurrentGc": true,
+      "stopwatchFrequency": 10000000,
+      "serializer": "OrleansJsonSerializer",
+      "providerName": "Npgsql-fixture",
+      "providerVersion": "fixture-only",
+      "components": {
+        "Orleans.SearchableStorage": "fixture-only",
+        "Npgsql": "fixture-only"
+      }
+    },
+    "rawEvidenceArtifacts": [
+      {
+        "kind": "contract-fixture",
+        "path": "results/evidence/contract-smoke.postgresql.raw.json",
+        "sha256": "3edf3323bc3664b6c70eb0385865edb8aec4d3ec695bfd5d7ece483d4978c969"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "point-write-provider-evidence",
+      "workload": "point-write",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "storage-owner-point-write",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1 },
+      "phases": [
+        {
+          "phase": "steady-state",
+          "status": "completed",
+          "durationMilliseconds": 1,
+          "metrics": [
+            { "metric": "offered-operations", "unit": "count", "value": 1 },
+            { "metric": "completed-operations", "unit": "count", "value": 1 },
+            { "metric": "failed-operations", "unit": "count", "value": 0 },
+            { "metric": "timed-out-operations", "unit": "count", "value": 0 },
+            { "metric": "error-rate", "unit": "ratio", "value": 0 },
+            { "metric": "timeout-rate", "unit": "ratio", "value": 0 },
+            { "metric": "latency-p50", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p95", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p99", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p999", "unit": "milliseconds", "value": 1 },
+            { "metric": "logical-orleans-write-calls", "unit": "count", "value": 1 },
+            { "metric": "provider-write-call-amplification", "unit": "ratio", "value": 2 },
+            { "metric": "provider-byte-amplification", "unit": "ratio", "value": 1.28 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 0, "write": 1, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 80 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 100 },
+        "providerNativePhysicalBytes": { "availability": "observed", "valueBytes": 128 }
+      },
+      "providerNativeTelemetry": {
+        "availability": "observed",
+        "observations": [
+          { "metric": "read-calls", "unit": "count", "value": 0 },
+          { "metric": "write-calls", "unit": "count", "value": 2 },
+          { "metric": "delete-calls", "unit": "count", "value": 0 },
+          { "metric": "read-bytes", "unit": "bytes", "value": 0 },
+          { "metric": "write-bytes", "unit": "bytes", "value": 128 },
+          { "metric": "delete-bytes", "unit": "bytes", "value": 0 }
+        ]
+      }
+    }
+  ],
+  "thresholdEvaluations": [
+    { "thresholdId": "fixture-provider-write-call-amplification", "observedValue": 2, "passed": true },
+    { "thresholdId": "fixture-provider-byte-amplification", "observedValue": 1.28, "passed": true }
+  ]
+}

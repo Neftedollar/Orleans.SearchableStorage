@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Diagnostics;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Storage;
 using Orleans.Serialization.Serializers;
@@ -17,6 +19,7 @@ internal sealed class SearchableGrainStorage : IGrainStorage
     private readonly StoragePersistenceSettings _persistenceSettings;
     private readonly SearchableStateRegistry _stateRegistry;
     private readonly Func<string, IStorageIndexSchemaGrain>? _getIndexSchema;
+    private readonly ILogger<SearchableGrainStorage>? _logger;
     private readonly ActiveSchemaValidationCache _activeSchemas = new();
 
     public SearchableGrainStorage(
@@ -24,7 +27,8 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         SearchableStorageOptions options,
         IGrainFactory grainFactory,
         IActivatorProvider activatorProvider,
-        SearchableStateRegistry stateRegistry)
+        SearchableStateRegistry stateRegistry,
+        ILogger<SearchableGrainStorage>? logger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(options);
@@ -38,6 +42,7 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         _serializer = configuration.Serializer;
         _activatorProvider = activatorProvider;
         _stateRegistry = stateRegistry;
+        _logger = logger;
         _getIndexSchema = stateName => grainFactory.GetGrain<IStorageIndexSchemaGrain>(
             StorageIndexSchema.CreateGrainKey(name, stateName));
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(name);
@@ -57,7 +62,8 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         StorageLayoutCache layoutCache,
         Func<int, IStoragePartitionGrain> getPartition,
         SearchableStateRegistry? stateRegistry = null,
-        Func<string, IStorageIndexSchemaGrain>? getIndexSchema = null)
+        Func<string, IStorageIndexSchemaGrain>? getIndexSchema = null,
+        ILogger<SearchableGrainStorage>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(activatorProvider);
         ArgumentNullException.ThrowIfNull(layoutCache);
@@ -70,6 +76,7 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         _activatorProvider = activatorProvider;
         _stateRegistry = stateRegistry ?? SearchableStateRegistry.Empty;
         _getIndexSchema = getIndexSchema;
+        _logger = logger;
         _layoutCache = layoutCache;
         _getPartition = getPartition;
     }
@@ -114,7 +121,21 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         return new StorageConfiguration(configuredSerializer, persistenceSettings, layout);
     }
 
-    public async Task ReadStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    public Task ReadStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "storage.read",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => ReadStateCoreAsync(stateName, grainId, grainState));
+    }
+
+    private async Task ReadStateCoreAsync<T>(
+        string stateName,
+        GrainId grainId,
+        IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
         StorageCapacityGuardrails.ValidateGrainId(grainId);
@@ -148,7 +169,21 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         grainState.RecordExists = true;
     }
 
-    public async Task WriteStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    public Task WriteStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "storage.write",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => WriteStateCoreAsync(stateName, grainId, grainState));
+    }
+
+    private async Task WriteStateCoreAsync<T>(
+        string stateName,
+        GrainId grainId,
+        IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
         StorageCapacityGuardrails.ValidateGrainId(grainId);
@@ -206,7 +241,21 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         grainState.RecordExists = true;
     }
 
-    public async Task ClearStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    public Task ClearStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "storage.clear",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => ClearStateCoreAsync(stateName, grainId, grainState));
+    }
+
+    private async Task ClearStateCoreAsync<T>(
+        string stateName,
+        GrainId grainId,
+        IGrainState<T> grainState)
     {
         ArgumentNullException.ThrowIfNull(grainState);
         StorageCapacityGuardrails.ValidateGrainId(grainId);

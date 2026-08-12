@@ -148,6 +148,13 @@ Accept: application/json
 GET {{host}}/vacancies/search/by-city/page?city=Helsinki&pageSize=1&continuation={{continuationToken}}
 Accept: application/json
 
+### Search one bounded GrainId page, then hydrate only that page through IVacancyGrain.
+### Each item keeps its searched id even when `vacancy` is null because the grain disappeared
+### between the weakly consistent index lookup and the authoritative application-grain read.
+
+GET {{host}}/vacancies/search/by-city/hydrated-page?city=Helsinki&pageSize=1
+Accept: application/json
+
 ### IQueryable range lookup: values greater than 5 and less than 8
 
 GET {{host}}/vacancies/search/by-salary?lower=5&upper=8&includeLower=false&includeUpper=false

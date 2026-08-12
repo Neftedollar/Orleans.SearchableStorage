@@ -1,0 +1,48 @@
+{
+  "$schema": "../../schema/reference-profile.v2.schema.json",
+  "schemaVersion": "oss-benchmark-reference-profile/v2",
+  "id": "contract-smoke-postgresql",
+  "revision": 1,
+  "classification": "schema-fixture",
+  "status": "contract-smoke",
+  "qualificationScope": "Synthetic provider-telemetry contract fixture only; no PostgreSQL service was contacted and this is not performance evidence.",
+  "backend": "postgresql",
+  "implementationPath": "searchable",
+  "topology": "embedded",
+  "cases": [
+    {
+      "id": "point-write-provider-evidence",
+      "workload": "point-write",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "storage-owner-point-write",
+      "requiredPhases": ["steady-state"],
+      "fanoutCeiling": {
+        "physicalOwners": 1,
+        "virtualSlots": 1
+      },
+      "providerTelemetryPolicy": "required"
+    }
+  ],
+  "thresholds": [
+    {
+      "id": "fixture-provider-write-call-amplification",
+      "caseId": "point-write-provider-evidence",
+      "phase": "steady-state",
+      "metric": "provider-write-call-amplification",
+      "unit": "ratio",
+      "comparison": "less-than-or-equal",
+      "value": 2,
+      "purpose": "Synthetic evaluator exercise only; not a provider baseline or release SLO."
+    },
+    {
+      "id": "fixture-provider-byte-amplification",
+      "caseId": "point-write-provider-evidence",
+      "phase": "steady-state",
+      "metric": "provider-byte-amplification",
+      "unit": "ratio",
+      "comparison": "less-than-or-equal",
+      "value": 2,
+      "purpose": "Synthetic evaluator exercise only; not a provider baseline or release SLO."
+    }
+  ]
+}

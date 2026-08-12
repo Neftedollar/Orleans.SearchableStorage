@@ -8,6 +8,11 @@ namespace Orleans.SearchableStorage.ApiSample;
 public sealed class VacancyGrain : Grain, IVacancyGrain
 {
     /// <summary>
+    /// Identifies the application-owned shape of <see cref="VacancyState"/>.
+    /// </summary>
+    public const int ApplicationSchemaVersion = 1;
+
+    /// <summary>
     /// Identifies the persisted state within the grain.
     /// </summary>
     public const string StateName = "vacancy";

@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Runtime.ExceptionServices;
+using Microsoft.Extensions.Logging;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Diagnostics;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
@@ -21,6 +23,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     private readonly Action<Task> _observeDetachedFanout;
     private readonly SearchableStateRegistry _stateRegistry;
     private readonly Func<string, IStorageIndexSchemaGrain>? _getIndexSchema;
+    private readonly ILogger<SearchableStorageClient>? _logger;
     private readonly ActiveSchemaValidationCache _activeSchemas = new();
 
     /// <summary>
@@ -95,7 +98,9 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         string providerName,
         int partitionCount,
         SearchableStorageQueryOptions queryOptions,
-        SearchableStateRegistry stateRegistry)
+        SearchableStateRegistry stateRegistry,
+        ILogger<SearchableStorageClient>? logger = null,
+        Action<Task>? detachedFanoutObserver = null)
     {
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentNullException.ThrowIfNull(queryOptions);
@@ -106,8 +111,9 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         _providerName = providerName;
         _queryConfiguration = SearchableStorageQueryConfiguration.Create(queryOptions);
         _tokenCodec = new ContinuationTokenCodec(providerName, _queryConfiguration);
-        _observeDetachedFanout = ObserveDetachedFanout;
+        _observeDetachedFanout = detachedFanoutObserver ?? ObserveDetachedFanout;
         _stateRegistry = stateRegistry;
+        _logger = logger;
         _getIndexSchema = stateName => grainFactory.GetGrain<IStorageIndexSchemaGrain>(
             StorageIndexSchema.CreateGrainKey(providerName, stateName));
         var layout = StorageLayout.CreateIdentity(providerName, partitionCount);
@@ -126,7 +132,8 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         Func<Task<bool>> validateLayout,
         SearchableStorageQueryOptions? queryOptions = null,
         ContinuationTokenCodec? tokenCodec = null,
-        Action<Task>? detachedFanoutObserver = null)
+        Action<Task>? detachedFanoutObserver = null,
+        ILogger<SearchableStorageClient>? logger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentNullException.ThrowIfNull(partitions);
@@ -139,6 +146,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         _tokenCodec = tokenCodec ?? new ContinuationTokenCodec(providerName, _queryConfiguration);
         _observeDetachedFanout = detachedFanoutObserver ?? ObserveDetachedFanout;
         _stateRegistry = SearchableStateRegistry.Empty;
+        _logger = logger;
         _getIndexSchema = null;
         var staticLayout = CreateStaticLayout(providerName, partitions.Count);
         _layoutCache = new StorageLayoutCache(
@@ -152,7 +160,8 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         Func<int, IStoragePartitionGrain> getPartition,
         SearchableStorageQueryOptions? queryOptions = null,
         ContinuationTokenCodec? tokenCodec = null,
-        Action<Task>? detachedFanoutObserver = null)
+        Action<Task>? detachedFanoutObserver = null,
+        ILogger<SearchableStorageClient>? logger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentNullException.ThrowIfNull(layoutCache);
@@ -164,6 +173,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         _tokenCodec = tokenCodec ?? new ContinuationTokenCodec(providerName, _queryConfiguration);
         _observeDetachedFanout = detachedFanoutObserver ?? ObserveDetachedFanout;
         _stateRegistry = SearchableStateRegistry.Empty;
+        _logger = logger;
         _getIndexSchema = null;
         _layoutCache = layoutCache;
         _getPartition = getPartition;
@@ -178,11 +188,30 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<GrainId>> FindAsync<TState, TValue>(
+    public Task<IReadOnlyList<GrainId>> FindAsync<TState, TValue>(
         string stateName,
         Expression<Func<TState, TValue>> propertySelector,
         TValue value,
         CancellationToken cancellationToken = default)
+    {
+        // Translation and argument checks deliberately remain in the async core. Public query
+        // terminals therefore keep their faulted-Task contract while observation spans the
+        // complete translation, remote schema gate, and partition fanout.
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "query.legacy",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => FindCoreAsync(stateName, propertySelector, value, cancellationToken),
+            static items => items.Count);
+    }
+
+    private async Task<IReadOnlyList<GrainId>> FindCoreAsync<TState, TValue>(
+        string stateName,
+        Expression<Func<TState, TValue>> propertySelector,
+        TValue value,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var schema = GetRegisteredSchema<TState>(stateName);
@@ -205,7 +234,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<GrainId>> RangeAsync<TState, TValue>(
+    public Task<IReadOnlyList<GrainId>> RangeAsync<TState, TValue>(
         string stateName,
         Expression<Func<TState, TValue>> propertySelector,
         TValue lowerBound,
@@ -213,6 +242,32 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         bool includeLowerBound = true,
         bool includeUpperBound = true,
         CancellationToken cancellationToken = default)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "query.legacy",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => RangeCoreAsync(
+                stateName,
+                propertySelector,
+                lowerBound,
+                upperBound,
+                includeLowerBound,
+                includeUpperBound,
+                cancellationToken),
+            static items => items.Count);
+    }
+
+    private async Task<IReadOnlyList<GrainId>> RangeCoreAsync<TState, TValue>(
+        string stateName,
+        Expression<Func<TState, TValue>> propertySelector,
+        TValue lowerBound,
+        TValue upperBound,
+        bool includeLowerBound,
+        bool includeUpperBound,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var schema = GetRegisteredSchema<TState>(stateName);
@@ -252,7 +307,22 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         return $"{nameof(SearchableStorageClient)}({_providerName})";
     }
 
-    internal async Task<IReadOnlyList<GrainId>> ExecuteQueryAsync<TState>(
+    internal Task<IReadOnlyList<GrainId>> ExecuteQueryAsync<TState>(
+        string stateName,
+        Expression expression,
+        CancellationToken cancellationToken)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "query.legacy",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => ExecuteQueryCoreAsync<TState>(stateName, expression, cancellationToken),
+            static items => items.Count);
+    }
+
+    private async Task<IReadOnlyList<GrainId>> ExecuteQueryCoreAsync<TState>(
         string stateName,
         Expression expression,
         CancellationToken cancellationToken)
@@ -269,7 +339,27 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         return await ExecuteLegacyQueryAsync(stateName, partitionPlan, cancellationToken);
     }
 
-    internal async Task<SearchableStorageQueryPage> ExecuteQueryPageAsync<TState>(
+    internal Task<SearchableStorageQueryPage> ExecuteQueryPageAsync<TState>(
+        string stateName,
+        Expression expression,
+        SearchableStorageQueryPageRequest request,
+        CancellationToken cancellationToken)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "query.page",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => ExecuteQueryPageCoreAsync<TState>(
+                stateName,
+                expression,
+                request,
+                cancellationToken),
+            static page => page.Items.Count);
+    }
+
+    private async Task<SearchableStorageQueryPage> ExecuteQueryPageCoreAsync<TState>(
         string stateName,
         Expression expression,
         SearchableStorageQueryPageRequest request,

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Hosting;
 using Orleans.Runtime;
@@ -214,7 +215,8 @@ public static class SearchableStorageSiloBuilderExtensions
                     providerName,
                     configuredOptions.PartitionCount,
                     configuredOptions.Query,
-                    serviceProvider.GetRequiredService<SearchableStateRegistry>());
+                    serviceProvider.GetRequiredService<SearchableStateRegistry>(),
+                    serviceProvider.GetService<ILogger<SearchableStorageClient>>());
             });
 
         services.AddKeyedSingleton<ISearchableStorageClient>(
@@ -232,7 +234,8 @@ public static class SearchableStorageSiloBuilderExtensions
                     serviceProvider.GetRequiredService<IGrainFactory>(),
                     providerName,
                     configuredOptions.PartitionCount,
-                    configuredOptions.Movement);
+                    configuredOptions.Movement,
+                    serviceProvider.GetService<ILogger<SearchableStorageAdminClient>>());
             });
 
         return services;

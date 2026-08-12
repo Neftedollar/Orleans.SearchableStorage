@@ -1,0 +1,390 @@
+{
+  "$schema": "../schema/result.v2.schema.json",
+  "schemaVersion": "oss-benchmark-result/v2",
+  "id": "contract-smoke-memory-result",
+  "classification": "schema-fixture",
+  "qualified": false,
+  "scaleClaim": false,
+  "qualificationReason": "Deterministic schema and evaluator fixture only; no timing or scale qualification was attempted.",
+  "profile": {
+    "id": "contract-smoke-memory",
+    "path": "reference-profiles/contract-smoke.memory.v2.json",
+    "sha256": "c4cc14a1d1563b3434ab8e9b289c35918a322c5cb51b299bca140520b115d61c"
+  },
+  "run": {
+    "runId": "contract-smoke-memory",
+    "gitCommit": "0000000000000000000000000000000000000000",
+    "gitDirty": false,
+    "backend": "memory",
+    "implementationPath": "searchable",
+    "topology": "embedded",
+    "recordCount": 10,
+    "physicalOwnerCount": 1,
+    "virtualSlotCount": 1024,
+    "siloCount": 1,
+    "clientCount": 1,
+    "provenance": {
+      "driverVersion": "fixture-only",
+      "frameworkDescription": ".NET fixture",
+      "runtimeVersion": "10.0-fixture",
+      "osDescription": "fixture-os",
+      "osArchitecture": "x64",
+      "processArchitecture": "x64",
+      "processorCount": 1,
+      "cpuModel": "fixture-cpu",
+      "physicalMemoryBytes": 1000000,
+      "serverGc": true,
+      "concurrentGc": true,
+      "stopwatchFrequency": 10000000,
+      "serializer": "OrleansJsonSerializer",
+      "providerName": "Orleans.MemoryStorage-fixture",
+      "providerVersion": "fixture-only",
+      "components": {
+        "Orleans.SearchableStorage": "fixture-only",
+        "Microsoft.Orleans.Runtime": "fixture-only"
+      }
+    },
+    "rawEvidenceArtifacts": [
+      {
+        "kind": "contract-fixture",
+        "path": "results/evidence/contract-smoke.memory.raw.json",
+        "sha256": "5cf896472592427e8694076c208e1ef53846772f716dc1756b015d18b19ec171"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "point-read-hot",
+      "workload": "point-read",
+      "lifecycle": "hot-application-grain",
+      "accessPath": "storage-owner-point-read",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1 },
+      "phases": [
+        {
+          "phase": "steady-state",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "offered-operations", "unit": "count", "value": 10 },
+            { "metric": "completed-operations", "unit": "count", "value": 10 },
+            { "metric": "failed-operations", "unit": "count", "value": 0 },
+            { "metric": "timed-out-operations", "unit": "count", "value": 0 },
+            { "metric": "error-rate", "unit": "ratio", "value": 0 },
+            { "metric": "timeout-rate", "unit": "ratio", "value": 0 },
+            { "metric": "latency-p50", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p95", "unit": "milliseconds", "value": 2 },
+            { "metric": "latency-p99", "unit": "milliseconds", "value": 3 },
+            { "metric": "latency-p999", "unit": "milliseconds", "value": 4 },
+            { "metric": "logical-orleans-read-calls", "unit": "count", "value": 10 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 10, "write": 0, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 100 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 120 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "point-write-warm",
+      "workload": "point-write",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "storage-owner-point-write",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1 },
+      "phases": [
+        {
+          "phase": "steady-state",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "offered-operations", "unit": "count", "value": 10 },
+            { "metric": "completed-operations", "unit": "count", "value": 10 },
+            { "metric": "failed-operations", "unit": "count", "value": 0 },
+            { "metric": "timed-out-operations", "unit": "count", "value": 0 },
+            { "metric": "error-rate", "unit": "ratio", "value": 0 },
+            { "metric": "timeout-rate", "unit": "ratio", "value": 0 },
+            { "metric": "latency-p50", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p95", "unit": "milliseconds", "value": 2 },
+            { "metric": "latency-p99", "unit": "milliseconds", "value": 3 },
+            { "metric": "latency-p999", "unit": "milliseconds", "value": 4 },
+            { "metric": "logical-orleans-write-calls", "unit": "count", "value": 10 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 0, "write": 10, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 100 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 120 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "point-delete-warm",
+      "workload": "point-delete",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "storage-owner-point-delete",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1 },
+      "phases": [
+        {
+          "phase": "steady-state",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "offered-operations", "unit": "count", "value": 10 },
+            { "metric": "completed-operations", "unit": "count", "value": 10 },
+            { "metric": "failed-operations", "unit": "count", "value": 0 },
+            { "metric": "timed-out-operations", "unit": "count", "value": 0 },
+            { "metric": "error-rate", "unit": "ratio", "value": 0 },
+            { "metric": "timeout-rate", "unit": "ratio", "value": 0 },
+            { "metric": "latency-p50", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p95", "unit": "milliseconds", "value": 2 },
+            { "metric": "latency-p99", "unit": "milliseconds", "value": 3 },
+            { "metric": "latency-p999", "unit": "milliseconds", "value": 4 },
+            { "metric": "logical-orleans-delete-calls", "unit": "count", "value": 10 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 0, "write": 0, "delete": 10 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 100 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 120 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "public-paging-hot",
+      "workload": "public-paging",
+      "lifecycle": "hot-application-grain",
+      "accessPath": "hash-posting",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1024 },
+      "phases": [
+        {
+          "phase": "steady-state",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "offered-operations", "unit": "count", "value": 10 },
+            { "metric": "completed-operations", "unit": "count", "value": 10 },
+            { "metric": "failed-operations", "unit": "count", "value": 0 },
+            { "metric": "timed-out-operations", "unit": "count", "value": 0 },
+            { "metric": "error-rate", "unit": "ratio", "value": 0 },
+            { "metric": "timeout-rate", "unit": "ratio", "value": 0 },
+            { "metric": "latency-p50", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p95", "unit": "milliseconds", "value": 2 },
+            { "metric": "latency-p99", "unit": "milliseconds", "value": 3 },
+            { "metric": "latency-p999", "unit": "milliseconds", "value": 4 },
+            { "metric": "returned-grain-ids", "unit": "count", "value": 10 },
+            { "metric": "completed-pages", "unit": "count", "value": 2 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 1, "write": 0, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 100 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 120 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "public-facet-warm",
+      "workload": "public-facet",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "facet-candidate-metadata",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1024 },
+      "phases": [
+        {
+          "phase": "steady-state",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "offered-operations", "unit": "count", "value": 10 },
+            { "metric": "completed-operations", "unit": "count", "value": 10 },
+            { "metric": "failed-operations", "unit": "count", "value": 0 },
+            { "metric": "timed-out-operations", "unit": "count", "value": 0 },
+            { "metric": "error-rate", "unit": "ratio", "value": 0 },
+            { "metric": "timeout-rate", "unit": "ratio", "value": 0 },
+            { "metric": "latency-p50", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p95", "unit": "milliseconds", "value": 2 },
+            { "metric": "latency-p99", "unit": "milliseconds", "value": 3 },
+            { "metric": "latency-p999", "unit": "milliseconds", "value": 4 },
+            { "metric": "facet-values", "unit": "count", "value": 2 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 1, "write": 0, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 100 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 120 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "public-hydration-hot",
+      "workload": "public-hydration",
+      "lifecycle": "hot-application-grain",
+      "accessPath": "hydration-batch",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1024 },
+      "phases": [
+        {
+          "phase": "steady-state",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "offered-operations", "unit": "count", "value": 10 },
+            { "metric": "completed-operations", "unit": "count", "value": 10 },
+            { "metric": "failed-operations", "unit": "count", "value": 0 },
+            { "metric": "timed-out-operations", "unit": "count", "value": 0 },
+            { "metric": "error-rate", "unit": "ratio", "value": 0 },
+            { "metric": "timeout-rate", "unit": "ratio", "value": 0 },
+            { "metric": "latency-p50", "unit": "milliseconds", "value": 1 },
+            { "metric": "latency-p95", "unit": "milliseconds", "value": 2 },
+            { "metric": "latency-p99", "unit": "milliseconds", "value": 3 },
+            { "metric": "latency-p999", "unit": "milliseconds", "value": 4 },
+            { "metric": "hydrated-grains", "unit": "count", "value": 10 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 10, "write": 0, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 1000 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 1200 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "storage-recovery-cold",
+      "workload": "storage-recovery",
+      "lifecycle": "cold-storage-owner",
+      "accessPath": "storage-owner-recovery",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1024 },
+      "phases": [
+        {
+          "phase": "activation",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "cold-activation-duration", "unit": "milliseconds", "value": 10 },
+            { "metric": "activated-grains", "unit": "count", "value": 1 },
+            { "metric": "retained-managed-bytes", "unit": "bytes", "value": 1000 },
+            { "metric": "peak-managed-bytes", "unit": "bytes", "value": 2000 },
+            { "metric": "memory-headroom-bytes", "unit": "bytes", "value": 998000 }
+          ]
+        },
+        {
+          "phase": "garbage-collection",
+          "status": "completed",
+          "durationMilliseconds": 2,
+          "metrics": [
+            { "metric": "gc-pause-duration", "unit": "milliseconds", "value": 2 },
+            { "metric": "gen2-collections", "unit": "count", "value": 1 }
+          ]
+        },
+        {
+          "phase": "journal-replay",
+          "status": "completed",
+          "durationMilliseconds": 5,
+          "metrics": [
+            { "metric": "recovery-duration", "unit": "milliseconds", "value": 5 },
+            { "metric": "replayed-entries", "unit": "count", "value": 8 }
+          ]
+        },
+        {
+          "phase": "compaction",
+          "status": "completed",
+          "durationMilliseconds": 4,
+          "metrics": [
+            { "metric": "compaction-pause-duration", "unit": "milliseconds", "value": 4 },
+            { "metric": "compacted-entries", "unit": "count", "value": 8 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 1, "write": 1, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 1000 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 1200 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "schema-rebuild-warm",
+      "workload": "schema-rebuild",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "schema-rebuild-coordinator",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1024 },
+      "phases": [
+        {
+          "phase": "schema-rebuild",
+          "status": "completed",
+          "durationMilliseconds": 10,
+          "metrics": [
+            { "metric": "rebuilt-records", "unit": "count", "value": 10 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 10, "write": 10, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 1000 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 1200 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    },
+    {
+      "id": "schema-resume-warm",
+      "workload": "schema-resume",
+      "lifecycle": "warm-storage-owner",
+      "accessPath": "schema-resume-checkpoint",
+      "observedFanout": { "physicalOwners": 1, "virtualSlots": 1024 },
+      "phases": [
+        {
+          "phase": "schema-resume",
+          "status": "completed",
+          "durationMilliseconds": 1,
+          "metrics": [
+            { "metric": "resume-checkpoints", "unit": "count", "value": 1 }
+          ]
+        }
+      ],
+      "logicalOrleansCalls": { "read": 1, "write": 1, "delete": 0 },
+      "byteEvidence": {
+        "logicalStateBytes": { "availability": "observed", "valueBytes": 100 },
+        "canonicalSerializedBytes": { "availability": "observed", "valueBytes": 120 },
+        "providerNativePhysicalBytes": { "availability": "not-applicable", "reason": "Memory has no durable provider-native physical byte counter." }
+      },
+      "providerNativeTelemetry": { "availability": "not-applicable", "reason": "Memory has no durable provider-native telemetry surface." }
+    }
+  ],
+  "thresholdEvaluations": [
+    { "thresholdId": "fixture-paging-offered", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-paging-completes", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-paging-error-rate", "observedValue": 0, "passed": true },
+    { "thresholdId": "fixture-paging-timeout-rate", "observedValue": 0, "passed": true },
+    { "thresholdId": "fixture-paging-p50", "observedValue": 1, "passed": true },
+    { "thresholdId": "fixture-paging-p95", "observedValue": 2, "passed": true },
+    { "thresholdId": "fixture-paging-p99", "observedValue": 3, "passed": true },
+    { "thresholdId": "fixture-paging-p999", "observedValue": 4, "passed": true },
+    { "thresholdId": "fixture-cold-activation", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-retained-memory", "observedValue": 1000, "passed": true },
+    { "thresholdId": "fixture-peak-memory", "observedValue": 2000, "passed": true },
+    { "thresholdId": "fixture-memory-headroom", "observedValue": 998000, "passed": true },
+    { "thresholdId": "fixture-gc-pause", "observedValue": 2, "passed": true },
+    { "thresholdId": "fixture-recovery-duration", "observedValue": 5, "passed": true },
+    { "thresholdId": "fixture-replay-is-bounded", "observedValue": 8, "passed": true },
+    { "thresholdId": "fixture-compaction-pause", "observedValue": 4, "passed": true },
+    { "thresholdId": "fixture-point-read-call", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-point-write-call", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-point-delete-call", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-facet-values", "observedValue": 2, "passed": true },
+    { "thresholdId": "fixture-hydrated-grains", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-schema-rebuilt-records", "observedValue": 10, "passed": true },
+    { "thresholdId": "fixture-schema-resume-checkpoint", "observedValue": 1, "passed": true }
+  ]
+}

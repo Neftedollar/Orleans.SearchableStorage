@@ -9,6 +9,10 @@ implemented product boundary, supported CLR/index/query surface, terminal semant
 and current runtime/backend evidence, including the implemented bounded collection-membership slice.
 It does not claim that version 1.0 or its SemVer guarantees have already shipped.
 
+For production and contributor navigation, start with the [operations index](docs/operations.md),
+the [maintainer guide](docs/maintainers.md), and the [release process](docs/release.md). They connect
+the focused product contract to the existing schema, movement, capacity, backend, and query runbooks.
+
 ## Current semantics
 
 - Hash indexes support scalar exact-value lookup and bounded membership over exact `T[]` and
@@ -443,7 +447,8 @@ dotnet run --project samples/Orleans.SearchableStorage.ApiSample
 ```
 
 Use [`requests.http`](samples/Orleans.SearchableStorage.ApiSample/requests.http) to write vacancies,
-read one by id, execute the `IQueryable` layer, inspect/resume the managed schema, inspect/enable
+read one by id, execute the `IQueryable` layer, hydrate one bounded id page through application
+grains, inspect/resume the managed schema, inspect/enable
 movement, manually plan or advance a move/rebalance, and remove a record. The
 [sample walkthrough](samples/Orleans.SearchableStorage.ApiSample/README.md)
 follows each request from HTTP through the application grain, query plan, searchable provider,

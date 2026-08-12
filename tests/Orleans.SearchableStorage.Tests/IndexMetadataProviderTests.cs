@@ -1,5 +1,6 @@
 using AwesomeAssertions;
 using Orleans.SearchableStorage.Indexing;
+using Orleans.SearchableStorage.Tests.Infrastructure;
 
 namespace Orleans.SearchableStorage.Tests;
 
@@ -319,7 +320,10 @@ public sealed class IndexMetadataProviderTests
         found.Should().BeTrue();
         converter.Should().NotBeNull();
         ((int)converter!.CodecId).Should().Be(expectedCodecId);
-        converter.CodecVersion.Should().Be(1);
+        converter.CodecVersion.Should().Be(CompatibilityManifest.GetInt(
+            "wireContracts",
+            "indexKeyCodec",
+            "version"));
     }
 
     [Fact]
