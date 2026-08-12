@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Orleans.Runtime;
+using Orleans.SearchableStorage.Diagnostics;
 
 namespace Orleans.SearchableStorage.Storage;
 
@@ -9,22 +10,11 @@ namespace Orleans.SearchableStorage.Storage;
 /// </summary>
 internal sealed class StoragePartitionPersistence
 {
-    private static readonly Action<ILogger, string, Exception?> LogAutomaticCompactionFailure =
-        LoggerMessage.Define<string>(
-            LogLevel.Warning,
-            new EventId(1, nameof(LogAutomaticCompactionFailure)),
-            "Automatic compaction failed for searchable storage partition {PartitionKey}; the committed partition state remains authoritative.");
-
-    private static readonly Action<ILogger, string, Exception?> LogCleanupFailure =
-        LoggerMessage.Define<string>(
-            LogLevel.Warning,
-            new EventId(2, nameof(LogCleanupFailure)),
-            "Persistence cleanup failed for searchable storage partition {PartitionKey}; authoritative data is unchanged and cleanup will be retried.");
-
     private readonly IGrainFactory _grainFactory;
     private readonly ILogger _logger;
     private readonly IPersistentState<StoragePartitionManifestState> _manifest;
     private readonly string _partitionKey;
+    private readonly string _providerName;
     private readonly Action _poisonActivation;
     private bool _manifestWriteOutcomeAmbiguous;
     private bool _writerEpochAcquired;
@@ -34,17 +24,23 @@ internal sealed class StoragePartitionPersistence
         IGrainFactory grainFactory,
         string partitionKey,
         Action poisonActivation,
-        ILogger logger)
+        ILogger logger,
+        string? providerName = null)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentException.ThrowIfNullOrWhiteSpace(partitionKey);
         ArgumentNullException.ThrowIfNull(poisonActivation);
         ArgumentNullException.ThrowIfNull(logger);
+        if (providerName is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        }
 
         _manifest = manifest;
         _grainFactory = grainFactory;
         _partitionKey = partitionKey;
+        _providerName = providerName ?? "unknown";
         _logger = logger;
         _poisonActivation = poisonActivation;
     }
@@ -141,7 +137,19 @@ internal sealed class StoragePartitionPersistence
         }
     }
 
-    public async Task<Dictionary<string, StoredRecord>> ActivateAsync()
+    public Task<Dictionary<string, StoredRecord>> ActivateAsync()
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "persistence.activation",
+            "activation",
+            _logger,
+            lifecycle: true,
+            ActivateCoreAsync,
+            static records => records.Count);
+    }
+
+    private async Task<Dictionary<string, StoredRecord>> ActivateCoreAsync()
     {
         EnsureCoordinatorUsable();
         var records = await RecoverAsync();
@@ -154,10 +162,9 @@ internal sealed class StoragePartitionPersistence
         {
             await CompleteCleanupAsync();
         }
-        catch (Exception exception)
+        catch
         {
             _poisonActivation();
-            LogCleanupFailure(_logger, _partitionKey, exception);
             throw;
         }
 
@@ -323,7 +330,7 @@ internal sealed class StoragePartitionPersistence
         {
             // The hard replay bound is checked before allocating a journal slot. A compaction
             // failure therefore backpressures this mutation without extending the durable tail.
-            await CompactCoreAsync(records);
+            await CompactObservedAsync(records, "replay-boundary");
             if (_manifest.State.CommittedSequence - _manifest.State.SnapshotSequence
                 >= settings.MaximumJournalReplayEntries)
             {
@@ -410,14 +417,13 @@ internal sealed class StoragePartitionPersistence
 
         try
         {
-            await CompactCoreAsync(records);
+            await CompactObservedAsync(records, "automatic");
         }
-        catch (Exception exception)
+        catch
         {
             // The user mutation was acknowledged by the manifest before maintenance began. Its
             // result must not be converted into a reported write failure by optional compaction.
             _poisonActivation();
-            LogAutomaticCompactionFailure(_logger, _partitionKey, exception);
         }
     }
 
@@ -425,7 +431,7 @@ internal sealed class StoragePartitionPersistence
     {
         EnsureCoordinatorUsable();
         ArgumentNullException.ThrowIfNull(records);
-        return CompactCoreAsync(records);
+        return CompactObservedAsync(records, "manual");
     }
 
     public StoragePartitionPersistenceInfo CreateInfo(int recordCount)
@@ -571,6 +577,21 @@ internal sealed class StoragePartitionPersistence
         await PersistManifestAsync(candidate);
         await PublishPendingSnapshotAsync(records);
         await CompleteCleanupAsync();
+    }
+
+    private Task CompactObservedAsync(
+        IReadOnlyDictionary<string, StoredRecord> records,
+        string phase)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "persistence.compaction",
+            phase,
+            _logger,
+            lifecycle: true,
+            () => CompactCoreAsync(records),
+            records.Count,
+            logSuccess: !string.Equals(phase, "automatic", StringComparison.Ordinal));
     }
 
     private async Task PublishPendingSnapshotAsync(IReadOnlyDictionary<string, StoredRecord> records)

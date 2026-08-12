@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
+using Orleans.SearchableStorage.Diagnostics;
 using Orleans.SearchableStorage.Indexing;
 using Orleans.SearchableStorage.Querying;
 using Orleans.SearchableStorage.Storage;
@@ -9,7 +10,29 @@ namespace Orleans.SearchableStorage;
 
 public sealed partial class SearchableStorageClient
 {
-    internal async Task<SearchableStorageDistinctFacetPage<TValue>> ExecuteDistinctFacetPageAsync<TState, TValue>(
+    internal Task<SearchableStorageDistinctFacetPage<TValue>> ExecuteDistinctFacetPageAsync<TState, TValue>(
+        string stateName,
+        Expression queryExpression,
+        LambdaExpression propertySelector,
+        SearchableStorageFacetPageRequest request,
+        CancellationToken cancellationToken)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "query.facet.distinct",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => ExecuteDistinctFacetPageCoreAsync<TState, TValue>(
+                stateName,
+                queryExpression,
+                propertySelector,
+                request,
+                cancellationToken),
+            static page => page.Items.Count);
+    }
+
+    private async Task<SearchableStorageDistinctFacetPage<TValue>> ExecuteDistinctFacetPageCoreAsync<TState, TValue>(
         string stateName,
         Expression queryExpression,
         LambdaExpression propertySelector,
@@ -142,7 +165,29 @@ public sealed partial class SearchableStorageClient
         }
     }
 
-    internal async Task<SearchableStorageFacetResult<TValue>> ExecuteFacetValueCountsAsync<TState, TValue>(
+    internal Task<SearchableStorageFacetResult<TValue>> ExecuteFacetValueCountsAsync<TState, TValue>(
+        string stateName,
+        Expression queryExpression,
+        LambdaExpression propertySelector,
+        SearchableStorageFacetRequest request,
+        CancellationToken cancellationToken)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "query.facet.count",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => ExecuteFacetValueCountsCoreAsync<TState, TValue>(
+                stateName,
+                queryExpression,
+                propertySelector,
+                request,
+                cancellationToken),
+            static result => result.Items.Count);
+    }
+
+    private async Task<SearchableStorageFacetResult<TValue>> ExecuteFacetValueCountsCoreAsync<TState, TValue>(
         string stateName,
         Expression queryExpression,
         LambdaExpression propertySelector,
@@ -196,7 +241,27 @@ public sealed partial class SearchableStorageClient
             result.MaximumOmittedCount);
     }
 
-    internal async Task<SearchableStorageFacetMinMax<TValue>?> ExecuteFacetMinMaxAsync<TState, TValue>(
+    internal Task<SearchableStorageFacetMinMax<TValue>?> ExecuteFacetMinMaxAsync<TState, TValue>(
+        string stateName,
+        Expression queryExpression,
+        LambdaExpression propertySelector,
+        CancellationToken cancellationToken)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            _providerName,
+            "query.facet.min_max",
+            "execute",
+            _logger,
+            lifecycle: false,
+            () => ExecuteFacetMinMaxCoreAsync<TState, TValue>(
+                stateName,
+                queryExpression,
+                propertySelector,
+                cancellationToken),
+            static result => result is null ? 0 : 2);
+    }
+
+    private async Task<SearchableStorageFacetMinMax<TValue>?> ExecuteFacetMinMaxCoreAsync<TState, TValue>(
         string stateName,
         Expression queryExpression,
         LambdaExpression propertySelector,

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Orleans.SearchableStorage.Diagnostics;
 using Orleans.SearchableStorage.Storage;
 using Orleans.SearchableStorage.Indexing;
 
@@ -15,6 +17,7 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     private readonly int _transferPageByteTarget;
     private readonly IGrainFactory? _grainFactory;
     private readonly string? _providerName;
+    private readonly ILogger<SearchableStorageAdminClient>? _logger;
 
     /// <summary>
     /// Initializes a client for one searchable-storage provider.
@@ -68,6 +71,17 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
         _transferPageByteTarget = movementOptions.TransferPageByteTarget;
     }
 
+    internal SearchableStorageAdminClient(
+        IGrainFactory grainFactory,
+        string providerName,
+        int partitionCount,
+        SearchableStorageMovementOptions movementOptions,
+        ILogger<SearchableStorageAdminClient>? logger)
+        : this(grainFactory, providerName, partitionCount, movementOptions)
+    {
+        _logger = logger;
+    }
+
     internal SearchableStorageAdminClient(StorageLayoutCache layoutCache)
     {
         ArgumentNullException.ThrowIfNull(layoutCache);
@@ -95,6 +109,7 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
         _layoutIdentity = layoutIdentity;
         _layoutCache = new StorageLayoutCache(
             () => layoutGrain.GetLayoutAsync(layoutIdentity));
+        _providerName = layoutIdentity.ProviderName;
         _transferPageRecordLimit = movementOptions.TransferPageRecordLimit;
         _transferPageByteTarget = movementOptions.TransferPageByteTarget;
     }
@@ -153,7 +168,25 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     }
 
     /// <inheritdoc />
-    public async Task<SearchableStorageIndexSchemaStatus> RebuildIndexSchemaAsync<TState>(
+    public Task<SearchableStorageIndexSchemaStatus> RebuildIndexSchemaAsync<TState>(
+        string stateName,
+        int applicationSchemaVersion,
+        CancellationToken cancellationToken = default)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            RequiredDiagnosticsProviderName,
+            "schema.rebuild",
+            "orchestrate",
+            _logger,
+            lifecycle: true,
+            () => RebuildIndexSchemaCoreAsync<TState>(
+                stateName,
+                applicationSchemaVersion,
+                cancellationToken),
+            static result => result.ProcessedRecordCount);
+    }
+
+    private async Task<SearchableStorageIndexSchemaStatus> RebuildIndexSchemaCoreAsync<TState>(
         string stateName,
         int applicationSchemaVersion,
         CancellationToken cancellationToken = default)
@@ -188,7 +221,19 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     }
 
     /// <inheritdoc />
-    public async Task<SearchableStorageLayout> EnableMovementAsync(
+    public Task<SearchableStorageLayout> EnableMovementAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            RequiredDiagnosticsProviderName,
+            "movement.enable",
+            "orchestrate",
+            _logger,
+            lifecycle: true,
+            () => EnableMovementCoreAsync(cancellationToken));
+    }
+
+    private async Task<SearchableStorageLayout> EnableMovementCoreAsync(
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -264,7 +309,23 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     }
 
     /// <inheritdoc />
-    public async Task<SearchableStorageSlotMoveProgress> ExecuteMoveAsync(
+    public Task<SearchableStorageSlotMoveProgress> ExecuteMoveAsync(
+        Guid moveId,
+        CancellationToken cancellationToken = default)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            RequiredDiagnosticsProviderName,
+            "movement.execute",
+            "orchestrate",
+            _logger,
+            lifecycle: true,
+            () => ExecuteMoveCoreAsync(moveId, cancellationToken),
+            static progress => Math.Max(
+                progress.ExportedRecordCount,
+                progress.DeletedRecordCount));
+    }
+
+    private async Task<SearchableStorageSlotMoveProgress> ExecuteMoveCoreAsync(
         Guid moveId,
         CancellationToken cancellationToken = default)
     {
@@ -281,7 +342,23 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     }
 
     /// <inheritdoc />
-    public async Task<SearchableStorageSlotMoveProgress> AbortMoveAsync(
+    public Task<SearchableStorageSlotMoveProgress> AbortMoveAsync(
+        Guid moveId,
+        CancellationToken cancellationToken = default)
+    {
+        return SearchableStorageDiagnostics.ObserveAsync(
+            RequiredDiagnosticsProviderName,
+            "movement.abort",
+            "orchestrate",
+            _logger,
+            lifecycle: true,
+            () => AbortMoveCoreAsync(moveId, cancellationToken),
+            static progress => Math.Max(
+                progress.ExportedRecordCount,
+                progress.DeletedRecordCount));
+    }
+
+    private async Task<SearchableStorageSlotMoveProgress> AbortMoveCoreAsync(
         Guid moveId,
         CancellationToken cancellationToken = default)
     {
@@ -539,6 +616,8 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
             ?? throw new InvalidOperationException(
                 "Movement operations require an Orleans-backed searchable-storage admin client.");
     }
+
+    private string RequiredDiagnosticsProviderName => _providerName ?? "unknown";
 
     private (IStorageIndexSchemaGrain Grain, StorageIndexSchemaRequest Request)
         GetSchemaControl<TState>(string stateName, int applicationSchemaVersion)
