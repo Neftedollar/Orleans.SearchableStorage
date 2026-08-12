@@ -1,0 +1,2 @@
+# The negative build removes notnull and must fail OSSAPI001/OSSAPI002.
+type global::Orleans.SearchableStorage.SourceCompatibility.SourceCompatibilityProbe<T> :: T = notnull

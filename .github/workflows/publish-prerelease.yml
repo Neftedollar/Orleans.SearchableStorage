@@ -1,0 +1,229 @@
+name: Publish NuGet prerelease
+
+on:
+  push:
+    tags:
+      - v1.0.0-rc.1
+
+permissions: {}
+
+concurrency:
+  group: nuget-prerelease-v1.0.0-rc.1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Orleans.SearchableStorage 1.0.0-rc.1
+    if: github.repository == 'Neftedollar/Orleans.SearchableStorage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      checks: read
+      contents: read
+      id-token: write
+    env:
+      EXPECTED_PACKAGE_ID: Orleans.SearchableStorage
+      EXPECTED_VERSION: 1.0.0-rc.1
+      EXPECTED_TAG: v1.0.0-rc.1
+      NUGET_SERVICE_INDEX: https://api.nuget.org/v3/index.json
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify repository, tag, commit, version, and main identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != "push" ||
+                "$GITHUB_REF_TYPE" != "tag" ||
+                "$GITHUB_REF_NAME" != "$EXPECTED_TAG" ||
+                "$GITHUB_REF" != "refs/tags/$EXPECTED_TAG" ]]; then
+            echo "This workflow accepts only the exact $EXPECTED_TAG tag push." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$ ]]; then
+            echo "Publishing a stable or malformed version is forbidden by this prerelease workflow." >&2
+            exit 1
+          fi
+          tag_version=${GITHUB_REF_NAME#v}
+          if [[ "$tag_version" != "$EXPECTED_VERSION" ]]; then
+            echo "Tag version $tag_version does not match $EXPECTED_VERSION." >&2
+            exit 1
+          fi
+          head_commit=$(git rev-parse HEAD)
+          tag_commit=$(git rev-list --max-count=1 "$GITHUB_REF_NAME")
+          if [[ "$head_commit" != "$GITHUB_SHA" || "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "Checked-out, tag, and workflow commits are not identical." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          if [[ "$(git rev-parse refs/remotes/origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "The prerelease tag must point at the current main commit." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1)" ]]; then
+            echo "The tagged checkout is not clean." >&2
+            exit 1
+          fi
+          project_version=$(python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj").getroot()
+          prefix = (root.findtext(".//VersionPrefix") or "").strip()
+          suffix = (root.findtext(".//VersionSuffix") or "").strip()
+          if not prefix or not suffix:
+              raise SystemExit("The prerelease project requires VersionPrefix and VersionSuffix")
+          print(f"{prefix}-{suffix}")
+          PY
+          )
+          if [[ "$project_version" != "$EXPECTED_VERSION" ]]; then
+            echo "Project version $project_version does not match $EXPECTED_VERSION." >&2
+            exit 1
+          fi
+
+      - name: Require successful CI and security gates for the exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checks=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100")
+          for required in \
+            build-and-test \
+            backend-contract \
+            benchmark-smoke \
+            "Source secret scan" \
+            "CodeQL C# analysis"; do
+            if ! jq --exit-status --arg required "$required" \
+              '[.check_runs[] | select(
+                .name == $required
+                and .conclusion == "success"
+                and .app.slug == "github-actions"
+              )] | length >= 1' \
+              <<<"$checks" >/dev/null; then
+              echo "Required successful check is absent for $GITHUB_SHA: $required" >&2
+              exit 1
+            fi
+          done
+
+      - name: Set up the pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore, build, and test the tagged source
+        run: |
+          dotnet restore Orleans.SearchableStorage.slnx
+          dotnet build Orleans.SearchableStorage.slnx --configuration Release --no-restore
+          dotnet test Orleans.SearchableStorage.slnx \
+            --configuration Release \
+            --no-build \
+            --no-restore
+
+      - name: Produce and consume the reproducible dry-run package
+        env:
+          OSS_RELEASE_GIT_COMMIT: ${{ github.sha }}
+          OSS_RELEASE_NO_BUILD: "true"
+          OSS_RELEASE_OUTPUT_DIRECTORY: artifacts/release-candidate
+        run: bash eng/release-dry-run.sh
+
+      - name: Freeze the exact validated package and SHA-256
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_package="artifacts/release-candidate/$EXPECTED_PACKAGE_ID.$EXPECTED_VERSION.nupkg"
+          source_manifest=artifacts/release-candidate/package.canonical.json
+          publish_directory=artifacts/publish-exact
+          publish_package="$publish_directory/$EXPECTED_PACKAGE_ID.$EXPECTED_VERSION.nupkg"
+          publish_manifest="$publish_directory/package.canonical.json"
+          mkdir -p "$publish_directory"
+          python3 eng/validate-package.py "$source_package" \
+            --expected-version "$EXPECTED_VERSION" \
+            --expected-commit "$GITHUB_SHA" \
+            --canonical-output "$publish_manifest" \
+            --snapshot-output "$publish_package"
+          cmp --silent "$source_manifest" "$publish_manifest"
+          package_sha256=$(sha256sum "$publish_package" | cut -d ' ' -f 1)
+          printf '%s  %s\n' "$package_sha256" "$(basename "$publish_package")" \
+            > "$publish_directory/package.sha256"
+          (
+            cd "$publish_directory"
+            sha256sum --check package.sha256
+          )
+          chmod a-w "$publish_package" "$publish_manifest" "$publish_directory/package.sha256"
+          echo "path=$publish_package" >> "$GITHUB_OUTPUT"
+          echo "sha256=$package_sha256" >> "$GITHUB_OUTPUT"
+          {
+            echo "### NuGet prerelease candidate"
+            echo
+            echo "- Version: \`$EXPECTED_VERSION\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Unsigned package SHA-256: \`$package_sha256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The pinned action exchanges GitHub OIDC for a short-lived, single-use NuGet key. If the
+      # reviewed external Trusted Publishing policy is missing or differs, this step fails and
+      # there is deliberately no API-key secret or fallback path.
+      - name: Exchange OIDC under the reviewed NuGet Trusted Publishing policy
+        id: nuget-login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: neftedollar
+          token-service-url: https://www.nuget.org/api/v2/token
+          audience: https://www.nuget.org
+
+      - name: Verify the immutable SHA-256 and publish once
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+          PACKAGE_SHA256: ${{ steps.package.outputs.sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha256=$(sha256sum "$PACKAGE_PATH" | cut -d ' ' -f 1)
+          if [[ "$actual_sha256" != "$PACKAGE_SHA256" ]]; then
+            echo "The package changed after validation; refusing publication." >&2
+            exit 1
+          fi
+          dotnet nuget push "$PACKAGE_PATH" \
+            --api-key "$NUGET_API_KEY" \
+            --source "$NUGET_SERVICE_INDEX"
+
+      - name: Download and verify the repository-signed NuGet.org artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_id_lower=${EXPECTED_PACKAGE_ID,,}
+          download_url="https://api.nuget.org/v3-flatcontainer/$package_id_lower/$EXPECTED_VERSION/$package_id_lower.$EXPECTED_VERSION.nupkg"
+          mkdir -p artifacts/nuget-org
+          downloaded="artifacts/nuget-org/$EXPECTED_PACKAGE_ID.$EXPECTED_VERSION.nupkg"
+          for attempt in {1..20}; do
+            if curl --fail --location --silent --show-error \
+              --output "$downloaded.part" "$download_url"; then
+              mv "$downloaded.part" "$downloaded"
+              break
+            fi
+            rm -f "$downloaded.part"
+            if [[ "$attempt" == 20 ]]; then
+              echo "NuGet.org did not expose the package within the verification window." >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          OSS_RELEASE_INPUT_PACKAGE="$downloaded" \
+          OSS_RELEASE_INPUT_REPOSITORY_SIGNED=true \
+          OSS_RELEASE_GIT_COMMIT="$GITHUB_SHA" \
+          OSS_RELEASE_NO_BUILD=true \
+            bash eng/release-dry-run.sh
+          signed_sha256=$(sha256sum "$downloaded" | cut -d ' ' -f 1)
+          echo "- Repository-signed package SHA-256: \`$signed_sha256\`" \
+            >> "$GITHUB_STEP_SUMMARY"

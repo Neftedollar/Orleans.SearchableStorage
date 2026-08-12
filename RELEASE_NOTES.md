@@ -1,0 +1,64 @@
+# Release notes
+
+## 1.0.0-rc.1 — qualification candidate
+
+> [!CAUTION]
+> **NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION.**
+> This prerelease exists so the exact package intended for 1.0 qualification can be exercised by
+> applications and controlled benchmark infrastructure. The required scale and distributed
+> qualification evidence has not been completed.
+
+This is the first NuGet release candidate for the 1.0 contract. It packages the Orleans
+`IGrainStorage` provider, bounded secondary-index query API, facets, managed schema lifecycle, and
+live slot-movement controls already described by the repository documentation. Application grains
+remain the authoritative state owners; indexes are derived, rebuildable storage structures which
+return bounded `GrainId` discovery results. This package is not a database and does not claim
+arbitrary LINQ, scan, join, or snapshot-query semantics.
+
+### Evidence status
+
+- The build, unit and integration suites, Memory contract, container-backed PostgreSQL and Redis
+  contracts, Azurite-backed Azure Blob contract, package provenance checks, and package-only
+  consumer smoke are release gates.
+- Azurite is a contract-test dependency, not evidence for the real Azure Blob service.
+- Controlled 1,000,000-record provider runs and a full, non-modelled, external/distributed
+  10,000,000+ record run have not yet qualified this release. No smoke, modelled, or synthetic
+  result substitutes for those runs.
+- Performance envelopes, production SLOs, and provider-specific operational limits must not be
+  inferred from this prerelease version.
+
+### Compatibility and rollout
+
+- The public API and source-compatibility baseline are frozen for this qualification candidate.
+  Any library implementation, public or durable contract, or observable behavior change requires
+  `1.0.0-rc.2` (or a later candidate) and invalidates qualification evidence collected for this
+  package. Stable SemVer compatibility obligations begin with the final `1.0.0` package. There is
+  no previously published package or continuation-token compatibility promise to migrate from.
+- Package version numbers are independent of persistence, wire, schema, continuation, and movement
+  protocol versions. Those versions remain frozen in `eng/compatibility-manifest.json` and are not
+  changed merely for this package.
+- Managed-schema adoption is provider-wide and one-way. Follow
+  `docs/index-schema-lifecycle.md`, quiesce searchable traffic, and use a homogeneous deployment.
+- Page and distinct-facet continuations are bound to their schema generation and routing epoch.
+  Restart traversal after an incompatible schema or layout transition; never treat a prerelease
+  continuation as an upgrade-stable application record.
+- All participants which create or resume continuations need the same provider-scoped key id and
+  32-byte key material. Keep it outside source control and persisted provider state.
+- Capacity ceilings are safety boundaries rather than latency or memory guarantees. Review
+  `docs/storage-capacity-limits.md`, `docs/bounded-query-contract.md`, and `docs/operations.md`
+  before qualification or integration work.
+
+### Produce the reviewed local artifact
+
+From a clean checkout of the reviewed commit with the pinned SDK installed:
+
+```bash
+OSS_RELEASE_OUTPUT_DIRECTORY=artifacts/release-candidate \
+  bash eng/release-dry-run.sh
+```
+
+The command packs twice, compares canonical package contents, validates the exact version,
+metadata, warning surfaces, and commit provenance, and builds a standalone package-only consumer.
+Only after every gate passes does it retain
+`Orleans.SearchableStorage.1.0.0-rc.1.nupkg` and `package.canonical.json` in the requested directory.
+It does not publish anything to NuGet.org.

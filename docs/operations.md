@@ -14,7 +14,8 @@ must be backed up, restored, rolled out, and moved as one provider namespace.
 | Adopt/change a managed index schema | [Managed schema lifecycle](index-schema-lifecycle.md) | [Maintainer trace](maintainers.md#trace-a-schema-rebuild) |
 | Enable movement, move a slot, or rebalance | [Live movement](live-movement.md) | [Maintainer trace](maintainers.md#trace-a-slot-move) |
 | Investigate a failed activation or write | [Maintainer diagnostics](maintainers.md#diagnose-fail-closed-and-poisoned-activations) | Physical-provider request/error telemetry |
-| Qualify a release | [Release process](release.md) | [Testing strategy](testing.md) and [compatibility manifest](../eng/compatibility-manifest.json) |
+| Exercise a prerelease as an unfamiliar maintainer | [Clean-room human handoff](qualification-handoff.md#clean-room-human-protocol) | [API sample](../samples/Orleans.SearchableStorage.ApiSample/README.md) and this operations index |
+| Qualify an exact package at scale | [External verification flow](qualification-handoff.md#external-verification-flow) | [Benchmarking](benchmarks.md) and [release process](release.md) |
 
 ## Rollout and rollback
 

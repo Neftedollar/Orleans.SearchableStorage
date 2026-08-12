@@ -24,6 +24,80 @@ SPEC.loader.exec_module(VALIDATOR)
 
 
 class PackageAllowlistTests(unittest.TestCase):
+    def test_prerelease_nupkg_requires_exact_version_and_every_warning_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowlist = root / "allowlist.txt"
+            allowlist.write_text(
+                "Orleans.SearchableStorage.nuspec\nREADME.md\nRELEASE_NOTES.md\n",
+                encoding="utf-8",
+            )
+            package = root / "Orleans.SearchableStorage.1.0.0-rc.1.nupkg"
+            valid_entries = {
+                "Orleans.SearchableStorage.nuspec": valid_nuspec(
+                    version="1.0.0-rc.1",
+                    description=(
+                        f"{VALIDATOR.PRERELEASE_WARNING} "
+                        f"{VALIDATOR.PACKAGE_DESCRIPTION}"
+                    ),
+                    release_notes=VALIDATOR.PRERELEASE_WARNING,
+                ),
+                "README.md": VALIDATOR.PRERELEASE_WARNING.encode(),
+                "RELEASE_NOTES.md": VALIDATOR.PRERELEASE_WARNING.encode(),
+            }
+            write_zip_bytes(package, valid_entries)
+
+            code, error = run_validator(
+                package,
+                allowlist,
+                "--expected-version",
+                "1.0.0-rc.1",
+            )
+            self.assertEqual(0, code, error)
+
+            wrong_version_code, wrong_version_error = run_validator(
+                package,
+                allowlist,
+                "--expected-version",
+                "1.0.0-rc.2",
+            )
+            self.assertEqual(1, wrong_version_code)
+            self.assertIn("!= expected '1.0.0-rc.2'", wrong_version_error)
+
+            invalid_surfaces = {
+                "nuspec <description>": {
+                    **valid_entries,
+                    "Orleans.SearchableStorage.nuspec": valid_nuspec(
+                        version="1.0.0-rc.1",
+                        release_notes=VALIDATOR.PRERELEASE_WARNING,
+                    ),
+                },
+                "nuspec <releaseNotes>": {
+                    **valid_entries,
+                    "Orleans.SearchableStorage.nuspec": valid_nuspec(
+                        version="1.0.0-rc.1",
+                        description=(
+                            f"{VALIDATOR.PRERELEASE_WARNING} "
+                            f"{VALIDATOR.PACKAGE_DESCRIPTION}"
+                        ),
+                    ),
+                },
+                "package entry README.md": {
+                    **valid_entries,
+                    "README.md": b"prerelease without the required warning",
+                },
+                "package entry RELEASE_NOTES.md": {
+                    **valid_entries,
+                    "RELEASE_NOTES.md": b"prerelease without the required warning",
+                },
+            }
+            for expected_surface, entries in invalid_surfaces.items():
+                with self.subTest(surface=expected_surface):
+                    write_zip_bytes(package, entries)
+                    invalid_code, invalid_error = run_validator(package, allowlist)
+                    self.assertEqual(1, invalid_code)
+                    self.assertIn(expected_surface, invalid_error)
+
     def test_literal_content_types_name_is_not_treated_as_a_glob(self) -> None:
         self.assertTrue(VALIDATOR.matches("[Content_Types].xml", "[Content_Types].xml"))
         self.assertFalse(VALIDATOR.matches("[Content_Types].xml", "C.xml"))
@@ -444,16 +518,25 @@ def write_zip_bytes(path: Path, entries: dict[str, bytes]) -> None:
             package.writestr(name, data)
 
 
-def valid_nuspec() -> bytes:
+def valid_nuspec(
+    version: str = "0.1.0",
+    description: str = VALIDATOR.PACKAGE_DESCRIPTION,
+    release_notes: str | None = None,
+) -> bytes:
+    release_notes_xml = (
+        f"    <releaseNotes>{release_notes}</releaseNotes>\n"
+        if release_notes is not None
+        else ""
+    )
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
   <metadata>
     <id>{VALIDATOR.PACKAGE_ID}</id>
-    <version>0.1.0</version>
+    <version>{version}</version>
     <authors>Orleans.SearchableStorage contributors</authors>
-    <description>Orleans-native persistent storage with searchable secondary indexes.</description>
+    <description>{description}</description>
     <readme>README.md</readme>
-    <license type="expression">MIT</license>
+{release_notes_xml}    <license type="expression">MIT</license>
     <repository type="git" url="{VALIDATOR.REPOSITORY_URL}" commit="{'a' * 40}" />
     <dependencies>
       <group targetFramework="net10.0">
@@ -475,8 +558,9 @@ def relationship_xml(core_name: str, relationship_id: str) -> bytes:
 
 
 def run_validator(package: Path, allowlist: Path, *extra: str) -> tuple[int, str]:
+    output = io.StringIO()
     errors = io.StringIO()
-    with contextlib.redirect_stderr(errors):
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         result = VALIDATOR.main([str(package), "--allowlist", str(allowlist), *extra])
     return result, errors.getvalue()
 

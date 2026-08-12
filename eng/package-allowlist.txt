@@ -5,6 +5,7 @@ Orleans.SearchableStorage.nuspec
 lib/net10.0/Orleans.SearchableStorage.dll
 lib/net10.0/Orleans.SearchableStorage.xml
 README.md
+RELEASE_NOTES.md
 CONTRIBUTING.md
 LICENSE
 docs/architecture.md
@@ -16,6 +17,7 @@ docs/live-movement.md
 docs/maintainers.md
 docs/one-zero-contract.md
 docs/operations.md
+docs/qualification-handoff.md
 docs/release.md
 docs/storage-capacity-limits.md
 docs/testing.md

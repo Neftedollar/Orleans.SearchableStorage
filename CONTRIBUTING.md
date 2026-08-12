@@ -50,4 +50,9 @@ python3 eng/validate-doc-links.py
 bash eng/release-dry-run.sh
 ```
 
+Pull requests and `main` must also pass the repository-wide `Security` workflow: Gitleaks scans
+repository history and tracked source, while CodeQL builds and analyzes the C# solution. Do not add
+an allow-list merely to silence a finding; remove the credential, rotate it when real, and narrow any
+false-positive suppression to the exact deterministic fixture.
+
 The same storage contract tests will be exercised against multiple physical Orleans persistence providers. PostgreSQL and Redis are required backends. An object-storage backend, such as Azure Blob Storage or an S3-compatible provider, will be tested on a separately configured integration environment.

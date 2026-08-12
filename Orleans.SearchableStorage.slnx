@@ -2,6 +2,8 @@
   <Project Path="benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj" />
   <Project Path="benchmarks/Orleans.SearchableStorage.LoadDriver/Orleans.SearchableStorage.LoadDriver.csproj" />
   <Project Path="eng/public-api-generator/PublicApiGenerator.csproj" />
+  <Project Path="eng/source-compat-analyzer/SourceCompatAnalyzer.csproj" />
+  <Project Path="eng/source-compat-probe/SourceCompatProbe.csproj" />
   <Project Path="samples/Orleans.SearchableStorage.ApiSample/Orleans.SearchableStorage.ApiSample.csproj" />
   <Project Path="src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj" />
   <Project Path="tests/Orleans.SearchableStorage.ApiSample.Tests/Orleans.SearchableStorage.ApiSample.Tests.csproj" />

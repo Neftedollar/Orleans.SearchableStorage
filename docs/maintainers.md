@@ -132,4 +132,7 @@ mutate existing derived entries in place without the rebuild protocol.
 
 Before review, run the test-sufficiency matrix in [testing.md](testing.md), the release dry run in
 [release.md](release.md), and verify that the product still behaves as Orleans `IGrainStorage` with
-authoritative grain state plus rebuildable indexes.
+authoritative grain state plus rebuildable indexes. Before stable 1.0, an unfamiliar maintainer must
+also complete the checked-in [clean-room worksheet](qualification-handoff.md#worksheet). The worksheet
+being present is not completion evidence; retain the participant's commands, observations, and issue
+dispositions in an immutable public artifact.

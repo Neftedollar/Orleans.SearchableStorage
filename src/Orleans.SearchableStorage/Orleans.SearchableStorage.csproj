@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Description>Orleans-native persistent storage with searchable secondary indexes.</Description>
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionSuffix>rc.1</VersionSuffix>
+    <PackageDescription Condition="'$(VersionSuffix)' == ''">$(Description)</PackageDescription>
+    <PackageDescription Condition="'$(VersionSuffix)' != ''">NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION. Orleans-native persistent storage with searchable secondary indexes. This prerelease exists for qualification and integration testing.</PackageDescription>
     <Authors>Orleans.SearchableStorage contributors</Authors>
     <PackageId>Orleans.SearchableStorage</PackageId>
     <PackageTags>orleans;storage;indexing;distributed-systems</PackageTags>
@@ -11,16 +14,33 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReleaseNotes Condition="'$(VersionSuffix)' != ''">NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION. Version 1.0.0-rc.1 exists for qualification and integration testing; the required scale evidence is not complete.</PackageReleaseNotes>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <WarningsAsErrors>$(WarningsAsErrors);CS1591</WarningsAsErrors>
+    <!-- The two extension families intentionally mirror ISiloBuilder and IServiceCollection. -->
+    <NoWarn>$(NoWarn);RS0026</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Orleans.Runtime" />
     <PackageReference Include="Microsoft.Orleans.Sdk" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
     <PackageReference Include="PolyType" />
   </ItemGroup>
   <ItemGroup>
+    <AdditionalFiles Include="PublicAPI.Shipped.txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
+    <AdditionalFiles Include="SourceConstraints.Shipped.txt" />
+    <AdditionalFiles Include="SourceConstraints.Unshipped.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../eng/source-compat-analyzer/SourceCompatAnalyzer.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../RELEASE_NOTES.md" Pack="true" PackagePath="/" />
     <None Include="../../CONTRIBUTING.md" Pack="true" PackagePath="/" />
     <None Include="../../LICENSE" Pack="true" PackagePath="/" />
     <None Include="../../docs/architecture.md" Pack="true" PackagePath="/docs/" />
@@ -32,6 +52,7 @@
     <None Include="../../docs/index-schema-lifecycle.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/one-zero-contract.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/operations.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/qualification-handoff.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/release.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/storage-capacity-limits.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/testing.md" Pack="true" PackagePath="/docs/" />
