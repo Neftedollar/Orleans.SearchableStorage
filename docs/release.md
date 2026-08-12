@@ -57,7 +57,30 @@ source-compatibility checker.
 Publish only the `.nupkg` produced from the reviewed commit. Retain the workflow run, commit, canonical
 package manifest, test results, backend contract evidence, and release notes. After upload, download
 the registry artifact into a clean directory and run the same package validator and consumer smoke
-against it before announcing the release.
+against it before announcing the release. NuGet.org adds a repository signature as the sole root
+`.signature.p7s` entry. Verify that signature with the SDK trust policy, exclude only that signature
+container from the semantic source-package comparison, and consume the exact downloaded artifact:
+
+```bash
+OSS_RELEASE_INPUT_PACKAGE=/clean/download/Orleans.SearchableStorage.VERSION.nupkg \
+OSS_RELEASE_INPUT_REPOSITORY_SIGNED=true \
+bash eng/release-dry-run.sh
+```
+
+The signed mode is explicit and fail-closed: it requires exactly the root signature entry and a
+successful `dotnet nuget verify --all` under the reviewed `eng/nuget-repository-policy.json`.
+That policy pins the NuGet.org service index, the `neftedollar` package owner, the current repository
+certificate, trusted-root enforcement, and online revocation. Certificate rotation requires an
+explicit reviewed policy change; it is never learned from the downloaded artifact. The validator
+copies the input once into a private bounded snapshot, verifies and compares that snapshot, and the
+consumer smoke restores the same bytes. It does not permit any other extra entry or content change.
+The signature is the only additional root ZIP entry; `[Content_Types].xml`, `_rels/.rels`, and every
+payload entry remain part of the canonical comparison even though signing rebuilds ZIP container
+metadata.
+Do not use it for the unsigned package produced by CI before upload; CI intentionally exercises the
+ordinary strict allowlist path. NuGet.org documents that repository signing adds the signature file
+without changing other package content:
+<https://devblogs.microsoft.com/dotnet/Introducing-Repository-Signatures/>.
 
 Release notes must call out package/API changes, persistence/query/schema/movement compatibility,
 required quiescence or homogeneous rollout, continuation-key implications, known capacity boundaries,

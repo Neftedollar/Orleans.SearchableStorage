@@ -20,6 +20,7 @@ docs/release.md
 docs/storage-capacity-limits.md
 docs/testing.md
 eng/compatibility-manifest.json
+eng/nuget-repository-policy.json
 eng/public-api.txt
 samples/Orleans.SearchableStorage.ApiSample/README.md
 samples/Orleans.SearchableStorage.ApiSample/requests.http

@@ -39,16 +39,34 @@ cleanup_release_temp_dir() {
 trap cleanup_release_temp_dir EXIT
 
 release_input_package=${OSS_RELEASE_INPUT_PACKAGE:-}
+release_input_repository_signed=${OSS_RELEASE_INPUT_REPOSITORY_SIGNED:-false}
+if [[ "$release_input_repository_signed" != "true" && "$release_input_repository_signed" != "false" ]]; then
+  echo "OSS_RELEASE_INPUT_REPOSITORY_SIGNED must be true or false." >&2
+  exit 1
+fi
+if [[ "$release_input_repository_signed" == "true" && -z "$release_input_package" ]]; then
+  echo "OSS_RELEASE_INPUT_REPOSITORY_SIGNED=true requires OSS_RELEASE_INPUT_PACKAGE." >&2
+  exit 1
+fi
 if [[ -n "$release_input_package" ]]; then
-  release_input_package=$(realpath "$release_input_package")
-  if [[ ! -f "$release_input_package" ]]; then
-    echo "OSS_RELEASE_INPUT_PACKAGE does not name a package file: $release_input_package" >&2
+  release_input_source=$(realpath --no-symlinks "$release_input_package")
+  if [[ ! -f "$release_input_source" ]]; then
+    echo "OSS_RELEASE_INPUT_PACKAGE does not name a package file: $release_input_source" >&2
     exit 1
   fi
-  python3 eng/validate-package.py "$release_input_package" \
-    --expected-version "$release_version" \
-    --expected-commit "$release_commit" \
+  mkdir -p "$release_temp_dir/input"
+  release_input_package="$release_temp_dir/input/Orleans.SearchableStorage.$release_version.nupkg"
+  input_validator_args=(
+    "$release_input_source"
+    --expected-version "$release_version"
+    --expected-commit "$release_commit"
     --canonical-output "$release_temp_dir/input.canonical.json"
+    --snapshot-output "$release_input_package"
+  )
+  if [[ "$release_input_repository_signed" == "true" ]]; then
+    input_validator_args+=(--repository-signed)
+  fi
+  python3 eng/validate-package.py "${input_validator_args[@]}"
 fi
 
 if [[ "${OSS_RELEASE_NO_BUILD:-false}" != "true" ]]; then

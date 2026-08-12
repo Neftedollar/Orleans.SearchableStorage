@@ -36,6 +36,7 @@
     <None Include="../../docs/storage-capacity-limits.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/testing.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../eng/compatibility-manifest.json" Pack="true" PackagePath="/eng/" />
+    <None Include="../../eng/nuget-repository-policy.json" Pack="true" PackagePath="/eng/" />
     <None Include="../../eng/public-api.txt" Pack="true" PackagePath="/eng/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/README.md" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />
     <None Include="../../samples/Orleans.SearchableStorage.ApiSample/requests.http" Pack="true" PackagePath="/samples/Orleans.SearchableStorage.ApiSample/" />
