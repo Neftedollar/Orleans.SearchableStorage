@@ -96,7 +96,9 @@ another durable journal entry.
 The payload write and index mutation are two independent operations. The library does not provide a
 cross-store transaction, outbox, source version, mutation identifier, tombstone, stale-event check,
 or deduplication layer. Calls are applied in the order in which the owning index partition receives
-them; the last arrival wins. A delayed older event can therefore replace a newer index value.
+them; the last arrival wins. A delayed older event can therefore replace a newer index value. In
+particular, if `RemoveAsync` arrives first and a delayed older `UpsertAsync` arrives afterward, the
+later call resurrects the entry in query results until caller reconciliation removes it again.
 
 The application must choose and implement its required consistency policy. Common choices include:
 
