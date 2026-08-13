@@ -113,6 +113,8 @@ internal sealed class StoragePartitionOrderedIndexes
             if (!ReferenceEquals(entry.Scope, canonical.Scope)
                 || !ReferenceEquals(entry.Value, canonicalValue))
             {
+                // This reconstruction must copy every durable IndexEntry field. Sharing is
+                // permitted only while the movement and snapshot representation stays byte-exact.
                 record.IndexEntries[index] = new IndexEntry
                 {
                     Scope = canonical.Scope,

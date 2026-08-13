@@ -1,3 +1,4 @@
+using System.Reflection;
 using AwesomeAssertions;
 using Orleans.Runtime;
 using Orleans.SearchableStorage.Indexing;
@@ -7,6 +8,36 @@ namespace Orleans.SearchableStorage.Tests;
 
 public sealed class StoragePartitionCompactIndexTests
 {
+    [Fact]
+    public void IndexEntryCanonicalizationReconstructionCoversEveryDurableField()
+    {
+        const BindingFlags flags = BindingFlags.Instance
+            | BindingFlags.Public
+            | BindingFlags.NonPublic
+            | BindingFlags.DeclaredOnly;
+        var actual = typeof(IndexEntry)
+            .GetMembers(flags)
+            .Where(static member => member is PropertyInfo or FieldInfo)
+            .Select(static member => (
+                member.Name,
+                Attribute: member.GetCustomAttribute<IdAttribute>(inherit: false)))
+            .Where(static item => item.Attribute is not null)
+            .Select(static item => (item.Name, item.Attribute!.Id))
+            .OrderBy(static item => item.Id)
+            .ToArray();
+
+        var expected = new (string Name, uint Id)[]
+        {
+            (nameof(IndexEntry.Scope), 0),
+            (nameof(IndexEntry.Kind), 1),
+            (nameof(IndexEntry.Value), 2),
+        };
+
+        actual.Should().Equal(
+            expected,
+            "StoragePartitionOrderedIndexes.AddRecord reconstructs IndexEntry and must copy every durable field");
+    }
+
     [Fact]
     public void RemovedRecordReferenceIsReusedOnlyAfterItStopsResolving()
     {
