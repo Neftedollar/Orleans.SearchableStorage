@@ -93,7 +93,15 @@ internal sealed class SearchableGrainStorage : IGrainStorage
         var journalSegmentCapacity = options.JournalSegmentCapacity;
         var maximumJournalReplayEntries = options.MaximumJournalReplayEntries;
         var compactionThreshold = options.CompactionThreshold;
+        var namespaceMode = options.NamespaceMode;
         var serializer = options.GrainStorageSerializer;
+
+        if (namespaceMode != StorageNamespaceMode.Integrated)
+        {
+            throw new ArgumentException(
+                "SearchableGrainStorage requires an integrated payload namespace.",
+                nameof(options));
+        }
 
         if (partitionCount <= 0)
         {
@@ -109,6 +117,7 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             JournalSegmentCapacity = journalSegmentCapacity,
             MaximumJournalReplayEntries = maximumJournalReplayEntries,
             CompactionThreshold = compactionThreshold,
+            NamespaceMode = namespaceMode,
         };
         var configuredSerializer = serializer
             ?? throw new ArgumentException("A grain storage serializer has not been configured.", nameof(options));
@@ -117,7 +126,8 @@ internal sealed class SearchableGrainStorage : IGrainStorage
             partitionCount,
             persistenceSettings.JournalSegmentCapacity,
             persistenceSettings.MaximumJournalReplayEntries,
-            virtualSlotTargetCount);
+            virtualSlotTargetCount,
+            namespaceMode);
         return new StorageConfiguration(configuredSerializer, persistenceSettings, layout);
     }
 

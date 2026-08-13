@@ -15,13 +15,14 @@ wire-format and runbook details.
 
 ## Product boundary
 
-**Implemented now, and the intended 1.0 boundary:** Orleans.SearchableStorage is an Orleans
-`IGrainStorage` provider with derived secondary indexes and bounded discovery of matching
-`GrainId` values.
+**Implemented now, and the intended 1.0 boundary:** Orleans.SearchableStorage provides an integrated
+Orleans `IGrainStorage` mode and a payload-free index-only mode, both with derived secondary indexes
+and bounded discovery of matching `GrainId` values.
 
-Applications continue to persist state through `IPersistentState<T>`. The provider stores a record
-and its local index changes through the same journaled commit path. A query returns identifiers;
-the application decides whether and how to call grains to hydrate state or perform work.
+In integrated mode, applications persist state through `IPersistentState<T>` and the provider stores
+a record and its local index changes through the same journaled commit path. In index-only mode, the
+application owns payload persistence and explicitly submits index replacements or removals. A query
+returns identifiers in either mode; the application decides how to hydrate state or perform work.
 
 It is intentionally not any of the following:
 
@@ -31,6 +32,8 @@ It is intentionally not any of the following:
 - SQL, text search, `StartsWith`, substring search, composite indexes, joins, projections, grouping,
   or ordering;
 - a cross-partition transaction or distributed snapshot;
+- a transaction, outbox, ordering, deduplication, or stale-event layer between an external payload
+  store and an index-only namespace;
 - a promise that query cost is independent of partition size or owner count.
 
 Each non-empty query page contacts every distinct current owner; a predicate which translates to an
@@ -55,7 +58,10 @@ explicitly deferred.
 | Need | Public surface | Contract |
 | --- | --- | --- |
 | Register the provider | `AddSearchableGrainStorage` | Registers the named `IGrainStorage`, query client, and admin client. |
+| Register a payload-free index | `AddSearchableIndex` | Registers the named index writer, query client, and admin client, but no `IGrainStorage`. |
 | Declare a state schema | `AddSearchableStorageState<TState>` | Binds one provider/state-name pair to one CLR type and positive application schema version. |
+| Replace indexed values | `ISearchableStorageIndexWriter.UpsertAsync<TState>` | Extracts marked properties from the supplied state and unconditionally replaces the key; it never serializes or retains the payload. |
+| Remove indexed values | `ISearchableStorageIndexWriter.RemoveAsync<TState>` | Unconditionally removes the key; an absent key is a successful no-op. |
 | Declare an index | `[SearchableIndex(Hash\|Range)]` | Marks one readable public instance property; `Name` supplies its stable effective name. |
 | Direct exact lookup | `ISearchableStorageClient.FindAsync` | Complete, sorted, distinct `GrainId` result or an exception; no truncation. |
 | Direct bounded-range lookup | `ISearchableStorageClient.RangeAsync` | Same all-or-throw result contract; the selected property must use a range index. |
@@ -209,6 +215,13 @@ Cancellation cancels the caller's wait. It cannot transport-cancel an Orleans ca
 flight. Failure or cancellation returns no partial page, compatibility list, facet result, or
 advanced continuation.
 
+Index-only mutations are independent of the external payload write. The owning partition applies
+them in arrival order and the last arrival wins; the writer has no source version, mutation-id
+deduplication, tombstone ordering, or cross-store transaction. An exact retry converges to the same
+indexed state but may append another durable journal entry. The caller owns per-key serialization,
+outbox/reconciliation policy, and tolerance of projection lag during hydration. See the
+[index-only mode contract](index-only-mode.md).
+
 ## Bounded execution defaults and hard maxima
 
 These are the current built-in `SearchableStorageQueryOptions` defaults and compile-time accepted
@@ -284,12 +297,20 @@ Once the provider-wide managed-schema capability is enabled:
   indexed properties;
 - directly constructed clients must declare every queried state in a
   `SearchableStorageSchemaRegistry`;
-- writes, clears, queries, pages, and facets fail closed until the declared generation is active;
-- a changed declaration requires the documented quiesced rebuild; it is not online DDL or a state
-  payload migration;
+- integrated writes/clears, index-only mutations, queries, pages, and facets fail closed until the
+  declared generation is active;
+- a changed integrated declaration requires the documented quiesced rebuild; an index-only change
+  requires a new namespace and authoritative replay. Neither is online DDL or a state payload
+  migration;
 - rebuild scan requests cover at most 64 catalog records and persist resumable progress, but the
   complete rebuild and retained compactions are not strict time, memory, or work bounds;
 - continuations from another generation cannot be resumed.
+
+For integrated storage, a changed declaration uses the quiesced in-place rebuild because retained
+payloads can be deserialized and reindexed. An index-only namespace can activate its first schema
+while empty and can confirm the same fingerprint idempotently, but it rejects an incompatible
+rebuild after activation. Create a new provider namespace and replay the authoritative external
+corpus instead.
 
 Schema adoption, binary rollout, and movement enablement require homogeneous, quiesced procedures.
 The durable controls support safe resume after interruption; they do not make mixed-version rollout
@@ -356,7 +377,8 @@ documented closed contract, accepted inputs, durable recovery, and error taxonom
 
 Before the 1.0 release, a change to this candidate contract should answer all of these questions:
 
-1. Does it preserve the `IGrainStorage` plus bounded `GrainId`-discovery product boundary?
+1. Does it preserve the explicit integrated-storage or index-only ownership model plus bounded
+   `GrainId` discovery?
 2. Is it implemented end to end without a client-side or unbounded fallback?
 3. Are CLR, expression, terminal, consistency, failure, and provider semantics stated explicitly?
 4. Are work, memory, response, token, and durable-state consequences bounded or honestly exposed?

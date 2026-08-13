@@ -2,11 +2,18 @@ using Orleans.Runtime;
 
 namespace Orleans.SearchableStorage.Storage;
 
+internal enum StorageNamespaceMode
+{
+    Integrated = 0,
+    IndexOnly = 1,
+}
+
 internal static class StorageLayout
 {
     public const int LegacyFormatVersion = 3;
     public const int MovementFormatVersion = 4;
     public const int IndexSchemaFormatVersion = 5;
+    public const int IndexOnlyFormatVersion = 6;
     public const int CurrentMovementProtocolVersion = 1;
     public const int CurrentIndexSchemaProtocolVersion = 1;
     public const int DefaultVirtualSlotTargetCount = 16_384;
@@ -18,12 +25,21 @@ internal static class StorageLayout
     /// </summary>
     public static bool IsRoutingFormatVersion(int formatVersion)
     {
-        return formatVersion is MovementFormatVersion or IndexSchemaFormatVersion;
+        return formatVersion is MovementFormatVersion
+            or IndexSchemaFormatVersion
+            or IndexOnlyFormatVersion;
     }
 
     public static bool AreRoutingFormatsCompatible(int left, int right)
     {
-        return IsRoutingFormatVersion(left) && IsRoutingFormatVersion(right);
+        if (!IsRoutingFormatVersion(left) || !IsRoutingFormatVersion(right))
+        {
+            return false;
+        }
+
+        // Versions 4 and 5 are the same integrated-storage routing domain. Version 6 is a
+        // deliberately separate downgrade fence for payload-free index namespaces.
+        return (left == IndexOnlyFormatVersion) == (right == IndexOnlyFormatVersion);
     }
 
     public static int GetRoutingFingerprintFormatVersion(int formatVersion)
@@ -37,7 +53,11 @@ internal static class StorageLayout
         }
 
         // The v5 transition changes durable capability, not assignments or routing identity.
-        return MovementFormatVersion;
+        // Version 6 remains a distinct routing domain so its tokens cannot be replayed against an
+        // otherwise identical integrated namespace.
+        return formatVersion == IndexOnlyFormatVersion
+            ? IndexOnlyFormatVersion
+            : MovementFormatVersion;
     }
 
     public static StorageLayoutDescriptor CreateDescriptor(
@@ -45,24 +65,33 @@ internal static class StorageLayout
         int partitionCount,
         int journalSegmentCapacity = StoragePersistence.DefaultJournalSegmentCapacity,
         int maximumJournalReplayEntries = StoragePersistence.DefaultMaximumJournalReplayEntries,
-        int virtualSlotTargetCount = DefaultVirtualSlotTargetCount)
+        int virtualSlotTargetCount = DefaultVirtualSlotTargetCount,
+        StorageNamespaceMode namespaceMode = StorageNamespaceMode.Integrated)
     {
         return new StorageLayoutDescriptor
         {
-            FormatVersion = MovementFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
             JournalSegmentCapacity = journalSegmentCapacity,
             MaximumJournalReplayEntries = maximumJournalReplayEntries,
             VirtualSlotTargetCount = virtualSlotTargetCount,
+            NamespaceMode = namespaceMode,
+            FormatVersion = namespaceMode == StorageNamespaceMode.IndexOnly
+                ? IndexOnlyFormatVersion
+                : MovementFormatVersion,
         };
     }
 
-    public static StorageLayoutIdentity CreateIdentity(string providerName, int partitionCount)
+    public static StorageLayoutIdentity CreateIdentity(
+        string providerName,
+        int partitionCount,
+        StorageNamespaceMode namespaceMode = StorageNamespaceMode.Integrated)
     {
         return new StorageLayoutIdentity
         {
-            FormatVersion = MovementFormatVersion,
+            FormatVersion = namespaceMode == StorageNamespaceMode.IndexOnly
+                ? IndexOnlyFormatVersion
+                : MovementFormatVersion,
             ProviderName = providerName,
             PartitionCount = partitionCount,
         };
@@ -188,6 +217,12 @@ internal sealed class StorageLayoutDescriptor
     /// </summary>
     [Id(5)]
     public int VirtualSlotTargetCount { get; init; }
+
+    /// <summary>
+    /// Permanently distinguishes a payload-owning namespace from an index-only namespace.
+    /// </summary>
+    [Id(6)]
+    public StorageNamespaceMode NamespaceMode { get; init; }
 }
 
 [GenerateSerializer]
@@ -247,6 +282,9 @@ internal sealed class StorageLayoutSnapshot
 
     [Id(11)]
     private StorageIndexSchemaEnableIntent? IndexSchemaEnablement { get; set; }
+
+    [Id(12)]
+    public StorageNamespaceMode NamespaceMode { get; private set; }
 
     public SearchableStorageMovementState MovementState => MovementEnablement is not null
         ? SearchableStorageMovementState.Enabling
@@ -321,6 +359,7 @@ internal sealed class StorageLayoutSnapshot
             LastMoveReceipt = state.LastMoveReceipt?.Copy(),
             IndexSchemaProtocolVersion = state.IndexSchemaProtocolVersion,
             IndexSchemaEnablement = state.IndexSchemaEnablement?.Copy(),
+            NamespaceMode = state.NamespaceMode,
         };
     }
 
@@ -386,6 +425,13 @@ internal sealed class StorageLayoutState
     [Id(14)]
     public StorageIndexSchemaEnableIntent? IndexSchemaEnablement { get; set; }
 
+    /// <summary>
+    /// Identifies whether this namespace owns serialized application payloads or only indexes.
+    /// The default preserves every layout written before index-only namespaces existed.
+    /// </summary>
+    [Id(15)]
+    public StorageNamespaceMode NamespaceMode { get; set; }
+
     public StorageLayoutState Copy()
     {
         return new StorageLayoutState
@@ -405,6 +451,7 @@ internal sealed class StorageLayoutState
             LastMoveReceipt = LastMoveReceipt?.Copy(),
             IndexSchemaProtocolVersion = IndexSchemaProtocolVersion,
             IndexSchemaEnablement = IndexSchemaEnablement?.Copy(),
+            NamespaceMode = NamespaceMode,
         };
     }
 }

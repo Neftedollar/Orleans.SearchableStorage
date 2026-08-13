@@ -505,7 +505,10 @@ public class SlotMovementBenchmarks
     private static bool RecordEquals(StoredRecord left, StoredRecord right)
     {
         return left.GrainId.Equals(right.GrainId)
-            && left.Payload.AsSpan().SequenceEqual(right.Payload)
+            && ((left.Payload is null && right.Payload is null)
+                || (left.Payload is not null
+                    && right.Payload is not null
+                    && left.Payload.AsSpan().SequenceEqual(right.Payload)))
             && string.Equals(left.ETag, right.ETag, StringComparison.Ordinal)
             && left.IndexEntries.Count == right.IndexEntries.Count
             && left.IndexEntries.Zip(right.IndexEntries).All(static pair =>
@@ -546,8 +549,8 @@ public class SlotMovementBenchmarks
     private static long GetOracleTextByteCount(byte[] value) => checked(
         sizeof(int) + value.LongLength);
 
-    private static long GetOracleByteArrayCount(byte[] value) => checked(
-        sizeof(int) + value.LongLength);
+    private static long GetOracleByteArrayCount(byte[]? value) => checked(
+        sizeof(int) + (value?.LongLength ?? 0));
 
     private byte[] CreatePageDigest(
         StorageJournalOperation operation,

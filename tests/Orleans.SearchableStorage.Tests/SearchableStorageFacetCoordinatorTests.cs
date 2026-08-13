@@ -148,7 +148,7 @@ public sealed class SearchableStorageFacetCoordinatorTests
         var staleSourceCopy = new StoredRecord
         {
             GrainId = authoritative.Record.GrainId,
-            Payload = [.. authoritative.Record.Payload],
+            Payload = [.. authoritative.Record.Payload!],
             ETag = authoritative.Record.ETag,
             IndexEntries =
             [

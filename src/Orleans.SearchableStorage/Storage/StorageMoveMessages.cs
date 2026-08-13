@@ -9,6 +9,7 @@ internal sealed class StoragePartitionProtocolRequest
     [Id(3)] public int JournalSegmentCapacity { get; init; }
     [Id(4)] public int MaximumJournalReplayEntries { get; init; }
     [Id(5)] public int IndexSchemaProtocolVersion { get; init; }
+    [Id(6)] public StorageNamespaceMode NamespaceMode { get; init; }
 }
 
 [GenerateSerializer]
@@ -22,6 +23,7 @@ internal sealed class StoragePartitionProtocolState
     [Id(5)] public long NextVersion { get; init; }
     [Id(6)] public required StoragePartitionMoveControl MoveControl { get; init; }
     [Id(7)] public int IndexSchemaProtocolVersion { get; init; }
+    [Id(8)] public StorageNamespaceMode NamespaceMode { get; init; }
 }
 
 [GenerateSerializer]

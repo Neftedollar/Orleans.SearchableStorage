@@ -3,17 +3,17 @@ name: Publish NuGet prerelease
 on:
   push:
     tags:
-      - v1.0.0-rc.1
+      - v1.0.0-rc.2
 
 permissions: {}
 
 concurrency:
-  group: nuget-prerelease-v1.0.0-rc.1
+  group: nuget-prerelease-v1.0.0-rc.2
   cancel-in-progress: false
 
 jobs:
   publish:
-    name: Publish Orleans.SearchableStorage 1.0.0-rc.1
+    name: Publish Orleans.SearchableStorage 1.0.0-rc.2
     if: github.repository == 'Neftedollar/Orleans.SearchableStorage'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -24,8 +24,8 @@ jobs:
       id-token: write
     env:
       EXPECTED_PACKAGE_ID: Orleans.SearchableStorage
-      EXPECTED_VERSION: 1.0.0-rc.1
-      EXPECTED_TAG: v1.0.0-rc.1
+      EXPECTED_VERSION: 1.0.0-rc.2
+      EXPECTED_TAG: v1.0.0-rc.2
       NUGET_SERVICE_INDEX: https://api.nuget.org/v3/index.json
 
     steps:

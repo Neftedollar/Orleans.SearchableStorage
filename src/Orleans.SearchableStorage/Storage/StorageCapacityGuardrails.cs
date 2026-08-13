@@ -60,14 +60,13 @@ internal static class StorageCapacityGuardrails
         }
     }
 
-    public static void ValidateRecordKeyAndPayload(string recordKey, byte[] payload)
+    public static void ValidateRecordKeyAndPayload(string recordKey, byte[]? payload)
     {
         ArgumentNullException.ThrowIfNull(recordKey);
-        ArgumentNullException.ThrowIfNull(payload);
         ValidateRecordKey(recordKey);
         ThrowIfExceeded(
             RecordPayloadBytes,
-            payload.LongLength,
+            payload?.LongLength ?? 0,
             SearchableStorageCapacityLimits.MaximumRecordPayloadBytes);
     }
 
@@ -130,7 +129,6 @@ internal static class StorageCapacityGuardrails
         ArgumentNullException.ThrowIfNull(record.Record.GrainType);
         ArgumentNullException.ThrowIfNull(record.Record.GrainKey);
         ArgumentNullException.ThrowIfNull(record.RecordKey);
-        ArgumentNullException.ThrowIfNull(record.Record.Payload);
         ArgumentNullException.ThrowIfNull(record.Record.ETag);
         ArgumentNullException.ThrowIfNull(record.Record.IndexEntries);
         ValidateGrainIdParts(
@@ -139,7 +137,7 @@ internal static class StorageCapacityGuardrails
         ValidateRecordKeyBytes(record.RecordKey);
         ThrowIfExceeded(
             RecordPayloadBytes,
-            record.Record.Payload.LongLength,
+            record.Record.Payload?.LongLength ?? 0,
             SearchableStorageCapacityLimits.MaximumRecordPayloadBytes);
         ThrowIfExceeded(
             RecordIndexEntries,
@@ -340,13 +338,12 @@ internal static class StorageCapacityGuardrails
     private static long ValidateRecordCore(
         string recordKey,
         Orleans.Runtime.GrainId grainId,
-        byte[] payload,
+        byte[]? payload,
         string etag,
         List<IndexEntry> indexEntries,
         byte[]? indexSchemaFingerprint)
     {
         ArgumentNullException.ThrowIfNull(recordKey);
-        ArgumentNullException.ThrowIfNull(payload);
         ArgumentNullException.ThrowIfNull(etag);
         ArgumentNullException.ThrowIfNull(indexEntries);
         if (etag.Length == 0)
@@ -516,7 +513,7 @@ internal static class StorageCapacityGuardrails
             sizeof(int) + record.RecordKey.LongLength
             + sizeof(int) + record.Record.GrainType.LongLength
             + sizeof(int) + record.Record.GrainKey.LongLength
-            + sizeof(int) + record.Record.Payload.LongLength
+            + sizeof(int) + (record.Record.Payload?.LongLength ?? 0)
             + sizeof(int) + record.Record.ETag.LongLength
             + sizeof(int) + indexByteCount
             + (record.Record.IndexSchemaFingerprint is null
@@ -537,7 +534,7 @@ internal static class StorageCapacityGuardrails
         return checked(
             sizeof(int) + record.GrainId.Type.AsSpan().Length
             + sizeof(int) + record.GrainId.Key.AsSpan().Length
-            + sizeof(int) + record.Payload.LongLength
+            + sizeof(int) + (record.Payload?.LongLength ?? 0)
             + StorageMovePageDigest.GetTextEncodedByteCount(record.ETag)
             + sizeof(int) + indexByteCount
             + (record.IndexSchemaFingerprint is null

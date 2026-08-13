@@ -6,13 +6,15 @@
       "legacyFormat": 3,
       "movementFormat": 4,
       "managedSchemaFormat": 5,
+      "indexOnlyFormat": 6,
       "movementProtocol": 1,
       "managedSchemaProtocol": 1
     },
     "partitionPersistence": {
       "legacyFormat": 3,
       "movementFormat": 4,
-      "currentFormat": 5
+      "currentFormat": 5,
+      "indexOnlyFormat": 6
     },
     "query": {
       "paging": 1,
@@ -89,6 +91,10 @@
     "searchableIndexKind": {
       "Hash": 0,
       "Range": 1
+    },
+    "storageNamespaceMode": {
+      "Integrated": 0,
+      "IndexOnly": 1
     },
     "indexValueKind": {
       "String": 0,

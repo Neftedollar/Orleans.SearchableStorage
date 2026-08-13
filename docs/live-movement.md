@@ -4,9 +4,10 @@ Live movement changes one virtual slot's physical owner without changing the pro
 its persisted virtual-slot count. The core library supplies an explicit, resumable admin protocol;
 it does not start moves automatically or choose a background balancing policy.
 
-Enabling movement preserves the routing layout format: namespaces without managed schemas remain
-format 4, while schema-enabled namespaces remain routing-equivalent format 5. The sweep upgrades a
-supported format-3 partition to persistence format 4 and preserves a format-5 schema participant.
+Enabling movement preserves the routing layout format: integrated namespaces without managed
+schemas remain format 4, integrated schema-enabled namespaces remain routing-equivalent format 5,
+and index-only namespaces remain format 6. The sweep upgrades a supported format-3 integrated
+partition to persistence format 4 and preserves format-5 and format-6 schema participants.
 It publishes movement protocol version 1 only after every current owner has accepted the
 routed-operation fence. Transfer and cleanup progress is durable, so a process restart or caller
 cancellation does not require an operator to reconstruct the move.
@@ -21,8 +22,9 @@ For each provider namespace:
 1. Quiesce searchable-storage reads, writes, clears, queries, facets, and admin mutations.
 2. Deploy and restart every participating silo and Orleans client on the movement-capable package.
    Verify that no older process remains.
-3. Ensure the namespace has a valid routing layout in format 4 or 5. An existing format-3 layout
-   must first be adopted using the format-4 rollout described in [backends.md](backends.md).
+3. Ensure the namespace has a valid routing layout in integrated format 4/5 or index-only format 6.
+   An existing format-3 layout must first be adopted using the format-4 rollout described in
+   [backends.md](backends.md).
 4. Resolve the keyed `ISearchableStorageAdminClient` and call `EnableMovementAsync` while traffic is
    still quiesced. The method advances one durable owner fence at a time and is safe to call again
    after cancellation or a process failure.
@@ -162,10 +164,10 @@ options.Movement.TransferPageByteTarget = 256 * 1024; // maximum 4 MiB
 
 The record limit is a hard page cardinality ceiling. The byte value is evaluated with the protocol's
 deterministic canonical movement encoding. It is not the size produced by Orleans serialization or
-the physical provider. Movement messages and newly published persistence-format-4/5 snapshots encode
+the physical provider. Movement messages and newly published persistence-format-4/5/6 snapshots encode
 persisted text as explicit big-endian UTF-16 code units so even unpaired surrogates survive export,
 import WAL, compaction, recovery, and cleanup without Orleans string normalization. An active legacy
-snapshot adopted during movement enablement remains readable; the next format-4/5 compaction writes
+snapshot adopted during movement enablement remains readable; the next format-4/5/6 compaction writes
 the lossless payload to the inactive snapshot slot before the manifest publishes it. A single
 accepted record larger than the target is returned alone, so the
 in-memory page/transfer shape is `O(target + largest accepted record)` in canonical units; it is not
@@ -177,7 +179,7 @@ advance call's total work or wall time. End-to-end movement work remains sensiti
 slot, physical-partition size, record sizes, compaction timing, and skew; there is no fixed
 freeze-duration promise.
 
-Partition persistence formats 4 and 5 deliberately retain whole-partition snapshots. Compaction can
+Partition persistence formats 4, 5, and 6 deliberately retain whole-partition snapshots. Compaction can
 still serialize every record owned by a physical partition, and activation recovery still
 materializes the whole active snapshot and rebuilds the derived slot index in
 `O(partition records)`. Slot export, import, and delete are bounded movement paths, but they do not

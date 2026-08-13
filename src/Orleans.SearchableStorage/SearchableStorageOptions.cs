@@ -4,10 +4,13 @@ using Orleans.Storage;
 namespace Orleans.SearchableStorage;
 
 /// <summary>
-/// Configures one searchable grain-storage provider.
+/// Configures one integrated searchable-storage or payload-free index provider.
 /// </summary>
 public sealed class SearchableStorageOptions : IStorageProviderSerializerOptions
 {
+    internal Storage.StorageNamespaceMode NamespaceMode { get; set; } =
+        Storage.StorageNamespaceMode.Integrated;
+
     /// <summary>
     /// Gets the bounded-query and continuation-protection configuration for this provider.
     /// </summary>

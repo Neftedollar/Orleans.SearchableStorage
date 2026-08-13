@@ -1,9 +1,9 @@
 # Storage capacity envelope
 
 This document defines the fixed logical capacity envelope enforced by
-`Orleans.SearchableStorage`. The limits bound objects accepted by this Orleans `IGrainStorage`
-implementation; they do not turn it into a database, a provider-independent quota service, or an
-estimate of backend storage consumption.
+`Orleans.SearchableStorage`. The limits bound objects accepted by both the integrated Orleans
+`IGrainStorage` mode and the payload-free index-only mode; they do not turn either mode into a
+database, a provider-independent quota service, or an estimate of backend storage consumption.
 
 The public values live in `SearchableStorageCapacityLimits`. They are deliberately not
 configurable. Every silo, maintenance caller, persistence child grain, and recovery path must make
@@ -17,7 +17,7 @@ library compatibility decision and a homogeneous rollout, not an options change 
 | Raw Orleans grain-type component | 1,024 bytes | `grain-id-type-bytes` |
 | Raw Orleans grain-key component | 4,096 bytes | `grain-id-key-bytes` |
 | Canonical record key | 16 KiB | `record-key-canonical-bytes` |
-| Serialized state payload in one record | 4 MiB | `record-payload-bytes` |
+| Serialized state payload in one integrated record | 4 MiB | `record-payload-bytes` |
 | Index entries for one record | 256 | `record-index-entries` |
 | Index entries for one scope in one record | 64 | `record-scope-index-entries` |
 | Canonical bytes in one index entry | 64 KiB | `index-entry-canonical-bytes` |
@@ -41,7 +41,9 @@ compatibility decision even though their implementation constants are internal.
 
 The 4.75 MiB record ceiling is exactly the 4 MiB payload ceiling plus the 512 KiB aggregate-index
 ceiling plus 256 KiB for the record key, `GrainId`, ETag, schema fingerprint, and canonical framing.
-The 320 MiB segment ceiling is exactly 64 times the 5 MiB entry ceiling.
+An index-only record has a null-payload marker and therefore receives no 4 MiB payload contribution;
+the other record and snapshot ceilings remain unchanged. The 320 MiB segment ceiling is exactly 64
+times the 5 MiB entry ceiling.
 
 ## Meaning of canonical bytes
 
@@ -53,8 +55,8 @@ snapshot representation:
 - raw byte sequences and `GrainId` components contribute their fixed framing and exact raw length;
 - an index entry includes its scope, kind, value kind, optional text, and every persisted primitive
   field, including fields inactive for the current value kind;
-- a record includes its record key, `GrainId`, payload, ETag, index entries, and optional managed-
-  schema fingerprint;
+- a record includes its record key, `GrainId`, nullable payload marker and any integrated payload,
+  ETag, index entries, and optional managed-schema fingerprint;
 - a journal entry includes its fixed control fields and its complete record or movement payload.
 
 The measure is not the Orleans serializer output size, an RPC payload size, a compressed size, a
@@ -65,10 +67,11 @@ transient memory than the number in this table.
 
 ## Enforcement and failure behavior
 
-Current point reads, writes, and clears reject an oversized `GrainId` before record-key expansion
-or application serialization. They reject the completed record key before schema coordination,
-routing, or partition authority. Writes validate the serialized payload and extracted index entries
-before the partition RPC. The partition repeats admission before WAL authority and validates the
+Integrated point reads/writes/clears and index-only mutations reject an oversized `GrainId` before
+record-key expansion or application serialization. They reject the completed record key before schema coordination,
+routing, or partition authority. Integrated writes validate the serialized payload and extracted
+index entries before the partition RPC; index-only writes validate the extracted entries and the
+required null-payload marker. The partition repeats admission before WAL authority and validates the
 projected complete snapshot.
 
 Schema rebuild, movement import/export and cleanup, journal publication, snapshot publication, and

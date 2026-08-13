@@ -25,6 +25,11 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     /// <param name="grainFactory">The Orleans grain factory used to access layout and partition grains.</param>
     /// <param name="providerName">The searchable-storage provider name.</param>
     /// <param name="partitionCount">The provider's initial physical partition count.</param>
+    /// <remarks>
+    /// This direct constructor targets integrated <c>IGrainStorage</c> namespaces. Configure an
+    /// index-only external client through <see cref="SearchableStorageSiloBuilderExtensions.AddSearchableIndex(Microsoft.Extensions.DependencyInjection.IServiceCollection, string, Action{SearchableStorageOptions}?)"/>
+    /// and resolve its keyed admin client instead.
+    /// </remarks>
     public SearchableStorageAdminClient(
         IGrainFactory grainFactory,
         string providerName,
@@ -44,23 +49,53 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
     /// <param name="providerName">The searchable-storage provider name.</param>
     /// <param name="partitionCount">The provider's initial physical partition count.</param>
     /// <param name="movementOptions">The bounded transfer-page settings captured by planned moves.</param>
+    /// <remarks>
+    /// This direct constructor targets integrated <c>IGrainStorage</c> namespaces. Configure an
+    /// index-only external client through <see cref="SearchableStorageSiloBuilderExtensions.AddSearchableIndex(Microsoft.Extensions.DependencyInjection.IServiceCollection, string, Action{SearchableStorageOptions}?)"/>
+    /// and resolve its keyed admin client instead.
+    /// </remarks>
     public SearchableStorageAdminClient(
         IGrainFactory grainFactory,
         string providerName,
         int partitionCount,
         SearchableStorageMovementOptions movementOptions)
+        : this(
+            grainFactory,
+            providerName,
+            partitionCount,
+            movementOptions,
+            StorageNamespaceMode.Integrated,
+            logger: null)
+    {
+    }
+
+    internal SearchableStorageAdminClient(
+        IGrainFactory grainFactory,
+        string providerName,
+        int partitionCount,
+        SearchableStorageMovementOptions movementOptions,
+        StorageNamespaceMode namespaceMode,
+        ILogger<SearchableStorageAdminClient>? logger)
     {
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentNullException.ThrowIfNull(movementOptions);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(partitionCount);
+        if (!Enum.IsDefined(namespaceMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(namespaceMode));
+        }
+
         StorageMoveProtocol.ValidatePageLimits(
             movementOptions.TransferPageRecordLimit,
             movementOptions.TransferPageByteTarget,
             nameof(movementOptions));
 
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
-        var layoutIdentity = StorageLayout.CreateIdentity(providerName, partitionCount);
+        var layoutIdentity = StorageLayout.CreateIdentity(
+            providerName,
+            partitionCount,
+            namespaceMode);
         _layoutGrain = layoutGrain;
         _grainFactory = grainFactory;
         _providerName = providerName;
@@ -69,6 +104,7 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
             () => layoutGrain.GetLayoutAsync(layoutIdentity));
         _transferPageRecordLimit = movementOptions.TransferPageRecordLimit;
         _transferPageByteTarget = movementOptions.TransferPageByteTarget;
+        _logger = logger;
     }
 
     internal SearchableStorageAdminClient(
@@ -77,9 +113,14 @@ public sealed class SearchableStorageAdminClient : ISearchableStorageAdminClient
         int partitionCount,
         SearchableStorageMovementOptions movementOptions,
         ILogger<SearchableStorageAdminClient>? logger)
-        : this(grainFactory, providerName, partitionCount, movementOptions)
+        : this(
+            grainFactory,
+            providerName,
+            partitionCount,
+            movementOptions,
+            StorageNamespaceMode.Integrated,
+            logger)
     {
-        _logger = logger;
     }
 
     internal SearchableStorageAdminClient(StorageLayoutCache layoutCache)

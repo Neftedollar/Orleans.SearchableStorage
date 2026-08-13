@@ -1,14 +1,19 @@
 # Orleans.SearchableStorage
 
 > [!CAUTION]
-> **Version 1.0.0-rc.1 is NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION.**
+> **Version 1.0.0-rc.2 is NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION.**
 > It is a qualification and integration candidate. Controlled 1,000,000-record provider runs and
 > a full, non-modelled, external/distributed 10,000,000+ record run are still required before a
 > production 1.0 release. See [the release notes](RELEASE_NOTES.md) for the exact evidence status.
 
-Orleans-native persistent grain storage with secondary indexes.
+Orleans-native persistent grain storage and payload-free secondary indexes.
 
-The project is an early vertical slice. It implements an `IGrainStorage` provider whose records and local index entries are owned by Orleans grains and persisted through another Orleans storage provider. Applications continue to use `IPersistentState<T>` and add searchable semantics by marking state properties.
+The project is an early vertical slice with two explicit ownership modes. Integrated mode implements
+an `IGrainStorage` provider whose records and local index entries are owned by Orleans grains and
+committed together. Index-only mode stores only derived index entries while the application owns its
+payload store, update ordering, reconciliation, and hydration. Both modes persist their internal
+state through another Orleans storage provider and use the same bounded query API. See the
+[index-only guide](docs/index-only-mode.md) for the consistency boundary.
 
 The [1.0 product and query contract](docs/one-zero-contract.md) is the concise matrix of the
 implemented product boundary, supported CLR/index/query surface, terminal semantics, failure model,
@@ -27,15 +32,21 @@ of independently reproducible one-million and ten-million-record verification.
 - Hash indexes support scalar exact-value lookup and bounded membership over exact `T[]` and
   `List<T>` properties.
 - Range indexes support exact-value and bounded range lookup.
-- A record and all of its local index entries share one journal operation and one manifest commit point.
+- In integrated mode, a record and all of its local index entries share one journal operation and one
+  manifest commit point.
+- Index-only mode exposes a keyed writer which extracts marked properties from the supplied state but
+  never serializes or retains the payload. Its blind replacements are last-arrival-wins; the caller
+  owns cross-store consistency.
 - Steady mutations rewrite one bounded journal segment and one constant-size manifest instead of the whole partition.
 - A fixed journal ring and a hard replay limit bound recovery work; a mutation is backpressured when compaction cannot make room.
 - Compaction publishes immutable whole-partition snapshots through two generation-fenced physical slots.
 - Mutations within a partition are serialized by one Orleans grain activation.
-- Layout formats 4 and 5 map a fixed per-namespace virtual-slot space to physical owners. Version 5
+- Integrated layout formats 4 and 5 map a fixed per-namespace virtual-slot space to physical owners. Version 5
   keeps the same routing identity and adds the durable managed-schema fence. Version-3 layouts
   first adopt the format-4 identity map without moving records; a separately enabled protocol can
   then move one slot at a time under durable epoch and visibility fences.
+- Index-only namespaces use layout and persistence format 6 as a durable mode and downgrade fence;
+  full and index-only providers can coexist only under different provider names.
 - Routed point operations carry their virtual slot and layout epoch. Each bounded query page fans out
   to every distinct current owner and returns a sorted, distinct `GrainId` prefix.
 - A focused `IQueryable<TState>` layer supports indexed comparisons, exact collection `Contains`,
@@ -122,10 +133,10 @@ rebalance introduces higher owner indices. `JournalSegmentCapacity` and
 `MaximumJournalReplayEntries` still require migration to change. `CompactionThreshold` and movement
 page limits are operational settings within their documented bounds.
 
-Register every state name which uses the provider, even a state with no indexed properties. Before
-first adoption—or after changing an indexed property, its index name or kind, CLR domain, codec
-meaning, or the application-owned version—quiesce searchable traffic, deploy the same declarations
-everywhere, and
+Register every state name which uses the provider, even a state with no indexed properties. In
+integrated mode, before first adoption—or after changing an indexed property, its index name or
+kind, CLR domain, codec meaning, or the application-owned version—quiesce searchable traffic,
+deploy the same declarations everywhere, and
 run `ISearchableStorageAdminClient.RebuildIndexSchemaAsync<VacancyState>("vacancy", 1,
 cancellationToken)`. Registration is deliberately fail-closed, not a compatibility no-op: that
 state's writes, clears, and queries require its declared fingerprint to be active. The first rebuild
@@ -136,7 +147,9 @@ window before resuming provider traffic or movement. That provider-wide capabili
 disabled. Older binaries and clients are unsupported and must be excluded by the homogeneous
 restart because a locally answered contradiction has no RPC to fence. Updated managed writes,
 clears, queries, pages, and facets remain blocked until their fingerprint is active. Point reads do
-not interpret indexes. Renaming the Orleans persistent state name is a data migration, not a schema
+not interpret indexes. Index-only mode uses the same first-adoption gate in format 6, but a later
+incompatible declaration requires a new namespace and authoritative replay rather than an in-place
+rebuild. Renaming the Orleans persistent state name is a data migration, not a schema
 rebuild: old records remain under the old catalog and record keys and cannot be discovered by
 rebuilding the new name.
 Page and distinct-facet continuations created under an older generation are invalid after the new
@@ -171,6 +184,40 @@ public sealed class VacancyGrain(
     }
 }
 ```
+
+Alternatively, keep payloads in another Orleans provider or application database and register a
+payload-free index:
+
+```csharp
+siloBuilder.AddSearchableIndex("CompanyIndex", options =>
+{
+    options.PartitionCount = 32;
+});
+siloBuilder.AddSearchableStorageState<CompanyState>("CompanyIndex", "company");
+
+public sealed class CompanyGrain(
+    [PersistentState("company", "ApplicationState")]
+    IPersistentState<CompanyState> state,
+    [FromKeyedServices("CompanyIndex")]
+    ISearchableStorageIndexWriter index) : Grain
+{
+    public async Task SaveAsync(CompanyState value)
+    {
+        state.State = value;
+        await state.WriteStateAsync();
+        await index.UpsertAsync("company", this.GetGrainId(), value);
+    }
+}
+```
+
+`AddSearchableIndex` registers keyed writer, query, and admin services but no `IGrainStorage`.
+The writer extracts only `[SearchableIndex]` values from the same `CompanyState` instance; it does
+not serialize the object. The payload write and index call are not one transaction, so the caller
+must serialize delivery per key or use its own outbox/reconciliation policy. Queries return
+`GrainId` values for caller-owned hydration. For an external Orleans client, apply the same
+`AddSearchableIndex` and state declarations to its `IServiceCollection` and resolve keyed query or
+admin services; the public direct client constructors remain integrated-only. Read the complete
+[index-only mode contract](docs/index-only-mode.md) before choosing this ownership model.
 
 Resolve the named query client inside the silo so it shares the provider configuration. Build a
 deferred predicate and follow its continuation until the final page:
@@ -396,7 +443,7 @@ Quiesce searchable storage and query traffic, deploy this package to every silo 
 verify that no version-3 process
 remains, and keep traffic paused while one normal grain-state storage operation adopts each provider
 namespace. Verify that the admin read succeeds for every persisted layout and reports epoch 1; the
-admin path returns a snapshot only for routing-capable format 4 or 5. At that point either resume
+admin path returns a snapshot only for routing-capable format 4, 5, or 6. At that point either resume
 traffic with movement still disabled, or, if movement is being enabled in the same maintenance
 window, keep traffic paused through the second gate. Query and admin reads
 deliberately do not perform migration themselves. New routed methods are additive and legacy calls
@@ -407,9 +454,10 @@ gate, quiesce traffic if it was resumed, deploy/restart the movement-capable pac
 Once enabled, old placement-only calls are rejected and rolling an older binary back into that
 namespace is unsupported.
 
-A managed-schema rebuild can perform that same version-3 layout adoption as its first quiesced
-step, so schema adoption does not require a preceding dummy state operation. Its owner sweep then
-upgrades supported partition-persistence format 3 or 4 directly to format 5.
+An integrated managed-schema rebuild can perform that same version-3 layout adoption as its first
+quiesced step, so schema adoption does not require a preceding dummy state operation. Its owner
+sweep then upgrades supported partition-persistence format 3 or 4 directly to format 5. A fresh
+index-only namespace instead initializes format 6 and activates its empty schema before replay.
 
 The provider name identifies a storage namespace. Using another name selects a separate, initially
 empty namespace, so renaming a provider requires an explicit migration. The initial
@@ -425,8 +473,8 @@ UTF-8. The write path does not impose that newer wire constraint, so application
 values; a facet which reaches one throws `SearchableStorageQueryLimitExceededException` without a
 partial result rather than truncating or skipping it.
 
-Layout formats 4 and 5 store the same virtual routing identity independently from partition
-persistence formats 3, 4, and 5. Layout format 5 appends the provider schema capability and
+Integrated layout formats 4 and 5 store the same virtual routing identity independently from
+integrated partition persistence formats 3, 4, and 5. Layout format 5 appends the provider schema capability and
 per-rebuild maintenance intent.
 A valid format-3 layout is upgraded in place with one layout compare-and-swap; the seeded identity
 map is mathematically equivalent to the old modulo placement for every supported initial partition
@@ -439,6 +487,12 @@ quiesced schema-adoption sweep can upgrade a supported format-3 or format-4 owne
 migration or complete rewrite and are rejected rather than read as fresh state. Backups and
 retention must include the per-state `index-schema` control documents as well as layout and
 partition data.
+
+Index-only layout and partition-persistence format 6 preserve the same slot-placement algorithm but
+use a distinct routing/continuation fingerprint and require payload-free records. Format 6 is a
+downgrade fence, not an in-place conversion from integrated formats. An incompatible active
+index-only schema requires a new provider namespace and replay from the application's authoritative
+payload store.
 
 Facet support does not change a durable record, journal, manifest, snapshot, layout, or write-path
 format. On activation, hash scopes now derive the same balanced, canonical value projection already

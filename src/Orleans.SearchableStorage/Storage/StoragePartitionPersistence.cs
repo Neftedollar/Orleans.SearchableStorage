@@ -128,6 +128,17 @@ internal sealed class StoragePartitionPersistence
         }
     }
 
+    public StorageNamespaceMode NamespaceMode
+    {
+        get
+        {
+            EnsureCoordinatorUsable();
+            return _manifest.State.Initialized
+                ? _manifest.State.NamespaceMode
+                : StorageNamespaceMode.Integrated;
+        }
+    }
+
     public StoragePartitionMoveControl MoveControl
     {
         get
@@ -153,6 +164,9 @@ internal sealed class StoragePartitionPersistence
     {
         EnsureCoordinatorUsable();
         var records = await RecoverAsync();
+        // A pending snapshot may be published as part of recovery. Validate the recovered mode
+        // before that first repair write so mixed payload authority always fails closed.
+        StoredRecordNamespaceValidation.ValidateAll(records.Values, _manifest.State.NamespaceMode);
         if (_manifest.State.PendingSnapshot.IsPresent)
         {
             await PublishPendingSnapshotAsync(records);
@@ -217,10 +231,12 @@ internal sealed class StoragePartitionPersistence
             throw new InvalidOperationException("A durable minimum routing epoch cannot move backwards.");
         }
 
-        candidate.PersistenceFormatVersion = candidate.IndexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion
-            || indexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion
-                ? StoragePersistence.CurrentPersistenceFormatVersion
-                : StoragePersistence.MovementPersistenceFormatVersion;
+        candidate.PersistenceFormatVersion = settings.NamespaceMode == StorageNamespaceMode.IndexOnly
+            ? StoragePersistence.IndexOnlyPersistenceFormatVersion
+            : candidate.IndexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion
+                || indexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion
+                    ? StoragePersistence.CurrentPersistenceFormatVersion
+                    : StoragePersistence.MovementPersistenceFormatVersion;
         candidate.MovementProtocolVersion = StorageMoveProtocol.Version;
         candidate.RoutedOperationsRequired = true;
         candidate.MinimumRoutingEpoch = minimumRoutingEpoch;
@@ -245,7 +261,10 @@ internal sealed class StoragePartitionPersistence
                 "The index-schema protocol cannot be enabled while this partition participates in a move.");
         }
 
-        if (candidate.PersistenceFormatVersion == StoragePersistence.CurrentPersistenceFormatVersion
+        var expectedFormat = settings.NamespaceMode == StorageNamespaceMode.IndexOnly
+            ? StoragePersistence.IndexOnlyPersistenceFormatVersion
+            : StoragePersistence.CurrentPersistenceFormatVersion;
+        if (candidate.PersistenceFormatVersion == expectedFormat
             && candidate.IndexSchemaProtocolVersion == StorageIndexSchema.ProtocolVersion)
         {
             return;
@@ -258,7 +277,7 @@ internal sealed class StoragePartitionPersistence
                 "The partition has an unsupported persistence or index-schema protocol version.");
         }
 
-        candidate.PersistenceFormatVersion = StoragePersistence.CurrentPersistenceFormatVersion;
+        candidate.PersistenceFormatVersion = expectedFormat;
         candidate.IndexSchemaProtocolVersion = StorageIndexSchema.ProtocolVersion;
         candidate.MinimumRoutingEpoch = Math.Max(candidate.MinimumRoutingEpoch, 1);
         await PersistManifestAsync(candidate);
@@ -353,7 +372,8 @@ internal sealed class StoragePartitionPersistence
             entry,
             _manifest.State.PersistenceFormatVersion,
             _manifest.State.IndexSchemaProtocolVersion,
-            "The journal entry");
+            "The journal entry",
+            _manifest.State.NamespaceMode);
         if (!_writerEpochAcquired
             || entry.WriterEpoch != _manifest.State.WriterEpoch
             || entry.Sequence != checked(_manifest.State.CommittedSequence + 1)
@@ -473,6 +493,9 @@ internal sealed class StoragePartitionPersistence
             IndexSchemaProtocolVersion = state.Initialized
                 ? state.IndexSchemaProtocolVersion
                 : 0,
+            NamespaceMode = state.Initialized
+                ? state.NamespaceMode
+                : StorageNamespaceMode.Integrated,
         };
     }
 
@@ -490,6 +513,13 @@ internal sealed class StoragePartitionPersistence
         ValidateCompactionThreshold(
             settings.CompactionThreshold,
             settings.MaximumJournalReplayEntries);
+        if (!Enum.IsDefined(settings.NamespaceMode))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(settings),
+                settings.NamespaceMode,
+                "Unknown searchable-storage namespace mode.");
+        }
     }
 
     private static void ValidateCompactionThreshold(int threshold, int maximumReplayEntries)
@@ -514,6 +544,7 @@ internal sealed class StoragePartitionPersistence
             // whole-partition snapshot boundary without coupling an admin operation to one silo's
             // mutable compaction preference.
             CompactionThreshold = _manifest.State.MaximumJournalReplayEntries,
+            NamespaceMode = _manifest.State.NamespaceMode,
         };
     }
 
@@ -539,6 +570,7 @@ internal sealed class StoragePartitionPersistence
             return;
         }
 
+        StoredRecordNamespaceValidation.ValidateAll(records.Values, _manifest.State.NamespaceMode);
         _ = StorageCapacityGuardrails.ValidateSnapshotRecords(records);
 
         if (_manifest.State.PendingSnapshot.IsPresent)
@@ -673,7 +705,8 @@ internal sealed class StoragePartitionPersistence
                 descriptor,
                 snapshot,
                 _manifest.State.PersistenceFormatVersion,
-                _manifest.State.IndexSchemaProtocolVersion);
+                _manifest.State.IndexSchemaProtocolVersion,
+                _manifest.State.NamespaceMode);
             recoveredNextVersion = snapshot.NextVersion;
             recoveredOperationId = snapshot.OperationId;
             recoveredOperationIds.Add(snapshot.OperationId);
@@ -705,7 +738,8 @@ internal sealed class StoragePartitionPersistence
                 _manifest.State.WriterEpoch,
                 _manifest.State.CommittedSequence,
                 _manifest.State.PersistenceFormatVersion,
-                _manifest.State.IndexSchemaProtocolVersion);
+                _manifest.State.IndexSchemaProtocolVersion,
+                _manifest.State.NamespaceMode);
             var segmentEnd = Math.Min(
                 StoragePersistence.GetSegmentEndSequence(
                     absoluteSegmentIndex,
@@ -843,10 +877,11 @@ internal sealed class StoragePartitionPersistence
         }
 
         if (_manifest.State.JournalSegmentCapacity != settings.JournalSegmentCapacity
-            || _manifest.State.MaximumJournalReplayEntries != settings.MaximumJournalReplayEntries)
+            || _manifest.State.MaximumJournalReplayEntries != settings.MaximumJournalReplayEntries
+            || _manifest.State.NamespaceMode != settings.NamespaceMode)
         {
             throw new InvalidOperationException(
-                "The configured journal layout does not match the persisted partition manifest.");
+                "The configured journal layout or namespace mode does not match the persisted partition manifest.");
         }
     }
 
@@ -874,12 +909,15 @@ internal sealed class StoragePartitionPersistence
         return new StoragePartitionManifestState
         {
             Initialized = true,
-            PersistenceFormatVersion = StoragePersistence.PreviousPersistenceFormatVersion,
+            PersistenceFormatVersion = settings.NamespaceMode == StorageNamespaceMode.IndexOnly
+                ? StoragePersistence.IndexOnlyPersistenceFormatVersion
+                : StoragePersistence.PreviousPersistenceFormatVersion,
             JournalSegmentCapacity = settings.JournalSegmentCapacity,
             MaximumJournalReplayEntries = settings.MaximumJournalReplayEntries,
             NextVersion = 1,
             MinimumRoutingEpoch = 1,
             MoveControl = new StoragePartitionMoveControl(),
+            NamespaceMode = settings.NamespaceMode,
         };
     }
 
@@ -889,16 +927,30 @@ internal sealed class StoragePartitionPersistence
     {
         var isLegacyFormat =
             state.PersistenceFormatVersion == StoragePersistence.LegacyPersistenceFormatVersion;
-        if (state.PersistenceFormatVersion != StoragePersistence.CurrentPersistenceFormatVersion
+        var currentFormat = state.NamespaceMode == StorageNamespaceMode.IndexOnly
+            ? StoragePersistence.IndexOnlyPersistenceFormatVersion
+            : StoragePersistence.CurrentPersistenceFormatVersion;
+        if (state.PersistenceFormatVersion != currentFormat
             && (!allowPreviousFormat
                 || !StoragePersistence.IsSupportedFormat(state.PersistenceFormatVersion)))
         {
             throw new InvalidOperationException(
                 $"Partition persistence format {state.PersistenceFormatVersion} is not supported; "
-                + $"format {StoragePersistence.CurrentPersistenceFormatVersion} is required for new capabilities.");
+                + $"format {currentFormat} is required for this namespace mode.");
         }
 
         ArgumentNullException.ThrowIfNull(state.MoveControl);
+        if (!Enum.IsDefined(state.NamespaceMode))
+        {
+            throw new InvalidOperationException(
+                "The partition manifest contains an unknown searchable-storage namespace mode.");
+        }
+        if ((state.PersistenceFormatVersion == StoragePersistence.IndexOnlyPersistenceFormatVersion)
+                != (state.NamespaceMode == StorageNamespaceMode.IndexOnly))
+        {
+            throw new InvalidOperationException(
+                "The partition persistence format and namespace mode do not form a valid authority fence.");
+        }
         if (isLegacyFormat)
         {
             ValidatePreviousFormatMovementFields(state);
@@ -1299,7 +1351,8 @@ internal sealed class StoragePartitionPersistence
         StorageSnapshotDescriptor descriptor,
         StorageSnapshotState snapshot,
         int persistenceFormatVersion,
-        int indexSchemaProtocolVersion)
+        int indexSchemaProtocolVersion,
+        StorageNamespaceMode namespaceMode)
     {
         if (!snapshot.Initialized
             || snapshot.Tombstoned
@@ -1310,6 +1363,7 @@ internal sealed class StoragePartitionPersistence
         }
 
         var records = StorageSnapshotFactory.DecodeRecords(snapshot, persistenceFormatVersion);
+        StoredRecordNamespaceValidation.ValidateAll(records.Values, namespaceMode);
         ValidateRecordCapabilities(
             records.Values,
             persistenceFormatVersion,
@@ -1330,7 +1384,8 @@ internal sealed class StoragePartitionPersistence
         long maximumWriterEpoch,
         long committedSequence,
         int persistenceFormatVersion,
-        int indexSchemaProtocolVersion)
+        int indexSchemaProtocolVersion,
+        StorageNamespaceMode namespaceMode)
     {
         if (!segment.Initialized
             || segment.Tombstoned
@@ -1383,7 +1438,8 @@ internal sealed class StoragePartitionPersistence
                 entry,
                 persistenceFormatVersion,
                 indexSchemaProtocolVersion,
-                $"Journal segment {absoluteSegmentIndex}");
+                $"Journal segment {absoluteSegmentIndex}",
+                namespaceMode);
 
             if (entry.Sequence > committedSequence
                 && (entry.Sequence != checked(committedSequence + 1)
@@ -1408,10 +1464,30 @@ internal sealed class StoragePartitionPersistence
         StorageJournalEntry entry,
         int persistenceFormatVersion,
         int indexSchemaProtocolVersion,
-        string context)
+        string context,
+        StorageNamespaceMode namespaceMode = StorageNamespaceMode.Integrated)
     {
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentException.ThrowIfNullOrWhiteSpace(context);
+        if (!Enum.IsDefined(namespaceMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(namespaceMode));
+        }
+
+        if (entry.Record is not null)
+        {
+            StoredRecordNamespaceValidation.Validate(entry.Record, namespaceMode);
+        }
+
+        if (entry.Move is not null)
+        {
+            foreach (var import in entry.Move.Imports)
+            {
+                StoredRecordNamespaceValidation.Validate(
+                    StorageMoveRecordCodec.Decode(import.Record),
+                    namespaceMode);
+            }
+        }
 
         if (persistenceFormatVersion == StoragePersistence.LegacyPersistenceFormatVersion
             && entry.Operation is not StorageJournalOperation.Upsert

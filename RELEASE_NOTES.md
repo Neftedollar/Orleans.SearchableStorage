@@ -1,6 +1,6 @@
 # Release notes
 
-## 1.0.0-rc.1 — qualification candidate
+## 1.0.0-rc.2 — qualification candidate
 
 > [!CAUTION]
 > **NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION.**
@@ -8,12 +8,14 @@
 > applications and controlled benchmark infrastructure. The required scale and distributed
 > qualification evidence has not been completed.
 
-This is the first NuGet release candidate for the 1.0 contract. It packages the Orleans
-`IGrainStorage` provider, bounded secondary-index query API, facets, managed schema lifecycle, and
-live slot-movement controls already described by the repository documentation. Application grains
-remain the authoritative state owners; indexes are derived, rebuildable storage structures which
-return bounded `GrainId` discovery results. This package is not a database and does not claim
-arbitrary LINQ, scan, join, or snapshot-query semantics.
+This is a NuGet release candidate for the 1.0 contract. It packages the integrated Orleans
+`IGrainStorage` provider, the separate payload-free index writer, bounded secondary-index query API,
+facets, managed schema lifecycle, and live slot-movement controls already described by the
+repository documentation. Application state remains authoritative: inside the searchable namespace
+for integrated mode and in the caller's external store for index-only mode. Index-only calls are
+last-arrival-wins and do not provide cross-store transactions, ordering, outbox, or deduplication.
+This package is not a database and does not claim arbitrary LINQ, scan, join, or snapshot-query
+semantics.
 
 ### Evidence status
 
@@ -31,7 +33,7 @@ arbitrary LINQ, scan, join, or snapshot-query semantics.
 
 - The public API and source-compatibility baseline are frozen for this qualification candidate.
   Any library implementation, public or durable contract, or observable behavior change requires
-  `1.0.0-rc.2` (or a later candidate) and invalidates qualification evidence collected for this
+  `1.0.0-rc.3` (or a later candidate) and invalidates qualification evidence collected for this
   package. Stable SemVer compatibility obligations begin with the final `1.0.0` package. There is
   no previously published package or continuation-token compatibility promise to migrate from.
 - Package version numbers are independent of persistence, wire, schema, continuation, and movement
@@ -39,6 +41,9 @@ arbitrary LINQ, scan, join, or snapshot-query semantics.
   changed merely for this package.
 - Managed-schema adoption is provider-wide and one-way. Follow
   `docs/index-schema-lifecycle.md`, quiesce searchable traffic, and use a homogeneous deployment.
+- Index-only namespaces use durable layout and persistence format 6 as a downgrade fence. They
+  cannot rebuild an incompatible active fingerprint without retained payloads; create a new provider
+  name and replay the authoritative external corpus as documented in `docs/index-only-mode.md`.
 - Page and distinct-facet continuations are bound to their schema generation and routing epoch.
   Restart traversal after an incompatible schema or layout transition; never treat a prerelease
   continuation as an upgrade-stable application record.
@@ -60,5 +65,5 @@ OSS_RELEASE_OUTPUT_DIRECTORY=artifacts/release-candidate \
 The command packs twice, compares canonical package contents, validates the exact version,
 metadata, warning surfaces, and commit provenance, and builds a standalone package-only consumer.
 Only after every gate passes does it retain
-`Orleans.SearchableStorage.1.0.0-rc.1.nupkg` and `package.canonical.json` in the requested directory.
+`Orleans.SearchableStorage.1.0.0-rc.2.nupkg` and `package.canonical.json` in the requested directory.
 It does not publish anything to NuGet.org.

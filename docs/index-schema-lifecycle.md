@@ -11,28 +11,34 @@ the schema-control key all contain that name. A rebuild under the new name canno
 stored under the old one. Keep the state name stable or perform an explicit data migration/record
 rewrite which also accounts for the old control document; this runbook does not rename state data.
 
-This runbook describes the version-1 managed-schema protocol. It is a quiesced, resumable rebuild,
-not online DDL and not a general data-migration framework.
+This runbook describes the version-1 managed-schema protocol. Integrated storage has a quiesced,
+resumable payload rebuild. Index-only mode uses the same activation gate for a fresh namespace but
+cannot rebuild an incompatible active generation because it retained no payloads. Neither path is
+online DDL or a general data-migration framework.
 
 ## The capability is provider-wide and one-way
 
-Managed schemas are optional only until the first rebuild starts for a provider namespace. That
-rebuild durably fences schema maintenance in the layout, upgrades every current partition owner to
-persistence format 5, scans every record belonging to that rebuild's state name, and only then
-publishes the schema capability. The final publication clears the layout intent, and the next
-control turn activates that state's fingerprint. It does not activate any other registered state.
+Managed schemas are optional only until the first rebuild starts for a provider namespace. For
+integrated storage, that rebuild durably fences schema maintenance in the layout, upgrades every
+current partition owner to persistence format 5, scans every record belonging to that rebuild's
+state name, and only then publishes the schema capability. A fresh index-only namespace begins in
+format 6 and has no retained payload records to scan. The final publication clears the layout
+intent, and the next control turn activates that state's fingerprint. It does not activate any
+other registered state.
 Complete every registered state's rebuild in the same first-adoption maintenance window before
-resuming provider traffic or movement. Later-generation rebuilds use the same layout maintenance
-fence even though the provider capability is already published. Participant upgrades and the
-provider capability are one-way; there is no disable or binary-rollback operation.
+resuming provider traffic or movement. Later integrated generation rebuilds use the same layout
+maintenance fence even though the provider capability is already published; index-only generation
+changes require namespace replacement and replay. Participant upgrades and the provider capability
+are one-way; there is no disable or binary-rollback operation.
 
-After the capability is enabled, every Orleans state name stored through that searchable provider
+After the capability is enabled, every Orleans state name used by that searchable provider
 must have exactly one CLR type and schema version registered on every silo. This includes state
 types with no indexed properties. Every direct query client must declare every state name it uses.
 Updated participants which declare managed schemas for the provider reject any state missing from
-their local declaration set immediately. Routed point reads remain available because they do not
-interpret index entries, but writes, clears, one-shot queries, pages, and facets require an active
-generation. A process with no declarations at all for that provider is schema-unaware even when its
+their local declaration set immediately. Integrated routed point reads remain available because they
+do not interpret index entries; index-only mode has no point-read surface. Integrated writes/clears,
+index-only mutations, one-shot queries, pages, and facets require an active generation. A process
+with no declarations at all for that provider is schema-unaware even when its
 binary contains the feature; exclude it during the same homogeneous restart verification as an old
 binary. Schema-unaware calls either perform a provider-capability check or reach an upgraded
 partition which rejects their unbound RPC. A genuinely older binary can also answer a contradictory
@@ -63,6 +69,9 @@ siloBuilder.AddSearchableStorageState<VacancyState>(
     applicationSchemaVersion: 2);
 ```
 
+For an index-only namespace, replace `AddSearchableGrainStorage` with
+`AddSearchableIndex`. State registration and fingerprint construction are otherwise identical.
+
 The fingerprint changes automatically when the state type identity, state name, sorted index names,
 index kinds, CLR value identities, multiplicity, or built-in codec/extractor versions change. Schema
 keys remain version 1 for all schemas; scalar-only fingerprints remain byte-for-byte v1, while
@@ -71,12 +80,14 @@ fingerprint inputs. `applicationSchemaVersion` exists for semantic changes outsi
 inputs; increment it deliberately, not on every deploy.
 
 Registration is deliberately fail-closed, not a passive compatibility declaration. From startup,
-writes, clears, and queries for that registered state require its exact fingerprint to be active in
-the control document. Deploy new or changed declarations only inside the quiesced adoption window;
-registration by itself does not backfill records or activate the generation.
+integrated writes/clears, index-only mutations, and queries for that registered state require its
+exact fingerprint to be active in the control document. Deploy new or changed declarations only
+inside the quiesced adoption window; registration by itself does not backfill records or activate
+the generation.
 
-An Orleans client constructed outside the silo DI container must supply its own complete registry.
-The client captures a snapshot of the registry in its constructor, so finish configuring it first:
+An Orleans client constructed outside the silo DI container for an integrated provider must supply
+its own complete registry. The public `SearchableStorageClient` constructors are integrated-only and
+capture a snapshot of the registry, so finish configuring it first:
 
 ```csharp
 var schemas = new SearchableStorageSchemaRegistry()
@@ -93,6 +104,12 @@ var search = new SearchableStorageClient(
 
 The direct client's declaration must match the silo registration. Supplying a registry to a client
 does not register a type on the silos and does not activate a generation.
+
+For an index-only provider, configure the external Orleans client's service collection with
+`AddSearchableIndex` and the same `AddSearchableStorageState<TState>` declarations used by the silos,
+then resolve keyed `ISearchableStorageQueryClient` or `ISearchableStorageAdminClient`. This chooses
+the format-6 identity without exposing a public boolean or string namespace-mode switch. The keyed
+writer is also registered; only code which owns projection delivery should resolve and invoke it.
 
 ## First adoption and later generation changes
 
@@ -129,6 +146,13 @@ empty generation for the requested state; a dummy state read is not required. Ot
 states remain uninitialized until their own rebuilds complete. A status read alone remains
 non-creating and reports `Uninitialized` while the layout is absent.
 
+For index-only mode, this fresh, empty activation is the only supported generation adoption.
+Repeating the same active fingerprint is idempotent. Once any fingerprint is active for a state, an
+incompatible rebuild fails before it creates a durable rebuild intent. Create a new provider name,
+activate its declarations, replay the authoritative external corpus through its keyed
+`ISearchableStorageIndexWriter`, validate it, and switch query consumers. Do not clear the old
+control document or reinterpret the old namespace as a shortcut.
+
 ## What the rebuild commits
 
 The admin method is a client-side loop over control-grain turns. The control document stores one
@@ -146,7 +170,7 @@ entries in one membership scope; a duplicate-heavy collection may contain more t
 when no more than 64 unique canonical values remain. This storage-entry ceiling is independent of
 the 64-record scan-page limit.
 
-The first advance creates or resumes a layout maintenance intent keyed by the rebuild
+For integrated storage, the first advance creates or resumes a layout maintenance intent keyed by the rebuild
 identifier before touching an owner. Current owners are upgraded to format 5 one at a time, then all
 record pages for the requested state run while movement remains fenced. After the last page, one
 turn publishes or confirms provider schema protocol 1 and clears the layout intent; a separate final
@@ -206,8 +230,8 @@ acknowledgement is lost can leave the next cursor or the final active generation
 activation retires after either ambiguous outcome; a retry on a fresh activation accepts both cases
 and converges. Do not delete the intent or synthesize progress manually.
 
-Rebuilding requires the currently configured `IGrainStorageSerializer` and registered CLR state
-type to deserialize every retained payload which does not already carry the target fingerprint.
+An integrated rebuild requires the currently configured `IGrainStorageSerializer` and registered
+CLR state type to deserialize every retained payload which does not already carry the target fingerprint.
 The schema protocol does not migrate application payloads and cannot repair a serializer-breaking
 state change. If deserialization fails, the turn fails and the durable cursor remains resumable;
 records completed earlier in that page may already carry the target fingerprint. Restore a
@@ -233,7 +257,7 @@ fingerprint. Use the reported location to reduce or rewrite the offending collec
 unique canonical elements through a reviewed application-data repair, then resume the same rebuild.
 Do not discard the rebuild intent or raise the application schema version to conceal the record.
 
-Point reads do not validate an index generation, but they still use the application's serializer.
+Integrated point reads do not validate an index generation, but they still use the application's serializer.
 "Point reads remain available" therefore means the index gate does not block them; it is not a
 promise that an incompatible payload can be deserialized.
 
@@ -241,7 +265,7 @@ promise that an incompatible payload can be deserialized.
 
 Managed physical scopes include the active schema fingerprint, so old and new index entries cannot
 be combined. While a state is uninitialized, rebuilding, or active under a different fingerprint,
-managed writes, clears, queries, pages, and facets throw
+managed integrated writes/clears, index-only mutations, queries, pages, and facets throw
 `SearchableStorageIndexSchemaException` before using that generation.
 
 Paging and distinct-facet continuations are authenticated against the translated query or facet
@@ -262,11 +286,16 @@ still format 3, the first rebuild begins by running the same idempotent routing 
 adopts it to format 4; no separate dummy storage operation is required. Query and status reads
 remain non-migrating. Layout format 5 preserves the same virtual-slot placement, routing fingerprint
 domain, and epoch while appending the provider schema capability and per-rebuild maintenance intent.
-Partition persistence has three supported formats:
+Integrated partition persistence has three supported formats:
 
 - format 3 is the legacy journal/snapshot representation with neither movement nor managed schemas;
 - format 4 adds movement state and lossless snapshot encoding;
 - format 5 adds the partition schema-capability field and per-record schema fingerprints.
+
+Index-only layout and partition persistence use format 6. Format 6 carries the same slot-placement
+and managed-schema capabilities but a distinct routing/continuation fingerprint, requires null
+record payloads, and rejects integrated records. Older format-3/4/5 binaries cannot open it. It is a
+new-namespace downgrade fence, not an upgrade target for an integrated namespace.
 
 The first schema rebuild can upgrade a supported format-3 or format-4 owner directly to format 5.
 Existing records remain readable by the new binary and are reindexed through normal WAL commits.
@@ -296,3 +325,8 @@ identity. Restore a consistent backup containing the matching control, layout, a
 or use a reviewed physical-recovery procedure; do not delete the layout intent or start a different
 rebuild. Loss of layout, manifest, journal, or snapshot data is a physical-backend recovery event,
 not a schema rebuild.
+
+The preceding control-recreation path requires retained application payloads and therefore applies
+only to integrated storage. In index-only mode, restore the complete index namespace from a
+consistent backup or create a new namespace and replay the authoritative external store. A schema
+rebuild cannot reconstruct missing index entries from format-6 records.

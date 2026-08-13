@@ -776,7 +776,8 @@ public sealed class QueryApiContractTests
             (nameof(StorageLayoutDescriptor.PartitionCount), 2),
             (nameof(StorageLayoutDescriptor.JournalSegmentCapacity), 3),
             (nameof(StorageLayoutDescriptor.MaximumJournalReplayEntries), 4),
-            (nameof(StorageLayoutDescriptor.VirtualSlotTargetCount), 5));
+            (nameof(StorageLayoutDescriptor.VirtualSlotTargetCount), 5),
+            (nameof(StorageLayoutDescriptor.NamespaceMode), 6));
         AssertFieldIds<StorageLayoutIdentity>(
             (nameof(StorageLayoutIdentity.FormatVersion), 0),
             (nameof(StorageLayoutIdentity.ProviderName), 1),
@@ -793,7 +794,8 @@ public sealed class QueryApiContractTests
             ("MoveIntent", 8),
             ("LastMoveReceipt", 9),
             (nameof(StorageLayoutSnapshot.IndexSchemaProtocolVersion), 10),
-            ("IndexSchemaEnablement", 11));
+            ("IndexSchemaEnablement", 11),
+            (nameof(StorageLayoutSnapshot.NamespaceMode), 12));
         AssertFieldIds<StorageLayoutState>(
             (nameof(StorageLayoutState.Initialized), 0),
             (nameof(StorageLayoutState.FormatVersion), 1),
@@ -809,7 +811,8 @@ public sealed class QueryApiContractTests
             (nameof(StorageLayoutState.MoveIntent), 11),
             (nameof(StorageLayoutState.LastMoveReceipt), 12),
             (nameof(StorageLayoutState.IndexSchemaProtocolVersion), 13),
-            (nameof(StorageLayoutState.IndexSchemaEnablement), 14));
+            (nameof(StorageLayoutState.IndexSchemaEnablement), 14),
+            (nameof(StorageLayoutState.NamespaceMode), 15));
         AssertFieldIds<StorageIndexSchemaEnableIntent>(
             (nameof(StorageIndexSchemaEnableIntent.EnablementId), 0),
             (nameof(StorageIndexSchemaEnableIntent.ProtocolVersion), 1),

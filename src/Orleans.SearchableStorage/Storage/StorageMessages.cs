@@ -27,7 +27,7 @@ internal sealed class StorageWriteRequest
     public required GrainId GrainId { get; init; }
 
     [Id(2)]
-    public required byte[] Payload { get; init; }
+    public byte[]? Payload { get; init; }
 
     [Id(3)]
     public string? ExpectedETag { get; init; }
@@ -46,6 +46,9 @@ internal sealed class StorageWriteRequest
 
     [Id(8)]
     public int IndexSchemaProtocolVersion { get; init; }
+
+    [Id(9)]
+    public bool Unconditional { get; init; }
 }
 
 [GenerateSerializer]
@@ -68,6 +71,9 @@ internal sealed class StorageClearRequest
 
     [Id(5)]
     public int IndexSchemaProtocolVersion { get; init; }
+
+    [Id(6)]
+    public bool Unconditional { get; init; }
 }
 
 [GenerateSerializer]
@@ -81,6 +87,9 @@ internal sealed class StoragePersistenceSettings
 
     [Id(2)]
     public int CompactionThreshold { get; init; }
+
+    [Id(3)]
+    public StorageNamespaceMode NamespaceMode { get; init; }
 }
 
 [GenerateSerializer]

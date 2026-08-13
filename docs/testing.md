@@ -65,15 +65,17 @@ partition-grain execution.
 
 ### Virtual routing tests
 
-Focused layout tests freeze the separation between routing-equivalent layout formats 4/5 and
-partition persistence formats 3/4/5. They cover checked derivation of the per-layout virtual-slot
+Focused layout tests freeze the separation between routing-equivalent integrated layout formats 4/5,
+the index-only format-6 mode fence, and partition persistence formats 3/4/5/6. They cover checked derivation of the per-layout virtual-slot
 count, the 262,144-slot cap, exact
 identity-placement equivalence for power-of-two and non-power-of-two initial partition counts, and
 defensive copying of persisted assignments. Fresh initialization and an exact version-3 adoption
 must each use one layout compare-and-swap. Migration rejects provider, initial partition count,
 journal-setting, or partially populated routing-field mismatches, and an ambiguous layout write
 poisons that activation. Existing version-4 and version-5 layouts are validated from their persisted
-exact slot count rather than recomputed from a later target seed.
+exact slot count rather than recomputed from a later target seed. Format-6 tests also prove that
+integrated and index-only identities cannot open each other's namespace and that null payloads are
+not confused with a valid empty integrated payload.
 
 Layout-cache and routed-client tests cover shared concurrent loads, caller-local cancellation,
 faulted and absent-layout reloads, conditional invalidation, and one shared refresh for concurrent
@@ -207,6 +209,14 @@ journal slot, and snapshot slot before exercising point, direct-index, and `IQue
 Its nested-plan case resolves the keyed `ISearchableStorageQueryClient` and dispatches the recursive
 `PartitionQueryPlan` through real Orleans grains. Every supported physical provider must run the
 same contract.
+
+Index-only acceptance is a separate capability contract rather than an `IGrainStorage` variant. It
+verifies DI capability isolation and coexistence under different provider keys, extraction from the
+same application `TState` without payload retention, replacement/removal/query behavior, missing
+remove success, last-arrival-wins ordering, ambiguous-ack retry convergence, schema bootstrap and
+incompatible-rebuild rejection, compaction/reactivation, and format-6 journal/snapshot/movement
+recovery. The application payload remains in an ordinary independent provider in the end-to-end
+grain case.
 
 The inherited journal contract also seeds a real format-3 record, performs the provider-wide schema
 upgrade to format 5, verifies the preserved ETag and hash/range results, compacts and reactivates the

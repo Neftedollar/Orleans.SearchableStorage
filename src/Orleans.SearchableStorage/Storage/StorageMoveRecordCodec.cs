@@ -16,7 +16,7 @@ internal sealed class StorageMoveStoredRecord
 {
     [Id(0)] public required byte[] GrainType { get; init; }
     [Id(1)] public required byte[] GrainKey { get; init; }
-    [Id(2)] public required byte[] Payload { get; init; }
+    [Id(2)] public byte[]? Payload { get; init; }
     [Id(3)] public required byte[] ETag { get; init; }
     [Id(4)] public required List<StorageMoveIndexEntry> IndexEntries { get; init; }
     [Id(5)] public byte[]? IndexSchemaFingerprint { get; init; }
@@ -142,7 +142,7 @@ internal static class StorageMoveRecordCodec
         {
             GrainType = record.GrainId.Type.AsSpan().ToArray(),
             GrainKey = record.GrainId.Key.AsSpan().ToArray(),
-            Payload = [.. record.Payload],
+            Payload = record.Payload is null ? null : [.. record.Payload],
             ETag = EncodeText(record.ETag),
             IndexEntries = record.IndexEntries.Select(Encode).ToList(),
             IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
@@ -177,7 +177,7 @@ internal static class StorageMoveRecordCodec
             GrainId = GrainId.Create(
                 new GrainType([.. record.GrainType]),
                 new IdSpan([.. record.GrainKey])),
-            Payload = [.. record.Payload],
+            Payload = record.Payload is null ? null : [.. record.Payload],
             ETag = DecodeText(record.ETag, nameof(record)),
             IndexEntries = record.IndexEntries.Select(Decode).ToList(),
             IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
@@ -215,7 +215,7 @@ internal static class StorageMoveRecordCodec
         {
             GrainType = [.. record.GrainType],
             GrainKey = [.. record.GrainKey],
-            Payload = [.. record.Payload],
+            Payload = record.Payload is null ? null : [.. record.Payload],
             ETag = [.. record.ETag],
             IndexEntries = record.IndexEntries.Select(Copy).ToList(),
             IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
@@ -237,7 +237,7 @@ internal static class StorageMoveRecordCodec
         var rightRecord = right.Record;
         if (!leftRecord.GrainType.AsSpan().SequenceEqual(rightRecord.GrainType)
             || !leftRecord.GrainKey.AsSpan().SequenceEqual(rightRecord.GrainKey)
-            || !leftRecord.Payload.AsSpan().SequenceEqual(rightRecord.Payload)
+            || !NullableBytesEqual(leftRecord.Payload, rightRecord.Payload)
             || !leftRecord.ETag.AsSpan().SequenceEqual(rightRecord.ETag)
             || !NullableBytesEqual(
                 leftRecord.IndexSchemaFingerprint,
@@ -287,7 +287,6 @@ internal static class StorageMoveRecordCodec
         ArgumentNullException.ThrowIfNull(record, parameterName);
         ArgumentNullException.ThrowIfNull(record.GrainType, parameterName);
         ArgumentNullException.ThrowIfNull(record.GrainKey, parameterName);
-        ArgumentNullException.ThrowIfNull(record.Payload, parameterName);
         ArgumentNullException.ThrowIfNull(record.ETag, parameterName);
         ArgumentNullException.ThrowIfNull(record.IndexEntries, parameterName);
         if (record.IndexSchemaFingerprint is { } fingerprint)

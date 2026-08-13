@@ -78,7 +78,7 @@ internal static class StorageJournalReplay
                     || entry.Record.IndexSchemaFingerprint is null
                     || !string.Equals(entry.Record.ETag, currentRecord.ETag, StringComparison.Ordinal)
                     || !entry.Record.GrainId.Equals(currentRecord.GrainId)
-                    || !entry.Record.Payload.AsSpan().SequenceEqual(currentRecord.Payload)
+                    || !NullablePayloadEquals(entry.Record.Payload, currentRecord.Payload)
                     || entry.NextVersionAfter != nextVersion)
                 {
                     throw new InvalidOperationException(
@@ -110,6 +110,13 @@ internal static class StorageJournalReplay
 
         nextVersion = entry.NextVersionAfter;
         operationId = entry.OperationId;
+    }
+
+    private static bool NullablePayloadEquals(byte[]? left, byte[]? right)
+    {
+        return left is null || right is null
+            ? left is null && right is null
+            : left.AsSpan().SequenceEqual(right);
     }
 
     private static void ApplyImport(

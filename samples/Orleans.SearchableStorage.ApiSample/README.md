@@ -1,5 +1,10 @@
 # API sample
 
+This sample demonstrates the integrated `AddSearchableGrainStorage`/`IPersistentState<T>` ownership
+model. It does not demonstrate the separate payload-free writer. See the repository
+[index-only guide](../../docs/index-only-mode.md) when application state must remain in another
+storage provider or database.
+
 This sample co-hosts an ASP.NET Core minimal API and one Orleans silo. It is intentionally a single process so the storage and query flow can be inspected without deploying a cluster.
 
 Run it from the repository root:

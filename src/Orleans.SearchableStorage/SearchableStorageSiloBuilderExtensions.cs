@@ -119,6 +119,9 @@ public static class SearchableStorageSiloBuilderExtensions
     /// <returns>The supplied silo builder.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The provider name is already registered in index-only mode.
+    /// </exception>
     public static ISiloBuilder AddSearchableGrainStorage(
         this ISiloBuilder builder,
         string providerName,
@@ -126,6 +129,30 @@ public static class SearchableStorageSiloBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.Services.AddSearchableGrainStorage(providerName, configure);
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds a named payload-free searchable index to an Orleans silo. Application state remains
+    /// in caller-owned storage and index mutations are issued through
+    /// <see cref="ISearchableStorageIndexWriter"/>.
+    /// </summary>
+    /// <param name="builder">The Orleans silo builder.</param>
+    /// <param name="providerName">The name used to resolve the keyed index services.</param>
+    /// <param name="configure">An optional provider configuration delegate.</param>
+    /// <returns>The supplied silo builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="builder"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The provider name is already registered in the payload-owning storage mode.
+    /// </exception>
+    public static ISiloBuilder AddSearchableIndex(
+        this ISiloBuilder builder,
+        string providerName,
+        Action<SearchableStorageOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        builder.Services.AddSearchableIndex(providerName, configure);
         return builder;
     }
 
@@ -138,6 +165,9 @@ public static class SearchableStorageSiloBuilderExtensions
     /// <returns>The supplied service collection.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="services"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The provider name is already registered in index-only mode.
+    /// </exception>
     public static IServiceCollection AddSearchableGrainStorage(
         this IServiceCollection services,
         string providerName,
@@ -146,11 +176,87 @@ public static class SearchableStorageSiloBuilderExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
 
+        AddSearchableProvider(
+            services,
+            providerName,
+            StorageNamespaceMode.Integrated,
+            configure);
+
+        services.AddTransient<
+            IPostConfigureOptions<SearchableStorageOptions>,
+            DefaultStorageProviderSerializerOptionsConfigurator<SearchableStorageOptions>>();
+
+        services.AddKeyedSingleton<IGrainStorage>(
+            providerName,
+            (serviceProvider, _) => SearchableGrainStorageFactory.Create(serviceProvider, providerName));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Adds a named payload-free searchable index to an Orleans service collection. The collection
+    /// can belong to a silo or an external Orleans client. This registration exposes keyed writer,
+    /// query, and administration services, but deliberately does not expose an
+    /// <see cref="IGrainStorage"/> provider.
+    /// </summary>
+    /// <param name="services">The silo or external Orleans-client service collection.</param>
+    /// <param name="providerName">The name used to resolve the keyed index services.</param>
+    /// <param name="configure">An optional provider configuration delegate.</param>
+    /// <returns>The supplied service collection.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="services"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The provider name is already registered in the payload-owning storage mode.
+    /// </exception>
+    public static IServiceCollection AddSearchableIndex(
+        this IServiceCollection services,
+        string providerName,
+        Action<SearchableStorageOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+
+        AddSearchableProvider(
+            services,
+            providerName,
+            StorageNamespaceMode.IndexOnly,
+            configure);
+
+        services.AddKeyedSingleton<ISearchableStorageIndexWriter>(
+            providerName,
+            (serviceProvider, _) =>
+            {
+                var configuredOptions = serviceProvider
+                    .GetRequiredService<IOptionsMonitor<SearchableStorageOptions>>()
+                    .Get(providerName);
+                return new SearchableStorageIndexWriter(
+                    providerName,
+                    configuredOptions,
+                    serviceProvider.GetRequiredService<IGrainFactory>(),
+                    serviceProvider.GetRequiredService<SearchableStateRegistry>(),
+                    serviceProvider.GetService<ILogger<SearchableStorageIndexWriter>>());
+            });
+
+        return services;
+    }
+
+    private static void AddSearchableProvider(
+        IServiceCollection services,
+        string providerName,
+        StorageNamespaceMode namespaceMode,
+        Action<SearchableStorageOptions>? configure)
+    {
+        EnsureCompatibleProviderRegistration(services, providerName, namespaceMode);
+
         var options = services.AddOptions<SearchableStorageOptions>(providerName);
         if (configure is not null)
         {
             options.Configure(configure);
         }
+
+        // Namespace mode is selected by the registration API rather than by a stringly-typed or
+        // user-configurable option. Keep it last so every resolution sees the authoritative mode.
+        options.Configure(value => value.NamespaceMode = namespaceMode);
 
         options
             .Validate(static value => value.PartitionCount > 0, "PartitionCount must be greater than zero.")
@@ -193,15 +299,8 @@ public static class SearchableStorageSiloBuilderExtensions
                 IValidateOptions<SearchableStorageOptions>,
                 Querying.SearchableStorageQueryOptionsValidator>());
 
-        services.AddTransient<
-            IPostConfigureOptions<SearchableStorageOptions>,
-            DefaultStorageProviderSerializerOptionsConfigurator<SearchableStorageOptions>>();
         services.TryAddSingleton<StorageLayoutCacheRegistry>();
         services.TryAddSingleton<SearchableStateRegistry>();
-
-        services.AddKeyedSingleton<IGrainStorage>(
-            providerName,
-            (serviceProvider, _) => SearchableGrainStorageFactory.Create(serviceProvider, providerName));
 
         services.AddKeyedSingleton<ISearchableStorageQueryClient>(
             providerName,
@@ -216,6 +315,7 @@ public static class SearchableStorageSiloBuilderExtensions
                     configuredOptions.PartitionCount,
                     configuredOptions.Query,
                     serviceProvider.GetRequiredService<SearchableStateRegistry>(),
+                    configuredOptions.NamespaceMode,
                     serviceProvider.GetService<ILogger<SearchableStorageClient>>());
             });
 
@@ -235,10 +335,41 @@ public static class SearchableStorageSiloBuilderExtensions
                     providerName,
                     configuredOptions.PartitionCount,
                     configuredOptions.Movement,
+                    configuredOptions.NamespaceMode,
                     serviceProvider.GetService<ILogger<SearchableStorageAdminClient>>());
             });
+    }
 
-        return services;
+    private static void EnsureCompatibleProviderRegistration(
+        IServiceCollection services,
+        string providerName,
+        StorageNamespaceMode namespaceMode)
+    {
+        var existing = services
+            .Where(static descriptor =>
+                descriptor.ServiceType == typeof(SearchableProviderRegistration))
+            .Select(static descriptor =>
+                descriptor.ImplementationInstance as SearchableProviderRegistration)
+            .FirstOrDefault(registration => registration is not null
+                && string.Equals(
+                    registration.ProviderName,
+                    providerName,
+                    StringComparison.Ordinal));
+        if (existing is not null)
+        {
+            if (existing.NamespaceMode != namespaceMode)
+            {
+                throw new InvalidOperationException(
+                    $"Searchable provider '{providerName}' is already registered in a different "
+                    + $"namespace mode ('{existing.NamespaceMode}'). A provider name cannot mix "
+                    + "payload-owning storage and an index-only namespace.");
+            }
+
+            return;
+        }
+
+        services.AddSingleton(
+            new SearchableProviderRegistration(providerName, namespaceMode));
     }
 
     private static bool IsJournalLayoutSupported(SearchableStorageOptions options)
@@ -291,6 +422,10 @@ public static class SearchableStorageSiloBuilderExtensions
             return false;
         }
     }
+
+    private sealed record SearchableProviderRegistration(
+        string ProviderName,
+        StorageNamespaceMode NamespaceMode);
 }
 
 internal static class SearchableGrainStorageFactory

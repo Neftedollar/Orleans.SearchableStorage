@@ -27,14 +27,21 @@ public sealed class StorageMovementWireContractTests
             (nameof(StorageWriteRequest.Persistence), 5),
             (nameof(StorageWriteRequest.IndexSchemaFingerprint), 6),
             (nameof(StorageWriteRequest.StateName), 7),
-            (nameof(StorageWriteRequest.IndexSchemaProtocolVersion), 8));
+            (nameof(StorageWriteRequest.IndexSchemaProtocolVersion), 8),
+            (nameof(StorageWriteRequest.Unconditional), 9));
         AssertExactFieldIds<StorageClearRequest>(
             (nameof(StorageClearRequest.RecordKey), 0),
             (nameof(StorageClearRequest.ExpectedETag), 1),
             (nameof(StorageClearRequest.Persistence), 2),
             (nameof(StorageClearRequest.StateName), 3),
             (nameof(StorageClearRequest.IndexSchemaFingerprint), 4),
-            (nameof(StorageClearRequest.IndexSchemaProtocolVersion), 5));
+            (nameof(StorageClearRequest.IndexSchemaProtocolVersion), 5),
+            (nameof(StorageClearRequest.Unconditional), 6));
+        AssertExactFieldIds<StoragePersistenceSettings>(
+            (nameof(StoragePersistenceSettings.JournalSegmentCapacity), 0),
+            (nameof(StoragePersistenceSettings.MaximumJournalReplayEntries), 1),
+            (nameof(StoragePersistenceSettings.CompactionThreshold), 2),
+            (nameof(StoragePersistenceSettings.NamespaceMode), 3));
         AssertExactFieldIds<StoragePartitionManifestState>(
             (nameof(StoragePartitionManifestState.Initialized), 0),
             (nameof(StoragePartitionManifestState.PersistenceFormatVersion), 1),
@@ -54,7 +61,8 @@ public sealed class StorageMovementWireContractTests
             (nameof(StoragePartitionManifestState.RoutedOperationsRequired), 15),
             (nameof(StoragePartitionManifestState.MinimumRoutingEpoch), 16),
             (nameof(StoragePartitionManifestState.MoveControl), 17),
-            (nameof(StoragePartitionManifestState.IndexSchemaProtocolVersion), 18));
+            (nameof(StoragePartitionManifestState.IndexSchemaProtocolVersion), 18),
+            (nameof(StoragePartitionManifestState.NamespaceMode), 19));
         AssertExactFieldIds<StoragePartitionMoveControl>(
             (nameof(StoragePartitionMoveControl.IsPresent), 0),
             (nameof(StoragePartitionMoveControl.MoveId), 1),
@@ -213,7 +221,8 @@ public sealed class StorageMovementWireContractTests
         StorageLayout.IndexSchemaFormatVersion.Should().Be(5);
         StorageLayout.AreRoutingFormatsCompatible(4, 5).Should().BeTrue();
         StorageLayout.AreRoutingFormatsCompatible(3, 3).Should().BeFalse();
-        StorageLayout.AreRoutingFormatsCompatible(6, 6).Should().BeFalse();
+        StorageLayout.AreRoutingFormatsCompatible(6, 6).Should().BeTrue();
+        StorageLayout.AreRoutingFormatsCompatible(5, 6).Should().BeFalse();
     }
 
     [Fact]
@@ -225,7 +234,8 @@ public sealed class StorageMovementWireContractTests
             (nameof(StoragePartitionProtocolRequest.MinimumRoutingEpoch), 2),
             (nameof(StoragePartitionProtocolRequest.JournalSegmentCapacity), 3),
             (nameof(StoragePartitionProtocolRequest.MaximumJournalReplayEntries), 4),
-            (nameof(StoragePartitionProtocolRequest.IndexSchemaProtocolVersion), 5));
+            (nameof(StoragePartitionProtocolRequest.IndexSchemaProtocolVersion), 5),
+            (nameof(StoragePartitionProtocolRequest.NamespaceMode), 6));
         AssertExactFieldIds<StoragePartitionProtocolState>(
             (nameof(StoragePartitionProtocolState.PersistenceFormatVersion), 0),
             (nameof(StoragePartitionProtocolState.MovementProtocolVersion), 1),
@@ -234,7 +244,8 @@ public sealed class StorageMovementWireContractTests
             (nameof(StoragePartitionProtocolState.CommittedSequence), 4),
             (nameof(StoragePartitionProtocolState.NextVersion), 5),
             (nameof(StoragePartitionProtocolState.MoveControl), 6),
-            (nameof(StoragePartitionProtocolState.IndexSchemaProtocolVersion), 7));
+            (nameof(StoragePartitionProtocolState.IndexSchemaProtocolVersion), 7),
+            (nameof(StoragePartitionProtocolState.NamespaceMode), 8));
         AssertExactFieldIds<StorageMoveIdentity>(
             (nameof(StorageMoveIdentity.ProtocolVersion), 0),
             (nameof(StorageMoveIdentity.MoveId), 1),

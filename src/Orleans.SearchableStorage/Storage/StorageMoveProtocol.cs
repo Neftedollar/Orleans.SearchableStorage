@@ -125,20 +125,19 @@ internal static class StorageMovePageDigest
     public static long GetEncodedByteCount(
         string recordKey,
         GrainId grainId,
-        byte[] payload,
+        byte[]? payload,
         string etag,
         IReadOnlyList<IndexEntry> indexEntries,
         byte[]? indexSchemaFingerprint)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
-        ArgumentNullException.ThrowIfNull(payload);
         ArgumentException.ThrowIfNullOrWhiteSpace(etag);
         ArgumentNullException.ThrowIfNull(indexEntries);
         return checked(
             GetTextEncodedByteCount(recordKey)
             + sizeof(int) + grainId.Type.AsSpan().Length
             + sizeof(int) + grainId.Key.AsSpan().Length
-            + sizeof(int) + payload.LongLength
+            + sizeof(int) + (payload?.LongLength ?? 0)
             + GetTextEncodedByteCount(etag)
             + sizeof(int)
             + indexEntries.Sum(GetIndexEntryEncodedByteCount)
@@ -154,7 +153,7 @@ internal static class StorageMovePageDigest
         return checked(
             sizeof(int) + record.GrainId.Type.AsSpan().Length
             + sizeof(int) + record.GrainId.Key.AsSpan().Length
-            + sizeof(int) + record.Payload.LongLength
+            + sizeof(int) + (record.Payload?.LongLength ?? 0)
             + GetTextEncodedByteCount(record.ETag)
             + sizeof(int)
             + record.IndexEntries.Sum(GetIndexEntryEncodedByteCount)
@@ -213,7 +212,7 @@ internal static class StorageMovePageDigest
         var total = checked(
             sizeof(int) + (long)record.GrainType.Length
             + sizeof(int) + (long)record.GrainKey.Length
-            + sizeof(int) + (long)record.Payload.Length
+            + sizeof(int) + (record.Payload?.LongLength ?? 0)
             + GetTextByteCount(record.ETag)
             + sizeof(int));
         foreach (var entry in record.IndexEntries)
@@ -289,7 +288,7 @@ internal static class StorageMovePageDigest
         StorageMoveRecordCodec.Validate(record, nameof(record));
         writer.WriteBytes(record.GrainType);
         writer.WriteBytes(record.GrainKey);
-        writer.WriteBytes(record.Payload);
+        writer.WriteNullableBytes(record.Payload);
         WriteText(writer, record.ETag);
         writer.WriteInt32(record.IndexEntries.Count);
         foreach (var entry in record.IndexEntries)
@@ -377,6 +376,19 @@ internal static class StorageMovePageDigest
         {
             WriteInt32(value.Length);
             WriteRawBytes(value);
+        }
+
+        public void WriteNullableBytes(byte[]? value)
+        {
+            if (value is null)
+            {
+                // Preserve the existing non-null encoding byte-for-byte while giving an absent
+                // payload a domain which cannot collide with a valid zero-byte payload.
+                WriteInt32(-1);
+                return;
+            }
+
+            WriteBytes(value);
         }
 
         public void WriteRawBytes(ReadOnlySpan<byte> value)
