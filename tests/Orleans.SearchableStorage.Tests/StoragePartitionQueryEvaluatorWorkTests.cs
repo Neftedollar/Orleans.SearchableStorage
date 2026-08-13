@@ -105,7 +105,7 @@ public sealed class StoragePartitionQueryEvaluatorWorkTests
                 Kind = SearchableIndexKind.Range,
                 Value = IndexValue.FromSignedInteger(2),
             });
-        var indexes = StoragePartitionIndexes.Build(
+        var indexes = StoragePartitionOrderedIndexes.Build(
             new Dictionary<string, StoredRecord>(StringComparer.Ordinal)
             {
                 ["duplicate"] = duplicate,
@@ -297,9 +297,9 @@ public sealed class StoragePartitionQueryEvaluatorWorkTests
         };
     }
 
-    private static StoragePartitionIndexes CreateIndexes()
+    private static StoragePartitionOrderedIndexes CreateIndexes()
     {
-        return StoragePartitionIndexes.Build(
+        return StoragePartitionOrderedIndexes.Build(
             new Dictionary<string, StoredRecord>(StringComparer.Ordinal)
             {
                 ["first"] = CreateRecord("first", "Helsinki", 1),

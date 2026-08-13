@@ -24,6 +24,7 @@ internal static class BenchmarkSelfTest
                 == "net10-server-smoke;serverGC=true;concurrentGC=true;nonComparableInProcessDryRun=true",
             "non-comparable BenchmarkDotNet smoke identity");
         ValidateIndexMutation();
+        ValidateRetainedMemoryV2Contract();
         ValidateRangeQuery();
         ValidateQueryPlanning();
         ValidateFacetEvaluation();
@@ -179,6 +180,73 @@ internal static class BenchmarkSelfTest
         };
         benchmark.GlobalSetup();
         Ensure(benchmark.BoundedRangeQuery() == benchmark.MatchCount, "bounded range lookup");
+    }
+
+    private static void ValidateRetainedMemoryV2Contract()
+    {
+        foreach (var indexCount in new[] { 4, 8 })
+        {
+            var diagnostics = RetainedMemoryProfileData.CaptureDeSharingDiagnostics(indexCount);
+            Ensure(
+                diagnostics.RecordCount == 2
+                && diagnostics.IndexCount == indexCount
+                && diagnostics.ScopesAreEqualByValueAndDistinctByReference
+                && diagnostics.CategoricalValuesAreEqualByValueAndDistinctByReference,
+                $"retained-memory de-shared profile ({indexCount} indexes)");
+        }
+
+        var options = RetainedMemoryV2CommandOptions.Parse(
+        [
+            "--retained-memory-v2",
+            "artifacts",
+            "--maximum-production-to-materializing-ratio-bps",
+            "6000",
+            "--quick",
+        ]);
+        Ensure(
+            options.ArtifactsDirectory == "artifacts"
+            && options.Quick
+            && options.MaximumProductionToMaterializingRatioBasisPoints == 6000,
+            "retained-memory v2 command options");
+
+        long[] materializing = [140, 100, 130, 110, 120];
+        long[] production = [90, 50, 80, 60, 70];
+        var measurement = BenchmarkEvidence.CreateRetainedMemoryV2Measurement(
+            4_096,
+            RetainedMemoryDatasetProfile.CompaniesHouseDeShared,
+            4,
+            materializing,
+            production);
+        Ensure(
+            measurement.MaterializingRawRetainedManagedBytes.SequenceEqual(materializing)
+            && measurement.ProductionRawRetainedManagedBytes.SequenceEqual(production)
+            && measurement.MaterializingMedianRetainedManagedBytes == 120
+            && measurement.ProductionMedianRetainedManagedBytes == 70
+            && measurement.ProductionToMaterializingRatioBasisPoints == 5_834,
+            "retained-memory v2 median and ceiling ratio");
+
+        var document = new RetainedMemoryV2Document(
+            SchemaVersion: "oss-retained-managed-memory/v2",
+            CapturedAtUtc: DateTimeOffset.UtcNow,
+            Quick: true,
+            MeasurementSemantics: "Self-test fixture.",
+            RatioBasisPointScale: BenchmarkEvidence.RetainedMemoryRatioBasisPointScale,
+            Gate: new RetainedMemoryV2Gate(6_000, Passed: true),
+            Measurements: [measurement]);
+        BenchmarkEvidence.ValidateRetainedMemoryV2Document(document);
+
+        var rejected = false;
+        try
+        {
+            BenchmarkEvidence.ValidateRetainedMemoryV2Document(
+                document with { Gate = document.Gate with { Passed = false } });
+        }
+        catch (InvalidDataException)
+        {
+            rejected = true;
+        }
+
+        Ensure(rejected, "retained-memory v2 tamper rejection");
     }
 
     private static void ValidateQueryPlanning()

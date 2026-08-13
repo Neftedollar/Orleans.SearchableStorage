@@ -10,13 +10,27 @@ namespace Orleans.SearchableStorage.Storage;
 /// </summary>
 internal sealed class StoragePartitionOrderedIndexes
 {
-    private static readonly OrderedGrainGroups EmptyGroups = new(isReadOnly: true);
+    private static readonly StoragePartitionRecordRefs EmptyRecordRefs =
+        StoragePartitionRecordRefs.Build(
+            new Dictionary<string, StoredRecord>(StringComparer.Ordinal));
+    private static readonly OrderedGrainGroups EmptyGroups =
+        new(EmptyRecordRefs, isReadOnly: true);
+    private readonly StoragePartitionRecordRefs _recordRefs;
+    private readonly bool _ownsRecordRefs;
     private readonly Dictionary<string, OrderedGrainGroups> _catalogs =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, OrderedRangeIndex> _hash =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, OrderedRangeIndex> _range =
         new(StringComparer.Ordinal);
+
+    private StoragePartitionOrderedIndexes(
+        StoragePartitionRecordRefs recordRefs,
+        bool ownsRecordRefs)
+    {
+        _recordRefs = recordRefs;
+        _ownsRecordRefs = ownsRecordRefs;
+    }
 
     internal static OrderedGrainGroups EmptyPosting => EmptyGroups;
 
@@ -25,9 +39,33 @@ internal sealed class StoragePartitionOrderedIndexes
     {
         ArgumentNullException.ThrowIfNull(records);
 
+        return BuildCore(records, StoragePartitionRecordRefs.Build(records), ownsRecordRefs: true);
+    }
+
+    public static StoragePartitionOrderedIndexes Build(
+        IReadOnlyDictionary<string, StoredRecord> records,
+        StoragePartitionRecordRefs recordRefs)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        ArgumentNullException.ThrowIfNull(recordRefs);
+
+        return BuildCore(records, recordRefs, ownsRecordRefs: false);
+    }
+
+    private static StoragePartitionOrderedIndexes BuildCore(
+        IReadOnlyDictionary<string, StoredRecord> records,
+        StoragePartitionRecordRefs recordRefs,
+        bool ownsRecordRefs)
+    {
+        if (recordRefs.Count != records.Count)
+        {
+            throw new InvalidOperationException(
+                "The activation-local record-reference table does not match the live record count.");
+        }
+
         // Every live insertion is logarithmic in its catalog/posting size. Reusing that path also
         // makes activation rebuild and incremental mutation exercise identical invariants.
-        var indexes = new StoragePartitionOrderedIndexes();
+        var indexes = new StoragePartitionOrderedIndexes(recordRefs, ownsRecordRefs);
         foreach (var pair in records)
         {
             indexes.AddRecord(pair.Key, pair.Value);
@@ -39,31 +77,67 @@ internal sealed class StoragePartitionOrderedIndexes
     public void AddRecord(string recordKey, StoredRecord record)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
-        StoragePartitionIndexes.ValidateRecord(record);
+        StoragePartitionIndexValidation.ValidateRecord(record);
+
+        if (!_recordRefs.TryGetRef(recordKey, out var recordRef))
+        {
+            if (!_ownsRecordRefs)
+            {
+                throw new InvalidOperationException(
+                    $"No activation-local record reference exists for '{recordKey}'.");
+            }
+
+            recordRef = _recordRefs.Add(recordKey, record);
+        }
+        else if (!ReferenceEquals(_recordRefs.GetRecord(recordRef), record))
+        {
+            throw new InvalidOperationException(
+                $"The activation-local record reference for '{recordKey}' identifies another record.");
+        }
 
         var stateName = GetStateName(recordKey);
         if (!_catalogs.TryGetValue(stateName, out var catalog))
         {
-            catalog = new OrderedGrainGroups();
+            catalog = new OrderedGrainGroups(_recordRefs);
             _catalogs.Add(stateName, catalog);
         }
 
-        catalog.Add(record.GrainId, recordKey);
-        foreach (var entry in record.IndexEntries)
+        catalog.Add(record.GrainId, recordRef);
+        for (var index = 0; index < record.IndexEntries.Count; index++)
         {
-            AddPostingEntry(entry, record.GrainId, recordKey);
+            var entry = record.IndexEntries[index];
+            var canonical = AddPostingEntry(entry, record.GrainId, recordRef);
+            var canonicalValue = HasExactDurableRepresentation(entry.Value, canonical.Value)
+                ? canonical.Value
+                : entry.Value;
+            if (!ReferenceEquals(entry.Scope, canonical.Scope)
+                || !ReferenceEquals(entry.Value, canonicalValue))
+            {
+                record.IndexEntries[index] = new IndexEntry
+                {
+                    Scope = canonical.Scope,
+                    Kind = entry.Kind,
+                    Value = canonicalValue,
+                };
+            }
         }
     }
 
     public void RemoveRecord(string recordKey, StoredRecord record)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
-        StoragePartitionIndexes.ValidateRecord(record);
+        StoragePartitionIndexValidation.ValidateRecord(record);
+        var recordRef = _recordRefs.GetRequiredRef(recordKey);
+        if (!ReferenceEquals(_recordRefs.GetRecord(recordRef), record))
+        {
+            throw new InvalidOperationException(
+                $"The activation-local record reference for '{recordKey}' identifies another record.");
+        }
 
         var stateName = GetStateName(recordKey);
         if (_catalogs.TryGetValue(stateName, out var catalog))
         {
-            catalog.Remove(record.GrainId, recordKey);
+            catalog.Remove(record.GrainId, recordRef);
             if (catalog.Count == 0)
             {
                 _catalogs.Remove(stateName);
@@ -72,7 +146,12 @@ internal sealed class StoragePartitionOrderedIndexes
 
         foreach (var entry in record.IndexEntries)
         {
-            RemovePostingEntry(entry, record.GrainId, recordKey);
+            RemovePostingEntry(entry, record.GrainId, recordRef);
+        }
+
+        if (_ownsRecordRefs)
+        {
+            _recordRefs.Remove(recordKey, record);
         }
     }
 
@@ -135,6 +214,103 @@ internal sealed class StoragePartitionOrderedIndexes
         };
     }
 
+    /// <summary>
+    /// Materializes one exact posting as activation-local record references. The returned set is
+    /// caller-owned and can be changed by legacy Boolean evaluation.
+    /// </summary>
+    public HashSet<int> FindExactRecordRefs(
+        string scope,
+        SearchableIndexKind kind,
+        IndexValue value)
+    {
+        var posting = GetExactPosting(scope, kind, value);
+        var result = new HashSet<int>();
+        result.UnionWith(posting.EnumerateRecordRefs());
+        return result;
+    }
+
+    public HashSet<string> ResolveRecordKeys(IEnumerable<int> recordRefs)
+    {
+        ArgumentNullException.ThrowIfNull(recordRefs);
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var recordRef in recordRefs)
+        {
+            result.Add(_recordRefs.GetRecordKey(recordRef));
+        }
+
+        return result;
+    }
+
+    public void UnionRangeRecordRefs(
+        string scope,
+        IndexValue? lowerBound,
+        IndexValue? upperBound,
+        bool includeLowerBound,
+        bool includeUpperBound,
+        HashSet<int> destination)
+    {
+        var work = default(NoPartitionQueryWorkSink);
+        UnionRangeRecordRefs(
+            scope,
+            lowerBound,
+            upperBound,
+            includeLowerBound,
+            includeUpperBound,
+            destination,
+            ref work);
+    }
+
+    internal void UnionRangeRecordRefs<TWorkSink>(
+        string scope,
+        IndexValue? lowerBound,
+        IndexValue? upperBound,
+        bool includeLowerBound,
+        bool includeUpperBound,
+        HashSet<int> destination,
+        ref TWorkSink work)
+        where TWorkSink : struct, IPartitionQueryWorkSink
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentNullException.ThrowIfNull(destination);
+        if (lowerBound is not null
+            && upperBound is not null
+            && lowerBound.CompareTo(upperBound) > 0)
+        {
+            throw new ArgumentException(
+                "The lower range bound must not be greater than the upper range bound.",
+                nameof(lowerBound));
+        }
+
+        if (!_range.TryGetValue(scope, out var range))
+        {
+            return;
+        }
+
+        using var cursor = range.CreateCursor(lowerBound, upperBound);
+        while (cursor.HasCurrent)
+        {
+            if (!cursor.TakeCurrentAndAdvance(out var bucket))
+            {
+                throw new InvalidOperationException(
+                    "An ordered range cursor lost its prefetched bucket.");
+            }
+
+            if ((lowerBound is not null
+                    && !includeLowerBound
+                    && bucket.Value.CompareTo(lowerBound) == 0)
+                || (upperBound is not null
+                    && !includeUpperBound
+                    && bucket.Value.CompareTo(upperBound) == 0))
+            {
+                work.RecordRangeBucket(candidateCount: 0);
+                continue;
+            }
+
+            work.RecordRangeBucket(bucket.Posting.RecordCount);
+            destination.UnionWith(bucket.Posting.EnumerateRecordRefs());
+        }
+    }
+
     public OrderedRangeBucketSelection CreateRangeBucketCursor(
         string scope,
         IndexValue? lowerBound,
@@ -151,28 +327,29 @@ internal sealed class StoragePartitionOrderedIndexes
             range.CreateCursor(lowerBound, upperBound));
     }
 
-    private void AddPostingEntry(IndexEntry entry, GrainId grainId, string recordKey)
+    private (string Scope, IndexValue Value) AddPostingEntry(
+        IndexEntry entry,
+        GrainId grainId,
+        int recordRef)
     {
         switch (entry.Kind)
         {
             case SearchableIndexKind.Hash:
                 if (!_hash.TryGetValue(entry.Scope, out var hash))
                 {
-                    hash = new OrderedRangeIndex();
-                    _hash.Add(entry.Scope, hash);
+                    hash = new OrderedRangeIndex(entry.Scope, _recordRefs);
+                    _hash.Add(hash.Scope, hash);
                 }
 
-                hash.Add(entry.Value, grainId, recordKey);
-                return;
+                return (hash.Scope, hash.Add(entry.Value, grainId, recordRef));
             case SearchableIndexKind.Range:
                 if (!_range.TryGetValue(entry.Scope, out var range))
                 {
-                    range = new OrderedRangeIndex();
-                    _range.Add(entry.Scope, range);
+                    range = new OrderedRangeIndex(entry.Scope, _recordRefs);
+                    _range.Add(range.Scope, range);
                 }
 
-                range.Add(entry.Value, grainId, recordKey);
-                return;
+                return (range.Scope, range.Add(entry.Value, grainId, recordRef));
             default:
                 throw new InvalidOperationException($"Unknown index kind '{entry.Kind}'.");
         }
@@ -181,7 +358,7 @@ internal sealed class StoragePartitionOrderedIndexes
     private void RemovePostingEntry(
         IndexEntry entry,
         GrainId grainId,
-        string recordKey)
+        int recordRef)
     {
         switch (entry.Kind)
         {
@@ -192,7 +369,7 @@ internal sealed class StoragePartitionOrderedIndexes
                     return;
                 }
 
-                hash.Remove(entry.Value, grainId, recordKey);
+                hash.Remove(entry.Value, grainId, recordRef);
 
                 if (hash.Count == 0)
                 {
@@ -206,7 +383,7 @@ internal sealed class StoragePartitionOrderedIndexes
                     return;
                 }
 
-                range.Remove(entry.Value, grainId, recordKey);
+                range.Remove(entry.Value, grainId, recordRef);
                 if (range.Count == 0)
                 {
                     _range.Remove(entry.Scope);
@@ -232,6 +409,24 @@ internal sealed class StoragePartitionOrderedIndexes
         var typeSeparator = recordKey.LastIndexOf('/', keySeparator - 1);
         return typeSeparator > 0 ? recordKey[..typeSeparator] : string.Empty;
     }
+
+    private static bool HasExactDurableRepresentation(IndexValue left, IndexValue right)
+    {
+        Span<int> leftDecimalBits = stackalloc int[4];
+        Span<int> rightDecimalBits = stackalloc int[4];
+        decimal.GetBits(left.Decimal, leftDecimalBits);
+        decimal.GetBits(right.Decimal, rightDecimalBits);
+        return left.Kind == right.Kind
+            && string.Equals(left.Text, right.Text, StringComparison.Ordinal)
+            && left.SignedInteger == right.SignedInteger
+            && left.UnsignedInteger == right.UnsignedInteger
+            && leftDecimalBits.SequenceEqual(rightDecimalBits)
+            && BitConverter.DoubleToInt64Bits(left.FloatingPoint)
+                == BitConverter.DoubleToInt64Bits(right.FloatingPoint)
+            && left.UtcTicks == right.UtcTicks
+            && left.Guid == right.Guid
+            && left.Boolean == right.Boolean;
+    }
 }
 
 /// <summary>
@@ -241,11 +436,16 @@ internal sealed class StoragePartitionOrderedIndexes
 internal sealed class OrderedGrainGroups
 {
     private readonly SortedSet<OrderedGrainGroup> _groups = new(OrderedGrainGroupComparer.Instance);
+    private readonly StoragePartitionRecordRefs _recordRefs;
     private readonly bool _isReadOnly;
     private int _recordCount;
 
-    public OrderedGrainGroups(bool isReadOnly = false)
+    public OrderedGrainGroups(
+        StoragePartitionRecordRefs recordRefs,
+        bool isReadOnly = false)
     {
+        ArgumentNullException.ThrowIfNull(recordRefs);
+        _recordRefs = recordRefs;
         _isReadOnly = isReadOnly;
     }
 
@@ -253,10 +453,10 @@ internal sealed class OrderedGrainGroups
 
     public int RecordCount => _recordCount;
 
-    public void Add(GrainId grainId, string recordKey)
+    public void Add(GrainId grainId, int recordRef)
     {
         EnsureMutable();
-        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        _ = _recordRefs.GetRecord(recordRef);
 
         var candidate = new OrderedGrainGroup(grainId);
         if (!_groups.TryGetValue(candidate, out var group))
@@ -265,16 +465,16 @@ internal sealed class OrderedGrainGroups
             _groups.Add(group);
         }
 
-        if (group.RecordKeys.Add(recordKey))
+        if (group.AddRecordRef(recordRef, _recordRefs.RecordKeyComparer))
         {
             _recordCount = checked(_recordCount + 1);
         }
     }
 
-    public void Remove(GrainId grainId, string recordKey)
+    public void Remove(GrainId grainId, int recordRef)
     {
         EnsureMutable();
-        ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
+        _ = _recordRefs.GetRecord(recordRef);
 
         var candidate = new OrderedGrainGroup(grainId);
         if (!_groups.TryGetValue(candidate, out var group))
@@ -282,28 +482,53 @@ internal sealed class OrderedGrainGroups
             return;
         }
 
-        if (!group.RecordKeys.Remove(recordKey))
+        if (!group.RemoveRecordRef(recordRef))
         {
             return;
         }
 
         _recordCount--;
-        if (group.RecordKeys.Count == 0)
+        if (group.RecordRefCount == 0)
         {
             _groups.Remove(group);
         }
     }
 
-    public bool TryGetRecordKeys(GrainId grainId, out IReadOnlyCollection<string> recordKeys)
+    public bool TryGetRecordRefs(
+        GrainId grainId,
+        out OrderedRecordRefCollection recordRefs)
     {
         if (_groups.TryGetValue(new OrderedGrainGroup(grainId), out var group))
         {
-            recordKeys = group.RecordKeys;
+            recordRefs = group.RecordRefs;
+            return true;
+        }
+
+        recordRefs = default;
+        return false;
+    }
+
+    public bool TryGetRecordKeys(GrainId grainId, out IReadOnlyCollection<string> recordKeys)
+    {
+        if (TryGetRecordRefs(grainId, out var refs))
+        {
+            recordKeys = _recordRefs.ResolveRecordKeys(refs);
             return true;
         }
 
         recordKeys = Array.Empty<string>();
         return false;
+    }
+
+    public IEnumerable<int> EnumerateRecordRefs()
+    {
+        foreach (var group in _groups)
+        {
+            foreach (var recordRef in group.RecordRefs)
+            {
+                yield return recordRef;
+            }
+        }
     }
 
     public OrderedGrainGroupCursor CreateCursorAfter(bool hasAfter, GrainId after)
@@ -398,6 +623,10 @@ internal sealed class OrderedGrainGroupCursor : IDisposable
 
 internal sealed class OrderedGrainGroup
 {
+    private const int NoRecordRef = -1;
+    private int _singleRecordRef = NoRecordRef;
+    private SortedSet<int>? _multipleRecordRefs;
+
     public OrderedGrainGroup(GrainId grainId)
     {
         GrainId = grainId;
@@ -405,7 +634,157 @@ internal sealed class OrderedGrainGroup
 
     public GrainId GrainId { get; }
 
-    public SortedSet<string> RecordKeys { get; } = new(StringComparer.Ordinal);
+    public int RecordRefCount => _multipleRecordRefs?.Count
+        ?? (_singleRecordRef == NoRecordRef ? 0 : 1);
+
+    public OrderedRecordRefCollection RecordRefs => new(this);
+
+    internal int SingleRecordRef => _singleRecordRef;
+
+    internal SortedSet<int>? MultipleRecordRefs => _multipleRecordRefs;
+
+    public bool AddRecordRef(int recordRef, IComparer<int> recordKeyComparer)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(recordRef);
+        ArgumentNullException.ThrowIfNull(recordKeyComparer);
+        if (_multipleRecordRefs is not null)
+        {
+            return _multipleRecordRefs.Add(recordRef);
+        }
+
+        if (_singleRecordRef == recordRef)
+        {
+            return false;
+        }
+
+        if (_singleRecordRef == NoRecordRef)
+        {
+            _singleRecordRef = recordRef;
+            return true;
+        }
+
+        var multiple = new SortedSet<int>(recordKeyComparer)
+        {
+            _singleRecordRef,
+        };
+        if (!multiple.Add(recordRef))
+        {
+            throw new InvalidOperationException(
+                "Distinct record references compared as the same durable record key.");
+        }
+
+        _singleRecordRef = NoRecordRef;
+        _multipleRecordRefs = multiple;
+        return true;
+    }
+
+    public bool RemoveRecordRef(int recordRef)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(recordRef);
+        if (_multipleRecordRefs is null)
+        {
+            if (_singleRecordRef != recordRef)
+            {
+                return false;
+            }
+
+            _singleRecordRef = NoRecordRef;
+            return true;
+        }
+
+        if (!_multipleRecordRefs.Remove(recordRef))
+        {
+            return false;
+        }
+
+        if (_multipleRecordRefs.Count == 1)
+        {
+            _singleRecordRef = _multipleRecordRefs.Min;
+            _multipleRecordRefs = null;
+        }
+
+        return true;
+    }
+}
+
+/// <summary>
+/// Allocation-free view over the inline singleton or rare ordered overflow references in one
+/// canonical GrainId group.
+/// </summary>
+internal readonly struct OrderedRecordRefCollection : IReadOnlyCollection<int>
+{
+    private readonly OrderedGrainGroup? _group;
+
+    public OrderedRecordRefCollection(OrderedGrainGroup group)
+    {
+        ArgumentNullException.ThrowIfNull(group);
+        _group = group;
+    }
+
+    public int Count => _group?.RecordRefCount ?? 0;
+
+    public Enumerator GetEnumerator() => new(_group);
+
+    IEnumerator<int> IEnumerable<int>.GetEnumerator() => GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+        GetEnumerator();
+
+    internal struct Enumerator : IEnumerator<int>
+    {
+        private readonly bool _usesMultiple;
+        private readonly int _singleRecordRef;
+        private bool _singlePending;
+        private SortedSet<int>.Enumerator _multiple;
+
+        public Enumerator(OrderedGrainGroup? group)
+        {
+            if (group?.MultipleRecordRefs is { } multiple)
+            {
+                _usesMultiple = true;
+                _singleRecordRef = -1;
+                _singlePending = false;
+                _multiple = multiple.GetEnumerator();
+            }
+            else
+            {
+                _usesMultiple = false;
+                _singleRecordRef = group?.SingleRecordRef ?? -1;
+                _singlePending = _singleRecordRef >= 0;
+                _multiple = default;
+            }
+        }
+
+        public int Current => _usesMultiple ? _multiple.Current : _singleRecordRef;
+
+        object System.Collections.IEnumerator.Current => Current;
+
+        public bool MoveNext()
+        {
+            if (_usesMultiple)
+            {
+                return _multiple.MoveNext();
+            }
+
+            if (!_singlePending)
+            {
+                return false;
+            }
+
+            _singlePending = false;
+            return true;
+        }
+
+        public void Reset() => throw new NotSupportedException();
+
+        public void Dispose()
+        {
+            if (_usesMultiple)
+            {
+                _multiple.Dispose();
+            }
+        }
+    }
 }
 
 internal sealed class OrderedGrainGroupComparer : IComparer<OrderedGrainGroup>
@@ -439,8 +818,21 @@ internal readonly record struct OrderedRangeBucketSelection(
 
 internal sealed class OrderedRangeIndex
 {
+    private readonly StoragePartitionRecordRefs _recordRefs;
     private readonly SortedSet<OrderedRangeBucket> _buckets =
         new(OrderedRangeBucketComparer.Instance);
+
+    public OrderedRangeIndex(
+        string scope,
+        StoragePartitionRecordRefs recordRefs)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentNullException.ThrowIfNull(recordRefs);
+        Scope = scope;
+        _recordRefs = recordRefs;
+    }
+
+    public string Scope { get; }
 
     public int Count => _buckets.Count;
 
@@ -454,32 +846,34 @@ internal sealed class OrderedRangeIndex
             : StoragePartitionOrderedIndexes.EmptyPosting;
     }
 
-    public OrderedGrainGroups GetOrAddPosting(IndexValue value)
+    private OrderedRangeBucket GetOrAddBucket(IndexValue value)
     {
         ArgumentNullException.ThrowIfNull(value);
         var candidate = new OrderedRangeBucket(value);
         if (!_buckets.TryGetValue(candidate, out var bucket))
         {
-            bucket = candidate;
+            bucket = new OrderedRangeBucket(value, _recordRefs);
             _buckets.Add(bucket);
         }
 
-        return bucket.Posting;
+        return bucket;
     }
 
-    public void Add(IndexValue value, GrainId grainId, string recordKey)
+    public IndexValue Add(IndexValue value, GrainId grainId, int recordRef)
     {
-        var posting = GetOrAddPosting(value);
+        var bucket = GetOrAddBucket(value);
+        var posting = bucket.Posting;
         var before = posting.RecordCount;
-        posting.Add(grainId, recordKey);
+        posting.Add(grainId, recordRef);
         if (posting.RecordCount != before)
         {
             TotalRecordCount = checked(TotalRecordCount + 1);
         }
 
+        return bucket.Value;
     }
 
-    public void Remove(IndexValue value, GrainId grainId, string recordKey)
+    public void Remove(IndexValue value, GrainId grainId, int recordRef)
     {
         ArgumentNullException.ThrowIfNull(value);
         if (!_buckets.TryGetValue(new OrderedRangeBucket(value), out var bucket))
@@ -488,7 +882,7 @@ internal sealed class OrderedRangeIndex
         }
 
         var before = bucket.Posting.RecordCount;
-        bucket.Posting.Remove(grainId, recordKey);
+        bucket.Posting.Remove(grainId, recordRef);
         if (bucket.Posting.RecordCount != before)
         {
             TotalRecordCount--;
@@ -606,15 +1000,27 @@ internal sealed class OrderedRangeBucketCursor : IDisposable
 
 internal sealed class OrderedRangeBucket
 {
+    private readonly OrderedGrainGroups? _posting;
+
     public OrderedRangeBucket(IndexValue value)
     {
         ArgumentNullException.ThrowIfNull(value);
         Value = value;
     }
 
+    public OrderedRangeBucket(
+        IndexValue value,
+        StoragePartitionRecordRefs recordRefs)
+        : this(value)
+    {
+        ArgumentNullException.ThrowIfNull(recordRefs);
+        _posting = new OrderedGrainGroups(recordRefs);
+    }
+
     public IndexValue Value { get; }
 
-    public OrderedGrainGroups Posting { get; } = new();
+    public OrderedGrainGroups Posting => _posting
+        ?? throw new InvalidOperationException("A range search key has no posting.");
 }
 
 internal sealed class OrderedRangeBucketComparer : IComparer<OrderedRangeBucket>

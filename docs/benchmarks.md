@@ -20,7 +20,7 @@ result-supplied profile or declaring more records/silos cannot create qualificat
 serialization costs. Its cases invoke the same internal production helpers as the storage grains:
 
 - incremental hash/range index mutation and bounded range lookup;
-- activation rebuild of the materializing indexes and the production additive ordered view;
+- activation rebuild of the materializing-only comparison and the compact production ordered view;
 - steady indexed mutation for production-shaped `state/type-hex/key-hex` record keys across unique
   and low-cardinality index distributions;
 - expression translation, wire-plan construction, and partition boolean-plan evaluation;
@@ -148,8 +148,9 @@ independently verifies the full ordered result sequence, not only its count. The
 is `oss-query-work-matrix/v2`.
 
 Measure retained managed memory after a forced full compacting collection. Each data point is the
-median of three fresh worker processes; the input records exist before the baseline, so the delta is
-the derived representation retained by the activation:
+median of three fresh worker processes. Input records exist before the baseline, so this is the net
+live delta after constructing the selected representation. A representation may replace equal
+references inside those records; the result is not an independently allocated-container size:
 
 ```bash
 dotnet run --project benchmarks/Orleans.SearchableStorage.Benchmarks \
@@ -163,6 +164,48 @@ working set. Both evidence commands write commit/runtime provenance with
 `ExecutionMode=DeterministicEvidence` beside their JSON. `JobIdentity` records the declared runtime/GC
 configuration for reproducibility; the execution mode makes explicit that these manual evaluators
 and isolated child processes did not execute the BenchmarkDotNet job.
+
+For a production-view comparison using a company-register-shaped fixture, generate the version-2
+retained-memory document separately:
+
+```bash
+dotnet run --project benchmarks/Orleans.SearchableStorage.Benchmarks \
+  --configuration Release -- --retained-memory-v2 artifacts/query-evidence --quick
+```
+
+The quick profile creates 4,096 records with four indexes; omitting `--quick` also measures 65,536
+records and expands the fixture to eight indexes. Scope strings and equal categorical values have
+equal contents but deliberately distinct object references, as independently recovered records
+would. Each representation is sampled in five fresh worker processes. Unlike the version-1 net
+pre-build delta, each version-2 delta contains the retained `StoredRecord` graph plus the selected
+derived representation. The compact production result therefore includes the real memory effect of
+canonicalizing `Scope` and losslessly identical `IndexValue` references in those records. Both sides
+exclude the optional virtual-slot catalog, so this isolates the record-plus-query-index graph rather
+than claiming the complete memory of a routed partition activation.
+
+`retained-memory-v2.json` preserves all five raw samples in capture order, both medians, and the
+ceiling of `production / materializing` in basis points (`10,000` means `1.0x`).
+`MaterializingHashSets` is only a structurally lower, materializing-only comparator: it is not a
+clone of the former complete production view and the document must not be presented as a historical
+old-production/new-production ratio. The probe also excludes native memory, allocator fragmentation,
+process working set, and separately activated snapshot/journal child-grain state.
+
+No ratio threshold is built into the executable. The pull-request quick gate explicitly freezes
+`6,000` basis points (`0.60x`): the reviewed compact implementation measured `5,187` basis points in
+the quick profile and no more than `4,443` basis points in the full matrix, leaving margin without
+turning runtime-dependent byte totals into an absolute unit-test threshold. For an equivalent local
+gate, pass the frozen limit explicitly:
+
+```bash
+dotnet run --project benchmarks/Orleans.SearchableStorage.Benchmarks \
+  --configuration Release -- --retained-memory-v2 artifacts/query-evidence --quick \
+  --maximum-production-to-materializing-ratio-bps 6000
+```
+
+The command writes the complete evidence document before returning failure when a supplied limit is
+exceeded, so the rejected raw samples remain available for diagnosis. The schema validator
+recomputes medians, ceiling ratios, and gate status from the raw arrays; no machine-sensitive
+absolute-byte threshold is inferred by unit tests.
 
 Validate or execute a committed scenario:
 
@@ -307,8 +350,8 @@ charged catalog fallback. The full matrix and focused self-test now assert that 
 performs range-merge work, and performs no catalog-candidate advances. This is evidence of the
 selected-window path, not an inference from result count.
 
-`DerivedIndexBuildBenchmarks` compares the old materializing indexes with the production additive
-`StoragePartitionView` (materializing plus ordered indexes). `IndexMutationBenchmarks` makes the same
+`DerivedIndexBuildBenchmarks` compares the old materializing-only indexes with the production
+compact ordered `StoragePartitionView`. `IndexMutationBenchmarks` makes the same
 comparison for replacement and delete/restore work using real stored-key structure. Both cover a
 unique range distribution and a hot/low-cardinality distribution. MemoryDiagnoser reports transient
 allocation; the isolated retained-memory document reports the live managed delta. This comparison

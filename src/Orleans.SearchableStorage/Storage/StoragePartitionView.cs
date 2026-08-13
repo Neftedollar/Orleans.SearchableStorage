@@ -14,8 +14,8 @@ internal sealed class StoragePartitionView
         ArgumentNullException.ThrowIfNull(records);
         Records = records;
         _capacity = new StorageCapacityTracker(records);
-        Indexes = StoragePartitionIndexes.Build(records);
-        OrderedIndexes = StoragePartitionOrderedIndexes.Build(records);
+        RecordRefs = StoragePartitionRecordRefs.Build(records);
+        OrderedIndexes = StoragePartitionOrderedIndexes.Build(records, RecordRefs);
         SlotCatalog = virtualSlotCount is null
             ? null
             : new StoragePartitionSlotCatalog(records, virtualSlotCount.Value);
@@ -23,7 +23,7 @@ internal sealed class StoragePartitionView
 
     public Dictionary<string, StoredRecord> Records { get; }
 
-    public StoragePartitionIndexes Indexes { get; }
+    public StoragePartitionRecordRefs RecordRefs { get; }
 
     public StoragePartitionOrderedIndexes OrderedIndexes { get; }
 
@@ -52,12 +52,15 @@ internal sealed class StoragePartitionView
 
         if (Records.TryGetValue(recordKey, out var current))
         {
-            Indexes.RemoveRecord(recordKey, current);
             OrderedIndexes.RemoveRecord(recordKey, current);
             SlotCatalog?.Remove(recordKey, current);
+            RecordRefs.Update(recordKey, record);
+        }
+        else
+        {
+            RecordRefs.Add(recordKey, record);
         }
 
-        Indexes.AddRecord(recordKey, record);
         OrderedIndexes.AddRecord(recordKey, record);
         SlotCatalog?.Add(recordKey, record);
         _capacity.ApplyUpsert(Records, recordKey, record);
@@ -72,9 +75,9 @@ internal sealed class StoragePartitionView
             return;
         }
 
-        Indexes.RemoveRecord(recordKey, current);
         OrderedIndexes.RemoveRecord(recordKey, current);
         SlotCatalog?.Remove(recordKey, current);
+        RecordRefs.Remove(recordKey, current);
         _capacity.ApplyDelete(Records, recordKey);
         Records.Remove(recordKey);
     }

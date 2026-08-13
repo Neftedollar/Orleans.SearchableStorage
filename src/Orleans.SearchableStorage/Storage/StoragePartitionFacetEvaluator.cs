@@ -285,20 +285,16 @@ internal static class StoragePartitionFacetEvaluator
             long groupDelta = 0;
             var slot = StorageLayout.GetSlot(grainId, routing.VirtualSlotCount);
             if (routing.GetOwner(slot) == partitionIndex
-                && posting.TryGetRecordKeys(grainId, out var recordKeys))
+                && posting.TryGetRecordRefs(grainId, out var recordRefs))
             {
-                foreach (var recordKey in recordKeys)
+                foreach (var recordRef in recordRefs)
                 {
                     if (!work.TryRecordRecordProbe())
                     {
                         return StopForWork();
                     }
 
-                    if (!view.Records.TryGetValue(recordKey, out var record))
-                    {
-                        throw new InvalidOperationException(
-                            $"The facet posting references missing record '{recordKey}'.");
-                    }
+                    var record = view.RecordRefs.GetRecord(recordRef);
 
                     var predicate = EvaluateRecord(request.Query, record, ref work);
                     if (!predicate.Completed)

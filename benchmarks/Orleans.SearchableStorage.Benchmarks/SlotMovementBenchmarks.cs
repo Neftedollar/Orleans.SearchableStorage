@@ -466,14 +466,7 @@ public class SlotMovementBenchmarks
 
         foreach (var entry in record.IndexEntries)
         {
-            var materialized = entry.Kind switch
-            {
-                SearchableIndexKind.Hash => view.Indexes.FindHashEntries(entry.Scope, entry.Value),
-                SearchableIndexKind.Range => view.Indexes.FindRangeEntries(entry.Scope, entry.Value),
-                _ => throw new InvalidOperationException($"Unknown index kind '{entry.Kind}'."),
-            };
-            if (!materialized.Contains(recordKey)
-                || !view.OrderedIndexes.GetExactPosting(entry.Scope, entry.Kind, entry.Value)
+            if (!view.OrderedIndexes.GetExactPosting(entry.Scope, entry.Kind, entry.Value)
                     .TryGetRecordKeys(record.GrainId, out var orderedKeys)
                 || !orderedKeys.Contains(recordKey, StringComparer.Ordinal))
             {
@@ -498,14 +491,7 @@ public class SlotMovementBenchmarks
 
         foreach (var entry in record.IndexEntries)
         {
-            var materialized = entry.Kind switch
-            {
-                SearchableIndexKind.Hash => view.Indexes.FindHashEntries(entry.Scope, entry.Value),
-                SearchableIndexKind.Range => view.Indexes.FindRangeEntries(entry.Scope, entry.Value),
-                _ => throw new InvalidOperationException($"Unknown index kind '{entry.Kind}'."),
-            };
-            if (materialized.Contains(recordKey)
-                || view.OrderedIndexes.GetExactPosting(entry.Scope, entry.Kind, entry.Value)
+            if (view.OrderedIndexes.GetExactPosting(entry.Scope, entry.Kind, entry.Value)
                     .TryGetRecordKeys(record.GrainId, out var orderedKeys)
                 && orderedKeys.Contains(recordKey, StringComparer.Ordinal))
             {

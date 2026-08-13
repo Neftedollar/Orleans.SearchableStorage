@@ -179,7 +179,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 ? null
                 : [.. request.IndexSchemaFingerprint],
         })!;
-        StoragePartitionIndexes.ValidateRecord(storedRecord);
+        StoragePartitionIndexValidation.ValidateRecord(storedRecord);
         _view.ValidateProjectedUpsert(request.RecordKey, storedRecord);
 
         var validationEntry = CreateMutationJournalValidationEntry(
@@ -421,7 +421,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                     IndexEntries = [.. indexes],
                     IndexSchemaFingerprint = [.. request.TargetFingerprint],
                 };
-                StoragePartitionIndexes.ValidateRecord(replacement);
+                StoragePartitionIndexValidation.ValidateRecord(replacement);
                 _view.ValidateProjectedUpsert(recordKey, replacement);
                 var validationEntry = CreateMutationJournalValidationEntry(
                     StorageJournalOperation.Reindex,
@@ -577,7 +577,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ArgumentNullException.ThrowIfNull(query);
         // StoragePartitionGrain is non-reentrant. Evaluating the complete plan synchronously in
         // this call gives AND and OR one serially consistent partition-local view.
-        var recordKeys = StoragePartitionQueryEvaluator.Evaluate(query, _view.Indexes);
+        var recordKeys = StoragePartitionQueryEvaluator.Evaluate(query, _view.OrderedIndexes);
         return Task.FromResult(ResolveGrainIds(recordKeys));
     }
 
@@ -597,7 +597,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         // Ownership filtering is part of the same non-reentrant call as plan evaluation, so the
         // result cannot mix two activation-local record views.
         return ResolveGrainIds(
-            StoragePartitionQueryEvaluator.EvaluateValidated(query.Query, _view.Indexes),
+            StoragePartitionQueryEvaluator.EvaluateValidated(query.Query, _view.OrderedIndexes),
             snapshot);
     }
 
@@ -1259,12 +1259,8 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 
     private HashSet<string> FindRecordKeys(ExactIndexQuery query)
     {
-        return query.Kind switch
-        {
-            SearchableIndexKind.Hash => _view.Indexes.FindHashEntries(query.Scope, query.Value),
-            SearchableIndexKind.Range => _view.Indexes.FindRangeEntries(query.Scope, query.Value),
-            _ => throw new ArgumentOutOfRangeException(nameof(query), query.Kind, "Unknown index kind."),
-        };
+        return _view.OrderedIndexes.ResolveRecordKeys(
+            _view.OrderedIndexes.FindExactRecordRefs(query.Scope, query.Kind, query.Value));
     }
 
     private HashSet<string> FindRangeRecordKeys(RangeIndexQuery query)
@@ -1283,15 +1279,15 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 nameof(query));
         }
 
-        var recordKeys = new HashSet<string>(StringComparer.Ordinal);
-        _view.Indexes.UnionRange(
+        var recordRefs = new HashSet<int>();
+        _view.OrderedIndexes.UnionRangeRecordRefs(
             query.Scope,
             query.LowerBound,
             query.UpperBound,
             query.IncludeLowerBound,
             query.IncludeUpperBound,
-            recordKeys);
-        return recordKeys;
+            recordRefs);
+        return _view.OrderedIndexes.ResolveRecordKeys(recordRefs);
     }
 
     private static void ValidateProtocolRequest(StoragePartitionProtocolRequest request)

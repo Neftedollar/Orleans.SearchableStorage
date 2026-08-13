@@ -108,8 +108,8 @@ participant-only calls before the next call freezes the source.
 
 Each partition derives an activation-local map from virtual slot to ordinal record-key set while
 rebuilding its normal indexes. Source export and source deletion use that stable ordinal set rather
-than scanning every partition record on every page. Import updates records, lookup/ordered indexes,
-and the slot map together only after the corresponding journal entry commits.
+than scanning every partition record on every page. Import updates records, the shared ordered
+lookup projection, and the slot map together only after the corresponding journal entry commits.
 
 The state machine preserves these load-bearing fences:
 
@@ -243,7 +243,13 @@ affected record buckets. Hash scopes now use the same canonical balanced value p
 than an unordered bucket dictionary, so value seeks and affected bucket updates are also O(log d).
 Each bucket stores its posting cardinality as scalar metadata; facet candidate nomination does not
 enumerate posting members. These structures remain activation-derived and add no durable index
-representation.
+representation. Posting members are activation-local integer references into the authoritative
+record table rather than repeated record-key strings. A canonical `GrainId` group stores its usual
+single record inline and allocates an ordered overflow set only when several records identify the
+same grain. Scope strings and canonical index values are shared within the activation. Neither local
+references nor sharing identities affect durable bytes, query order, or continuation tokens. Legacy
+materializing query methods build caller-owned transient sets from this same projection instead of
+retaining a second lookup index.
 
 A Hash membership property produces multiple entries in one scope. The type model admits only exact
 SZ `T[]` and exact `List<T>` shapes over a supported scalar/nullable element domain. Extraction
@@ -301,8 +307,8 @@ After translation, `PartitionQueryPlanFactory` creates a recursive Orleans wire 
 Exact, Range, And, and Or nodes. `StoragePartitionGrain.QueryPageRoutedAsync` validates the complete
 plan, protocol versions, response family, route, query fingerprint, layout fingerprint, and hard
 limits before evaluation. Activation-local tree-backed state catalogs and postings use canonical
-`GrainId` order and are rebuilt from durable records. Writes and clears update them synchronously
-with the existing hash/range indexes. Grain-page work-policy 2 first charges one visit per original
+`GrainId` order and are rebuilt from durable records. Writes and clears update this single hash/range
+lookup and ordering projection synchronously. Grain-page work-policy 2 first charges one visit per original
 wire node and creates a turn-local prepared tree. Associative `AND`/`OR` nodes become flat operand
 sequences ordered by bottom-up structural ranks without hash collisions over semantic `IndexValue`
 comparison/equivalence; the rank's global order is prepared height followed by the semantic leaf or
@@ -606,9 +612,10 @@ serializes the whole partition while holding its non-reentrant turn. A snapshot 
 1,000,000 records and 512 MiB of deterministic canonical record bytes; journal entries and segments
 have the dual count/byte ceilings described above. Those ceilings are safety bounds, not provider-
 physical sizes or evidence that a near-limit partition has acceptable latency or memory use. The
-activation also retains both the existing lookup indexes and the ordered catalog/postings used by
-paging; benchmark capacity tuples therefore report the additive retained-memory cost rather than
-treating per-operation allocation as activation size.
+activation retains one ordered catalog/posting projection shared by lookup, paging, and facets. The
+materializing hash-set implementation remains only as an explicit benchmark comparator. Capacity
+evidence measures the live record-plus-query-index graph separately from the optional virtual-slot
+catalog rather than treating per-operation allocation as activation size.
 
 Queries fan out to every distinct current owner in the layout snapshot. The epoch-1 identity map has
 one owner for each initial partition, so increasing the initial `PartitionCount` reduces records and

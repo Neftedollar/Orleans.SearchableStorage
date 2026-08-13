@@ -95,11 +95,13 @@ public sealed class StoragePartitionIndexesTests
                 ["target"] = target,
                 ["unrelated"] = unrelated,
             });
-        var unrelatedHash = view.Indexes.FindHashEntries(
+        var unrelatedHash = view.OrderedIndexes.GetExactPosting(
             "department",
+            SearchableIndexKind.Hash,
             IndexValue.Create("engineering"));
-        var unrelatedRange = view.Indexes.FindRangeEntries(
+        var unrelatedRange = view.OrderedIndexes.GetExactPosting(
             "level",
+            SearchableIndexKind.Range,
             IndexValue.FromSignedInteger(5));
         var replacement = CreateRecord(
             CreateHashEntry("city", "London"),
@@ -108,24 +110,49 @@ public sealed class StoragePartitionIndexesTests
         view.ApplyUpsert("target", replacement);
 
         view.Records["target"].Should().BeSameAs(replacement);
-        view.Indexes.FindHashEntries("department", IndexValue.Create("engineering"))
+        view.OrderedIndexes.GetExactPosting(
+                "department",
+                SearchableIndexKind.Hash,
+                IndexValue.Create("engineering"))
             .Should().BeSameAs(unrelatedHash);
-        view.Indexes.FindRangeEntries("level", IndexValue.FromSignedInteger(5))
+        view.OrderedIndexes.GetExactPosting(
+                "level",
+                SearchableIndexKind.Range,
+                IndexValue.FromSignedInteger(5))
             .Should().BeSameAs(unrelatedRange);
-        view.Indexes.FindHashEntries("city", IndexValue.Create("Helsinki")).Should().BeEmpty();
-        view.Indexes.FindHashEntries("city", IndexValue.Create("London"))
+        Resolve(view, "city", SearchableIndexKind.Hash, IndexValue.Create("Helsinki"))
+            .Should().BeEmpty();
+        Resolve(view, "city", SearchableIndexKind.Hash, IndexValue.Create("London"))
             .Should().ContainSingle().Which.Should().Be("target");
 
         view.ApplyDelete("target");
 
         view.Records.Should().NotContainKey("target");
-        view.Indexes.FindHashEntries("department", IndexValue.Create("engineering"))
+        view.OrderedIndexes.GetExactPosting(
+                "department",
+                SearchableIndexKind.Hash,
+                IndexValue.Create("engineering"))
             .Should().BeSameAs(unrelatedHash);
-        view.Indexes.FindRangeEntries("level", IndexValue.FromSignedInteger(5))
+        view.OrderedIndexes.GetExactPosting(
+                "level",
+                SearchableIndexKind.Range,
+                IndexValue.FromSignedInteger(5))
             .Should().BeSameAs(unrelatedRange);
-        unrelatedHash.Should().ContainSingle().Which.Should().Be("unrelated");
-        unrelatedRange.Should().ContainSingle().Which.Should().Be("unrelated");
+        unrelatedHash.TryGetRecordKeys(unrelated.GrainId, out var unrelatedHashKeys)
+            .Should().BeTrue();
+        unrelatedHashKeys.Should().ContainSingle().Which.Should().Be("unrelated");
+        unrelatedRange.TryGetRecordKeys(unrelated.GrainId, out var unrelatedRangeKeys)
+            .Should().BeTrue();
+        unrelatedRangeKeys.Should().ContainSingle().Which.Should().Be("unrelated");
     }
+
+    private static HashSet<string> Resolve(
+        StoragePartitionView view,
+        string scope,
+        SearchableIndexKind kind,
+        IndexValue value) =>
+        view.OrderedIndexes.ResolveRecordKeys(
+            view.OrderedIndexes.FindExactRecordRefs(scope, kind, value));
 
     [Fact]
     public void RemovingRecordRetainsNeighborsInSharedHashAndRangeBuckets()

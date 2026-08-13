@@ -223,18 +223,17 @@ persisted, do not change snapshot or journal formats, and do not make activation
 of ordering or continuation. Rebuild must reject the same malformed records and indexes as the
 existing derived-index build.
 
-Both hash and range scopes expose a canonical balanced-tree projection by `IndexValue`. Before
-facets, the hash lookup projection used an unordered dictionary of buckets; PR15 replaces only that
-activation-derived projection with the same ordered bucket structure used by ranges. Durable index
-entries, physical writes, persistence format, commit atomicity, and the write protocol do not change.
-The derived in-memory mutation path does change: hash value lookup/mutation moves from average
-`O(1)` dictionary access to `O(log D)` balanced-tree access for `D` distinct values, and every live
-add/remove maintains the scope's checked total-record counter. Activation rebuild and each committed
-mutation update the lookup and ordered projections together. Candidate nomination reads bucket and
-scope scalar metadata and never walks a posting; filtered count probes walk only an explicitly
-nominated exact posting in bounded canonical `GrainId` slices. The activation-build and steady
-mutation benchmarks retain the materializing representation as a comparison and gate the total
-counter under both uniform/high-cardinality and hot/low-cardinality distributions.
+Both hash and range scopes expose one canonical balanced-tree projection by `IndexValue`. Durable
+index entries, physical writes, persistence format, commit atomicity, and the write protocol do not
+change. The derived in-memory mutation path uses `O(log D)` value lookup/update for `D` distinct
+values and maintains each scope's checked total-record counter. Its postings contain activation-local
+record references, while canonical `GrainId` and record-key ordering are resolved through the record
+table. Candidate nomination reads bucket and scope scalar metadata and never walks a posting;
+filtered count probes walk only an explicitly nominated exact posting in bounded canonical
+`GrainId` slices. Legacy complete-result calls materialize temporary sets from this projection, so
+the activation no longer retains a parallel hash-set lookup index. The activation-build and steady
+mutation benchmarks keep that old materializing representation only as a comparison under both
+uniform/high-cardinality and hot/low-cardinality distributions.
 
 The work-policy-2 scalar access paths are:
 
