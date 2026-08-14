@@ -154,6 +154,11 @@ def validate_nuspec(
         raise ValueError("package license must be the MIT expression")
 
     repository = child(metadata, "repository")
+    if set(repository.attrib) != {"type", "url", "commit"}:
+        raise ValueError(
+            "package repository provenance must contain only type, url, and commit; "
+            "ref-dependent branch metadata is forbidden"
+        )
     repository_url = repository.attrib.get("url", "").rstrip("/")
     repository_type = repository.attrib.get("type")
     repository_commit = repository.attrib.get("commit", "").lower()
@@ -421,8 +426,8 @@ def verify_package_signature(package_path: Path) -> None:
         global_json = json.loads(GLOBAL_JSON.read_text(encoding="utf-8"))
         if global_json != {
             "sdk": {
-                "version": "10.0.302",
-                "rollForward": "latestPatch",
+                "version": "10.0.303",
+                "rollForward": "disable",
             }
         }:
             raise ValueError("global.json no longer matches the reviewed release verifier SDK policy")

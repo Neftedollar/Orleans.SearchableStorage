@@ -5,9 +5,9 @@ Orleans.SearchableStorage follows the engineering conventions used by the .NET a
 ## Development rules
 
 - Use C# and the SDK pinned in `global.json`.
-- The source-compatibility analyzer targets Roslyn 5.6.0, so source builds require the
-  .NET 10.0.3xx SDK feature band pinned by `global.json` (10.0.302 or a later patch selected by
-  its roll-forward policy). Earlier feature bands are unsupported and can report `CS9057` after
+- The source-compatibility analyzer targets Roslyn 5.6.0, so source builds require the exact
+  .NET 10.0.303 SDK pinned by `global.json`; release builds do not roll forward to another patch.
+  Earlier feature bands are unsupported and can report `CS9057` after
   bypassing SDK selection; install the SDK selected by `global.json` instead of overriding the
   compiler toolset.
 - Keep all repository-facing text in English, including source comments, documentation, commits, issues, and pull requests.

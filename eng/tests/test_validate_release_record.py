@@ -30,6 +30,20 @@ PUBLICATION_TAG = "publication-rc2"
 
 
 class ReleaseRecordTests(unittest.TestCase):
+    def test_target_sdk_binding_matches_global_policy(self) -> None:
+        global_policy = json.loads(
+            (SCRIPT.parents[1] / "global.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {
+                "sdk": {
+                    "version": VALIDATOR.BUILD_SDK_VERSION,
+                    "rollForward": "disable",
+                }
+            },
+            global_policy,
+        )
+
     def test_accepts_exact_target_verdict_and_publication_records(self) -> None:
         cases = {
             "target": valid_target(),
@@ -46,6 +60,7 @@ class ReleaseRecordTests(unittest.TestCase):
     def test_target_rejects_mismatch_false_gate_and_split_release(self) -> None:
         cases = {
             "hash": {**valid_target(), "nupkgSha256": "6" * 64},
+            "sdk": {**valid_target(), "buildSdkVersion": "10.0.302"},
             "boolean": {**valid_target(), "packageValidatorPassed": 1},
             "release": {
                 **valid_target(),
@@ -133,10 +148,11 @@ def release_url(tag: str) -> str:
 def valid_target() -> dict[str, object]:
     filename = f"{PACKAGE_ID}.{VERSION}.nupkg"
     return {
-        "schema": "oss-package-target/v2",
+        "schema": "oss-package-target/v3",
         "packageId": PACKAGE_ID,
         "packageVersion": VERSION,
         "packageKind": "unsigned-qualification-target",
+        "buildSdkVersion": VALIDATOR.BUILD_SDK_VERSION,
         "artifactUrl": asset_url(TARGET_TAG, filename),
         "artifactFileName": filename,
         "nupkgSha256": PACKAGE_SHA256,

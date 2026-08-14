@@ -19,6 +19,7 @@ LIBRARY_REPOSITORY = "https://github.com/Neftedollar/Orleans.SearchableStorage"
 QUALIFICATION_REPOSITORY = (
     "https://github.com/Neftedollar/Orleans.SearchableStorage.Qualification"
 )
+BUILD_SDK_VERSION = "10.0.303"
 MAX_RECORD_BYTES = 1024 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -31,6 +32,7 @@ TARGET_KEYS = {
     "packageId",
     "packageVersion",
     "packageKind",
+    "buildSdkVersion",
     "artifactUrl",
     "artifactFileName",
     "nupkgSha256",
@@ -225,10 +227,11 @@ def validate_target(record: dict[str, object], args: argparse.Namespace) -> None
     require_exact_values(
         record,
         {
-            "schema": "oss-package-target/v2",
+            "schema": "oss-package-target/v3",
             "packageId": args.expected_package_id,
             "packageVersion": args.expected_version,
             "packageKind": "unsigned-qualification-target",
+            "buildSdkVersion": BUILD_SDK_VERSION,
             "artifactFileName": package_filename,
             "nupkgSha256": args.expected_package_sha256,
             "canonicalManifestSha256": args.expected_canonical_sha256,

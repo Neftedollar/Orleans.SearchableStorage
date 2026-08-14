@@ -325,7 +325,7 @@ This table states current repository evidence, not an invented multi-framework p
 
 | Dimension | Implemented and validated now | 1.0 freeze decision |
 | --- | --- | --- |
-| Target framework | `net10.0`, C# 14; the repository declares SDK 10.0.302 with its checked-in roll-forward policy | Do not claim other target frameworks without building and running the full contract suite. |
+| Target framework | `net10.0`, C# 14; the repository pins SDK 10.0.303 without patch roll-forward | Do not claim other target frameworks or SDK build contexts without building and running the full contract suite. |
 | Orleans packages | Repository currently pins Orleans 10.2.2 | Compatibility beyond the tested package line requires explicit evidence. |
 | Type model | PolyType runtime reflection provider | Native AOT and trimming are outside the contract. Consumers need no PolyType annotations or generated witnesses. |
 | In-memory backend | Official Orleans Memory provider | Contract-validated. It is not a production durability recommendation. |

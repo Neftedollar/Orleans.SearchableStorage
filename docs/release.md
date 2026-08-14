@@ -54,7 +54,7 @@ it qualified, production-ready, published, or the stable 1.0 release.
 
 Before qualification, produce one exact unsigned package from one immutable `main` commit with the
 [local dry run](#local-dry-run). Preserve that `.nupkg` and its canonical manifest in the separate
-public qualification boundary, then create the version-2
+public qualification boundary, then create the `oss-package-target/v3`
 [package identity record](qualification-handoff.md#package-identity-record). The clean-room
 worksheet and qualification runner must consume those exact package bytes through a locked
 package-only source. A project reference, extracted DLL, or later local rebuild is not the target.
@@ -128,6 +128,12 @@ From the repository root, with the pinned SDK restored:
 bash eng/release-dry-run.sh
 ```
 
+The release script requires the exact .NET 10.0.303 SDK declared by `global.json`; patch
+roll-forward is disabled because an SDK patch can change generated assembly bytes. Local, CI, and
+tag builds all set `ContinuousIntegrationBuild`, the exact repository commit, and an empty
+`RepositoryBranch`. The nuspec therefore carries the authoritative repository URL and commit but no
+mutable or context-dependent branch attribute. The package validator rejects branch metadata.
+
 To retain the locally validated prerelease package and canonical manifest without publishing them,
 use a new or empty output directory whose final files do not already exist:
 
@@ -144,12 +150,13 @@ sha256sum \
   artifacts/release-candidate/package.canonical.json
 ```
 
-The script builds the shipping project, packs it twice with the current commit as repository
-provenance, compares a canonical sorted list of package entry names and SHA-256 content hashes,
-validates the exact package allowlist and nuspec metadata, and restores/builds a standalone consumer
-against only the locally produced package. The two source packs are compared canonically because ZIP
-timestamps are not semantic content. Once one pack is admitted as the qualification target, its raw
-`.nupkg` SHA-256 also freezes the exact container which the later publication workflow must upload.
+The script builds the shipping project, packs it twice with the current commit as
+branch-independent repository provenance, compares a canonical sorted list of package entry names
+and SHA-256 content hashes, validates the exact package allowlist and nuspec metadata, and
+restores/builds a standalone consumer against only the locally produced package. The two source
+packs are compared canonically because ZIP timestamps are not semantic content. Once one pack is
+admitted as the qualification target, its raw `.nupkg` SHA-256 also freezes the exact container
+which the later publication workflow must upload.
 
 CI runs the same validators after its ordinary solution build/test and pack. The docs link checker
 validates local Markdown paths and GitHub-style anchors. The shipping project treats missing public
@@ -161,7 +168,7 @@ constraint diagnostics, so a silently inactive or incomplete constraint gate can
 
 ## Publish and verify
 
-Publish only the exact qualified unsigned `.nupkg` named by the version-2 identity record. Retain the
+Publish only the exact qualified unsigned `.nupkg` named by the `oss-package-target/v3` record. Retain the
 workflow run, commit, both package identities, canonical manifest, test results, backend contract
 evidence, and release notes. After upload, download the registry artifact into a clean directory and
 run the same package validator and consumer smoke against it before announcing the release. NuGet.org

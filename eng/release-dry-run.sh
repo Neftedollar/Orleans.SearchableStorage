@@ -35,6 +35,32 @@ else:
 PY
 )}
 
+release_sdk_version=$(python3 - <<'PY'
+import json
+
+with open("global.json", encoding="utf-8") as stream:
+    policy = json.load(stream)
+sdk = policy.get("sdk", {})
+if sdk.get("rollForward") != "disable" or not sdk.get("version"):
+    raise SystemExit("global.json must pin one exact release SDK without roll-forward")
+print(sdk["version"])
+PY
+)
+actual_sdk_version=$(dotnet --version)
+if [[ "$actual_sdk_version" != "$release_sdk_version" ]]; then
+  echo "Release SDK $actual_sdk_version does not match pinned SDK $release_sdk_version." >&2
+  exit 1
+fi
+
+# Package provenance is commit-addressed. Remove ref-dependent branch metadata and pass the same
+# deterministic build properties in local, main-CI, and later tag contexts.
+release_msbuild_properties=(
+  -p:ContinuousIntegrationBuild=true
+  "-p:RepositoryCommit=$release_commit"
+  -p:RepositoryBranch=
+  -p:PublishRepositoryUrl=false
+)
+
 release_output_directory=${OSS_RELEASE_OUTPUT_DIRECTORY:-}
 release_output_package=
 release_output_manifest=
@@ -89,11 +115,13 @@ if [[ -n "$release_input_package" ]]; then
 fi
 
 if [[ "${OSS_RELEASE_NO_BUILD:-false}" != "true" ]]; then
-  dotnet restore Orleans.SearchableStorage.slnx
+  dotnet restore Orleans.SearchableStorage.slnx --disable-parallel -m:1
+  bash eng/validate-source-compat.sh --no-restore "${release_msbuild_properties[@]}"
   dotnet build src/Orleans.SearchableStorage/Orleans.SearchableStorage.csproj \
     --configuration Release \
-    --no-restore
-  bash eng/validate-source-compat.sh --no-restore
+    --no-restore \
+    --no-incremental \
+    "${release_msbuild_properties[@]}"
 fi
 
 for ordinal in first second; do
@@ -104,8 +132,7 @@ for ordinal in first second; do
     --no-build \
     --no-restore \
     --output "$output" \
-    -p:ContinuousIntegrationBuild=true \
-    -p:RepositoryCommit="$release_commit" \
+    "${release_msbuild_properties[@]}" \
     -p:PackageVersion="$release_version"
   package="$output/Orleans.SearchableStorage.$release_version.nupkg"
   python3 eng/validate-package.py "$package" \
