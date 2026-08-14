@@ -153,6 +153,10 @@ H10: PASS | FAIL | BLOCKED
   commands/docs/evidence:
   elapsed time:
   observations:
+H11: PASS | FAIL | BLOCKED
+  commands/docs/evidence:
+  elapsed time:
+  observations:
 
 Unpublished help requested:
 Documentation defects:
