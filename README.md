@@ -568,7 +568,8 @@ Every pull request requires a dedicated test-sufficiency review in addition to g
 
 ## Build
 
-The repository pins .NET 10 in `global.json` and Orleans dependencies centrally.
+The repository pins the exact .NET 10.0.303 SDK without roll-forward in `global.json` and pins
+Orleans dependencies centrally.
 
 ```bash
 dotnet restore Orleans.SearchableStorage.slnx

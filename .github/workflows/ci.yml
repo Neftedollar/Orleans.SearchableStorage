@@ -16,7 +16,7 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -40,7 +40,14 @@ jobs:
         run: dotnet restore Orleans.SearchableStorage.slnx
 
       - name: Build
-        run: dotnet build Orleans.SearchableStorage.slnx --configuration Release --no-restore
+        run: >-
+          dotnet build Orleans.SearchableStorage.slnx
+          --configuration Release
+          --no-restore
+          -p:ContinuousIntegrationBuild=true
+          -p:RepositoryCommit="$GITHUB_SHA"
+          -p:RepositoryBranch=
+          -p:PublishRepositoryUrl=false
 
       - name: Verify reviewed public API
         run: |
@@ -54,7 +61,13 @@ jobs:
           diff --unified eng/public-api.txt artifacts/release/public-api.actual.txt
 
       - name: Verify C# source compatibility baselines
-        run: bash eng/validate-source-compat.sh --no-restore
+        run: >-
+          bash eng/validate-source-compat.sh
+          --no-restore
+          -p:ContinuousIntegrationBuild=true
+          -p:RepositoryCommit="$GITHUB_SHA"
+          -p:RepositoryBranch=
+          -p:PublishRepositoryUrl=false
 
       - name: Test
         run: dotnet test Orleans.SearchableStorage.slnx --configuration Release --no-build --no-restore --collect "XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx"
@@ -84,6 +97,8 @@ jobs:
           --output artifacts/packages
           -p:ContinuousIntegrationBuild=true
           -p:RepositoryCommit="$GITHUB_SHA"
+          -p:RepositoryBranch=
+          -p:PublishRepositoryUrl=false
 
       - name: Validate package contents and provenance
         shell: bash
@@ -119,6 +134,43 @@ jobs:
             exit 1
           fi
           OSS_RELEASE_INPUT_PACKAGE="${packages[0]}" bash eng/release-dry-run.sh
+
+      - name: Verify package reproducibility from an independent source path
+        shell: bash
+        run: |
+          repro_worktree="$RUNNER_TEMP/orleans-searchable-storage-repro-worktree"
+          repro_output="$RUNNER_TEMP/orleans-searchable-storage-repro-output"
+          repro_cli_home="$RUNNER_TEMP/orleans-searchable-storage-repro-cli"
+          cleanup_repro_worktree() {
+            git worktree remove --force "$repro_worktree" 2>/dev/null || true
+          }
+          trap cleanup_repro_worktree EXIT
+
+          git worktree add --detach "$repro_worktree" "$GITHUB_SHA"
+          mkdir -p "$repro_cli_home"
+          (
+            cd "$repro_worktree"
+            env \
+              -u GITHUB_REF \
+              -u GITHUB_REF_NAME \
+              -u GITHUB_HEAD_REF \
+              -u GITHUB_BASE_REF \
+              -u GITHUB_SHA \
+              CI=false \
+              DOTNET_CLI_HOME="$repro_cli_home" \
+              OSS_RELEASE_GIT_COMMIT="${{ github.sha }}" \
+              OSS_RELEASE_OUTPUT_DIRECTORY="$repro_output" \
+              bash eng/release-dry-run.sh
+          )
+          if ! cmp --silent \
+            artifacts/release/package.canonical.json \
+            "$repro_output/package.canonical.json"; then
+            echo "Package content changed across independent source paths." >&2
+            diff --unified \
+              artifacts/release/package.canonical.json \
+              "$repro_output/package.canonical.json" >&2 || true
+            exit 1
+          fi
 
       - name: Upload test results
         if: always()

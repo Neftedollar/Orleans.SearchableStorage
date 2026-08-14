@@ -146,7 +146,13 @@ jobs:
       - name: Restore, build, and test the tagged source
         run: |
           dotnet restore Orleans.SearchableStorage.slnx
-          dotnet build Orleans.SearchableStorage.slnx --configuration Release --no-restore
+          dotnet build Orleans.SearchableStorage.slnx \
+            --configuration Release \
+            --no-restore \
+            -p:ContinuousIntegrationBuild=true \
+            -p:RepositoryCommit="$GITHUB_SHA" \
+            -p:RepositoryBranch= \
+            -p:PublishRepositoryUrl=false
           dotnet test Orleans.SearchableStorage.slnx \
             --configuration Release \
             --no-build \

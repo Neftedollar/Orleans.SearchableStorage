@@ -170,6 +170,25 @@ class PackageAllowlistTests(unittest.TestCase):
             self.assertEqual(1, malformed_code)
             self.assertIn("64 lowercase hexadecimal", malformed_error)
 
+    def test_validator_rejects_ref_dependent_repository_branch_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowlist = root / "allowlist.txt"
+            allowlist.write_text("Orleans.SearchableStorage.nuspec\n", encoding="utf-8")
+            package = root / "Orleans.SearchableStorage.0.1.0.nupkg"
+            write_zip_bytes(
+                package,
+                {
+                    "Orleans.SearchableStorage.nuspec": valid_nuspec(
+                        repository_extra_attributes=' branch="refs/heads/main"'
+                    )
+                },
+            )
+
+            code, error = run_validator(package, allowlist)
+            self.assertEqual(1, code)
+            self.assertIn("ref-dependent branch metadata is forbidden", error)
+
     def test_literal_content_types_name_is_not_treated_as_a_glob(self) -> None:
         self.assertTrue(VALIDATOR.matches("[Content_Types].xml", "[Content_Types].xml"))
         self.assertFalse(VALIDATOR.matches("[Content_Types].xml", "C.xml"))
@@ -473,7 +492,7 @@ class PackageAllowlistTests(unittest.TestCase):
             )
             self.assertIn('allowUntrustedRoot="false"', config)
             self.assertEqual(
-                {"sdk": {"version": "10.0.302", "rollForward": "latestPatch"}},
+                {"sdk": {"version": "10.0.303", "rollForward": "disable"}},
                 json.loads(observed["global_json"]),
             )
 
@@ -594,6 +613,7 @@ def valid_nuspec(
     version: str = "0.1.0",
     description: str = VALIDATOR.PACKAGE_DESCRIPTION,
     release_notes: str | None = None,
+    repository_extra_attributes: str = "",
 ) -> bytes:
     release_notes_xml = (
         f"    <releaseNotes>{release_notes}</releaseNotes>\n"
@@ -609,7 +629,7 @@ def valid_nuspec(
     <description>{description}</description>
     <readme>README.md</readme>
 {release_notes_xml}    <license type="expression">MIT</license>
-    <repository type="git" url="{VALIDATOR.REPOSITORY_URL}" commit="{'a' * 40}" />
+    <repository type="git" url="{VALIDATOR.REPOSITORY_URL}" commit="{'a' * 40}"{repository_extra_attributes} />
     <dependencies>
       <group targetFramework="net10.0">
         <dependency id="Microsoft.Orleans.Runtime" version="[9.0.0,)" />

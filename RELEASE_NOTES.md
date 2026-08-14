@@ -22,6 +22,14 @@ semantics.
 - Formal qualification targets the exact unsigned `.nupkg`, canonical-manifest digest, and
   repository commit frozen before publication. Qualification must consume those exact package
   bytes from an isolated package-only source; a project reference or rebuild is invalid.
+- The target must be built with the exact .NET 10.0.303 SDK, deterministic build properties, and
+  branch-independent repository URL/commit provenance. Patch roll-forward and nuspec branch
+  metadata are rejected because either can make package content depend on the build context.
+- No version-1 or version-2 target record was admitted to qualification. Any rc.2 package produced
+  before this exact build-context pin is not a qualification target, even when its version and
+  repository commit match.
+- This correction changes package bytes and the qualification target-record schema only. It does
+  not change the public API or durable, WAL, snapshot, movement, wire, or continuation semantics.
 - The build, unit and integration suites, Memory contract, container-backed PostgreSQL and Redis
   contracts, Azurite-backed Azure Blob contract, package provenance checks, and package-only
   consumer smoke are release gates.
@@ -35,8 +43,9 @@ semantics.
 ### Compatibility and rollout
 
 - The public API and source-compatibility baseline are frozen for this qualification candidate.
-  Any library implementation, dependency, generated binary, public or durable contract, observable
-  behavior, packaged documentation/content, or repository provenance change requires
+  After the `oss-package-target/v3` record is frozen, any library implementation, dependency, SDK,
+  generated binary, public or durable contract, observable behavior, packaged documentation/content,
+  or repository provenance change requires
   `1.0.0-rc.3` (or a later candidate) and invalidates qualification evidence collected for this
   package. Stable SemVer compatibility obligations begin with the final `1.0.0` package. There is no
   previously published package or continuation-token compatibility promise to migrate from.

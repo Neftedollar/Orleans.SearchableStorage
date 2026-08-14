@@ -12,7 +12,7 @@ This checked-in kit makes that exercise reproducible; it is not evidence that a 
 
 | Gate | Target | Required output | What it does not prove |
 | --- | --- | --- | --- |
-| Qualification package | One repository commit, one exact unsigned `.nupkg`, and its canonical manifest | Version-2 package identity record, package gates, and release notes with a non-production warning | Production readiness, provider scale, repository signing, or independent usability |
+| Qualification package | One repository commit, one exact unsigned `.nupkg`, and its canonical manifest | `oss-package-target/v3` identity record, package gates, and release notes with a non-production warning | Production readiness, provider scale, repository signing, or independent usability |
 | Clean-room human handoff | The same exact package and repository documentation | Completed worksheet, timings, commands, observations, and issue links from an unfamiliar .NET/Orleans maintainer | Throughput, capacity, or provider qualification |
 | Scale qualification | The exact unsigned package bytes named in a frozen external qualification release | Raw evidence, producer attestations, independent verification output, and a measured envelope | Database semantics, a later package rebuild, or workloads outside the frozen profile |
 | Registry publication | The exact qualified unsigned package and its NuGet.org repository-signed form | Trusted Publishing run, signature verification, canonical-equivalence proof, signed SHA-256, and package-only consumer result | Stable-1.0 readiness or a wider operating envelope |
@@ -30,10 +30,11 @@ later rebuild. Store this record in the clean-room evidence and qualification re
 
 ```json
 {
-  "schema": "oss-package-target/v2",
+  "schema": "oss-package-target/v3",
   "packageId": "Orleans.SearchableStorage",
   "packageVersion": "REPLACE_WITH_EXACT_PRERELEASE_VERSION",
   "packageKind": "unsigned-qualification-target",
+  "buildSdkVersion": "10.0.303",
   "artifactUrl": "REPLACE_WITH_RELEASE_ASSET_URL_BOUND_BY_SHA256",
   "artifactFileName": "REPLACE_WITH_EXACT_FILE_NAME.nupkg",
   "nupkgSha256": "REPLACE_WITH_64_LOWERCASE_HEX_CHARACTERS",
@@ -52,10 +53,13 @@ repository provenance from the nuspec, and run the ordinary strict package valid
 package-only consumer in [the release process](release.md#local-dry-run). A matching version string
 or a canonical-only match is not a substitute for the exact unsigned bytes during qualification.
 
-`oss-package-target/v1` described the former publish-first process and was never used for a
-published or qualified release. Version 2 replaces it without a migration target. Any code,
-dependency, generated binary, persisted-format, wire-contract, package-content, documentation, or
-source-provenance change creates a new qualification target.
+`oss-package-target/v1` described the former publish-first process. Version 2 introduced the
+qualification-first identity but did not record the exact SDK that produced the binaries. Neither
+version was used for a published or qualified release, and no target record was admitted to
+qualification. Version 3 replaces both without a migration target, records the exact no-roll-forward
+SDK, and binds a package whose nuspec provenance is repository-URL-plus-commit only. Any code,
+dependency, SDK, generated binary, persisted-format, wire-contract, package-content, documentation,
+or source-provenance change creates a new qualification target.
 
 The required scale qualification emits this separately hashed verdict only after independent
 verification succeeds. This verdict does not claim that the clean-room human handoff has happened;
@@ -293,9 +297,9 @@ attestation.
 ## External verification flow
 
 1. From one clean immutable library commit, run the release dry run and place the exact unsigned
-   `.nupkg`, canonical manifest, and version-2 identity record in an immutable public qualification-
-   repository release. Verify both SHA-256 values, package provenance, strict package validation,
-   and package-only consumption before accepting the target.
+   `.nupkg`, canonical manifest, and `oss-package-target/v3` record in an immutable public
+   qualification-repository release. Verify both SHA-256 values, package provenance, strict package
+   validation, and package-only consumption before accepting the target.
 2. In the qualification repository, implement typed raw producers and an independent verifier, then
    freeze the reference profiles and thresholds on a signed/tagged commit **before** running them.
    The current in-repository evidence-v2 fixtures remain deliberately unqualified.
