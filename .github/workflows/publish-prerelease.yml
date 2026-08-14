@@ -27,6 +27,12 @@ jobs:
       EXPECTED_VERSION: 1.0.0-rc.2
       EXPECTED_TAG: v1.0.0-rc.2
       NUGET_SERVICE_INDEX: https://api.nuget.org/v3/index.json
+      QUALIFICATION_PACKAGE_URL: ${{ vars.QUALIFICATION_PACKAGE_URL }}
+      QUALIFICATION_PACKAGE_SHA256: ${{ vars.QUALIFICATION_PACKAGE_SHA256 }}
+      QUALIFICATION_CANONICAL_SHA256: ${{ vars.QUALIFICATION_CANONICAL_SHA256 }}
+      QUALIFICATION_VERDICT_URL: ${{ vars.QUALIFICATION_VERDICT_URL }}
+      QUALIFICATION_VERDICT_SHA256: ${{ vars.QUALIFICATION_VERDICT_SHA256 }}
+      QUALIFIED_LIBRARY_COMMIT: ${{ vars.QUALIFIED_LIBRARY_COMMIT }}
 
     steps:
       - name: Check out the tagged commit
@@ -85,6 +91,24 @@ jobs:
             echo "Project version $project_version does not match $EXPECTED_VERSION." >&2
             exit 1
           fi
+          if [[ ! "$QUALIFIED_LIBRARY_COMMIT" =~ ^[0-9a-f]{40}$ ||
+                "$QUALIFIED_LIBRARY_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "The protected release environment does not name this qualified commit." >&2
+            exit 1
+          fi
+          if [[ ! "$QUALIFICATION_PACKAGE_SHA256" =~ ^[0-9a-f]{64}$ ||
+                ! "$QUALIFICATION_CANONICAL_SHA256" =~ ^[0-9a-f]{64}$ ||
+                ! "$QUALIFICATION_VERDICT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "The protected release environment has invalid qualification digests." >&2
+            exit 1
+          fi
+          package_url_pattern='^https://github\.com/Neftedollar/Orleans\.SearchableStorage\.Qualification/releases/download/[0-9A-Za-z][0-9A-Za-z._-]{0,127}/Orleans\.SearchableStorage\.1\.0\.0-rc\.2\.nupkg$'
+          verdict_url_pattern='^https://github\.com/Neftedollar/Orleans\.SearchableStorage\.Qualification/releases/download/[0-9A-Za-z][0-9A-Za-z._-]{0,127}/qualification-verdict\.json$'
+          if [[ ! "$QUALIFICATION_PACKAGE_URL" =~ $package_url_pattern ||
+                ! "$QUALIFICATION_VERDICT_URL" =~ $verdict_url_pattern ]]; then
+            echo "Qualification inputs must be exact assets from reviewed qualification releases." >&2
+            exit 1
+          fi
 
       - name: Require successful CI and security gates for the exact commit
         env:
@@ -135,24 +159,81 @@ jobs:
           OSS_RELEASE_OUTPUT_DIRECTORY: artifacts/release-candidate
         run: bash eng/release-dry-run.sh
 
-      - name: Freeze the exact validated package and SHA-256
+      - name: Recover and verify the exact qualified package
         id: package
         shell: bash
         run: |
           set -euo pipefail
-          source_package="artifacts/release-candidate/$EXPECTED_PACKAGE_ID.$EXPECTED_VERSION.nupkg"
           source_manifest=artifacts/release-candidate/package.canonical.json
+          source_manifest_sha256=$(sha256sum "$source_manifest" | cut -d ' ' -f 1)
+          if [[ "$source_manifest_sha256" != "$QUALIFICATION_CANONICAL_SHA256" ]]; then
+            echo "The tagged source does not reproduce the qualified canonical manifest." >&2
+            exit 1
+          fi
+          qualified_directory=artifacts/qualification-target
+          qualified_package="$qualified_directory/$EXPECTED_PACKAGE_ID.$EXPECTED_VERSION.nupkg"
+          qualified_manifest="$qualified_directory/package.canonical.json"
+          qualification_verdict="$qualified_directory/qualification-verdict.json"
           publish_directory=artifacts/publish-exact
           publish_package="$publish_directory/$EXPECTED_PACKAGE_ID.$EXPECTED_VERSION.nupkg"
           publish_manifest="$publish_directory/package.canonical.json"
-          mkdir -p "$publish_directory"
-          python3 eng/validate-package.py "$source_package" \
+          mkdir -p "$qualified_directory" "$publish_directory"
+          curl --fail --location --silent --show-error \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --max-filesize 1048576 \
+            --connect-timeout 15 \
+            --max-time 120 \
+            --retry 3 \
+            --retry-all-errors \
+            --output "$qualification_verdict.part" \
+            "$QUALIFICATION_VERDICT_URL"
+          mv "$qualification_verdict.part" "$qualification_verdict"
+          python3 eng/validate-release-record.py verdict "$qualification_verdict" \
+            --expected-record-sha256 "$QUALIFICATION_VERDICT_SHA256" \
+            --expected-package-id "$EXPECTED_PACKAGE_ID" \
+            --expected-version "$EXPECTED_VERSION" \
+            --expected-package-sha256 "$QUALIFICATION_PACKAGE_SHA256" \
+            --expected-canonical-sha256 "$QUALIFICATION_CANONICAL_SHA256" \
+            --expected-library-commit "$GITHUB_SHA"
+          curl --fail --location --silent --show-error \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --max-filesize 134217728 \
+            --connect-timeout 15 \
+            --max-time 300 \
+            --retry 3 \
+            --retry-all-errors \
+            --output "$qualified_package.part" \
+            "$QUALIFICATION_PACKAGE_URL"
+          mv "$qualified_package.part" "$qualified_package"
+          qualified_package_sha256=$(sha256sum "$qualified_package" | cut -d ' ' -f 1)
+          if [[ "$qualified_package_sha256" != "$QUALIFICATION_PACKAGE_SHA256" ]]; then
+            echo "The downloaded qualification package does not match its frozen SHA-256." >&2
+            exit 1
+          fi
+          python3 eng/validate-package.py "$qualified_package" \
             --expected-version "$EXPECTED_VERSION" \
             --expected-commit "$GITHUB_SHA" \
-            --canonical-output "$publish_manifest" \
+            --expected-package-sha256 "$QUALIFICATION_PACKAGE_SHA256" \
+            --expected-canonical-sha256 "$QUALIFICATION_CANONICAL_SHA256" \
+            --canonical-output "$qualified_manifest" \
             --snapshot-output "$publish_package"
-          cmp --silent "$source_manifest" "$publish_manifest"
+          if ! cmp --silent "$source_manifest" "$qualified_manifest"; then
+            echo "The qualification package differs from the tagged source canonical manifest." >&2
+            exit 1
+          fi
+          qualified_manifest_sha256=$(sha256sum "$qualified_manifest" | cut -d ' ' -f 1)
+          if [[ "$qualified_manifest_sha256" != "$QUALIFICATION_CANONICAL_SHA256" ]]; then
+            echo "The qualification package canonical manifest does not match its frozen SHA-256." >&2
+            exit 1
+          fi
+          cp -- "$qualified_manifest" "$publish_manifest"
           package_sha256=$(sha256sum "$publish_package" | cut -d ' ' -f 1)
+          if [[ "$package_sha256" != "$QUALIFICATION_PACKAGE_SHA256" ]]; then
+            echo "The validated publication snapshot changed the qualified package bytes." >&2
+            exit 1
+          fi
           printf '%s  %s\n' "$package_sha256" "$(basename "$publish_package")" \
             > "$publish_directory/package.sha256"
           (
@@ -167,7 +248,8 @@ jobs:
             echo
             echo "- Version: \`$EXPECTED_VERSION\`"
             echo "- Commit: \`$GITHUB_SHA\`"
-            echo "- Unsigned package SHA-256: \`$package_sha256\`"
+            echo "- Qualified unsigned package SHA-256: \`$package_sha256\`"
+            echo "- Qualified canonical manifest SHA-256: \`$qualified_manifest_sha256\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The pinned action exchanges GitHub OIDC for a short-lived, single-use NuGet key. If the
@@ -208,6 +290,11 @@ jobs:
           downloaded="artifacts/nuget-org/$EXPECTED_PACKAGE_ID.$EXPECTED_VERSION.nupkg"
           for attempt in {1..20}; do
             if curl --fail --location --silent --show-error \
+              --proto '=https' \
+              --proto-redir '=https' \
+              --max-filesize 134217728 \
+              --connect-timeout 15 \
+              --max-time 120 \
               --output "$downloaded.part" "$download_url"; then
               mv "$downloaded.part" "$downloaded"
               break
@@ -225,5 +312,52 @@ jobs:
           OSS_RELEASE_NO_BUILD=true \
             bash eng/release-dry-run.sh
           signed_sha256=$(sha256sum "$downloaded" | cut -d ' ' -f 1)
-          echo "- Repository-signed package SHA-256: \`$signed_sha256\`" \
-            >> "$GITHUB_STEP_SUMMARY"
+          SIGNED_PACKAGE_SHA256="$signed_sha256" python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
+          record = {
+              "schema": "oss-package-publication/v1",
+              "packageId": os.environ["EXPECTED_PACKAGE_ID"],
+              "packageVersion": os.environ["EXPECTED_VERSION"],
+              "qualifiedNupkgSha256": os.environ["QUALIFICATION_PACKAGE_SHA256"],
+              "qualifiedCanonicalManifestSha256": os.environ["QUALIFICATION_CANONICAL_SHA256"],
+              "qualificationVerdictUrl": os.environ["QUALIFICATION_VERDICT_URL"],
+              "qualificationVerdictSha256": os.environ["QUALIFICATION_VERDICT_SHA256"],
+              "qualificationVerdictVerified": True,
+              "publishedNupkgSha256": os.environ["SIGNED_PACKAGE_SHA256"],
+              "repositoryCommit": os.environ["GITHUB_SHA"],
+              "repositorySignatureVerified": True,
+              "canonicalPayloadEquivalent": True,
+              "packageOnlyConsumerPassed": True,
+              "recordedAtUtc": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          output = Path("artifacts/nuget-org/package-publication.json")
+          output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          publication_record_sha256=$(sha256sum artifacts/nuget-org/package-publication.json | cut -d ' ' -f 1)
+          python3 eng/validate-release-record.py publication \
+            artifacts/nuget-org/package-publication.json \
+            --expected-record-sha256 "$publication_record_sha256" \
+            --expected-package-id "$EXPECTED_PACKAGE_ID" \
+            --expected-version "$EXPECTED_VERSION" \
+            --expected-package-sha256 "$QUALIFICATION_PACKAGE_SHA256" \
+            --expected-canonical-sha256 "$QUALIFICATION_CANONICAL_SHA256" \
+            --expected-library-commit "$GITHUB_SHA" \
+            --expected-verdict-url "$QUALIFICATION_VERDICT_URL" \
+            --expected-verdict-sha256 "$QUALIFICATION_VERDICT_SHA256" \
+            --expected-published-package-sha256 "$signed_sha256"
+          {
+            echo "- Repository-signed package SHA-256: \`$signed_sha256\`"
+            echo "- Publication record SHA-256: \`$publication_record_sha256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the publication identity record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nuget-publication-identity-${{ github.sha }}
+          path: artifacts/nuget-org/package-publication.json
+          if-no-files-found: error
+          retention-days: 90
