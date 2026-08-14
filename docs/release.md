@@ -48,25 +48,32 @@ persisted/protocol compatibility decision.
 
 ## Prerelease and qualification status
 
-A 1.0 prerelease may be published before the external scale qualification and unfamiliar-maintainer
-exercise are complete only when the package description and release notes state plainly that it is
-not for production use. Do not call it qualified, production-ready, or the stable 1.0 release.
+A 1.0 prerelease qualification target may be frozen before registry publication only when the
+package description and release notes state plainly that it is not for production use. Do not call
+it qualified, production-ready, published, or the stable 1.0 release.
 
-Immediately after publishing, download the repository-signed package and create the exact package
-identity record in the [prerelease handoff kit](qualification-handoff.md#package-identity-record).
-The clean-room worksheet and later qualification runner must consume those package bytes from the
-public registry, never a project reference or a local rebuild. Qualification code, frozen profiles,
-raw evidence, attestations, and independent verification belong in the separate public boundary
-defined by that kit.
+Before qualification, produce one exact unsigned package from one immutable `main` commit with the
+[local dry run](#local-dry-run). Preserve that `.nupkg` and its canonical manifest in the separate
+public qualification boundary, then create the version-2
+[package identity record](qualification-handoff.md#package-identity-record). The clean-room
+worksheet and qualification runner must consume those exact package bytes through a locked
+package-only source. A project reference, extracted DLL, or later local rebuild is not the target.
+
+Only after qualification succeeds may the release environment and Trusted Publishing policy be
+configured. Publication must upload the exact qualified unsigned `.nupkg`, not a rebuild. NuGet.org
+adds its repository signature; the workflow then proves that every canonical payload entry still
+matches the qualified manifest, records the signed package SHA-256, and repeats package-only
+consumption. The qualified unsigned SHA-256 and the delivered signed SHA-256 are intentionally
+different identities connected by that fail-closed equivalence proof.
 
 The actual unfamiliar-maintainer exercise remains a stable-1.0 gate. Committing its worksheet does
-not complete it. External qualification must bind the exact `.nupkg` SHA-256 and repository commit,
-and a verdict for a prerelease does not silently transfer to a byte-different stable package.
+not complete it. A verdict for a prerelease does not silently transfer to a different canonical
+payload or a byte-different stable package.
 
-### One-time Trusted Publishing setup
+### Post-qualification Trusted Publishing setup
 
-Before creating `v1.0.0-rc.2`, configure one NuGet.org Trusted Publishing policy with this exact
-tuple:
+After qualification succeeds and before creating `v1.0.0-rc.2`, configure one NuGet.org Trusted
+Publishing policy with this exact tuple:
 
 | Policy field | Required value |
 | --- | --- |
@@ -77,18 +84,41 @@ tuple:
 | GitHub environment | `release` |
 
 The NuGet login user is the policy creator's profile name, `neftedollar`, not an email address. Also
-create the GitHub `release` environment and protect it with the intended reviewers before pushing
-the tag. The workflow requests only `contents: read`, `checks: read`, and `id-token: write`; it uses
-the official `NuGet/login` action pinned to the reviewed `v1.2.0` commit and contains no persistent
-NuGet API key secret. The OIDC exchange itself is the authoritative external-policy check: a missing,
-inactive, or mismatched policy stops the job, and there is no credential fallback.
+create the GitHub `release` environment, protect it with the intended reviewers, and set these
+environment variables from the independently verified qualification target:
+
+| Environment variable | Required value |
+| --- | --- |
+| `QUALIFICATION_PACKAGE_URL` | Qualification release asset URL for the exact unsigned `.nupkg`, bound by the SHA-256 below |
+| `QUALIFICATION_PACKAGE_SHA256` | Exact 64-character lowercase SHA-256 of that `.nupkg` |
+| `QUALIFICATION_CANONICAL_SHA256` | Exact 64-character lowercase SHA-256 of its canonical manifest |
+| `QUALIFICATION_VERDICT_URL` | Qualification release asset URL for the passing scale verdict, bound by the SHA-256 below |
+| `QUALIFICATION_VERDICT_SHA256` | Exact 64-character lowercase SHA-256 of that verdict |
+| `QUALIFIED_LIBRARY_COMMIT` | Exact 40-character lowercase library commit qualified by the evidence |
+
+The workflow accepts the package URL only from a release of the public
+`Neftedollar/Orleans.SearchableStorage.Qualification` repository and requires a separately hashed
+`oss-qualification-verdict/v1` record whose outcome is `pass` and whose package id, version, two
+digests, and library commit match the protected target identity. Enable GitHub Release immutability
+in that repository before its first release, upload every asset to a draft, publish the complete
+release, and have the qualification-side verifier or release coordinator capture the release and
+asset-attestation JSON before transferring the URLs and digests into the protected environment, as
+documented in the [qualification handoff](qualification-handoff.md#separate-qualification-repository).
+The publication workflow then revalidates the exact URL shapes, records, and bytes by SHA-256; it
+does not need a cross-repository GitHub token. It requests only `contents: read`, `checks: read`, and
+`id-token: write`; it uses the official `NuGet/login` action pinned to the reviewed `v1.2.0` commit
+and contains no persistent NuGet API key secret. The OIDC exchange itself is the authoritative
+external-policy check: a missing, inactive, or mismatched policy stops the job, and there is no
+credential fallback.
 
 Publication accepts only an exact `v1.0.0-rc.2` tag on the current `main` commit whose CI and Security
-checks already succeeded. It repeats the source build/tests, runs the reproducible package dry-run,
-freezes and rechecks the exact unsigned package SHA-256 immediately before push, and does not use
-`--skip-duplicate`. After push it downloads the NuGet.org repository-signed bytes and applies the
-same canonical package and package-only consumer verification. Do not create the tag until the
-external policy and protected environment match the tuple above.
+checks already succeeded and whose identity matches the qualified target. It repeats the source
+build/tests and reproducible package dry-run as an independent equivalence check, downloads the
+exact qualified unsigned package, verifies its SHA-256, provenance, and canonical-manifest digest,
+and publishes those exact bytes without `--skip-duplicate`. After push it downloads the NuGet.org
+repository-signed bytes and applies the same canonical package and package-only consumer
+verification. Do not create the tag until qualification has passed and the external policy,
+protected environment, and qualification variables match the reviewed records above.
 
 ## Local dry run
 
@@ -106,11 +136,20 @@ OSS_RELEASE_OUTPUT_DIRECTORY=artifacts/release-candidate \
   bash eng/release-dry-run.sh
 ```
 
+Before admitting that artifact to qualification, record both content identities:
+
+```bash
+sha256sum \
+  artifacts/release-candidate/Orleans.SearchableStorage.1.0.0-rc.2.nupkg \
+  artifacts/release-candidate/package.canonical.json
+```
+
 The script builds the shipping project, packs it twice with the current commit as repository
 provenance, compares a canonical sorted list of package entry names and SHA-256 content hashes,
 validates the exact package allowlist and nuspec metadata, and restores/builds a standalone consumer
-against only the locally produced package. Raw `.nupkg` bytes are deliberately not compared: ZIP
-container timestamps are not part of the shipped semantic content proof.
+against only the locally produced package. The two source packs are compared canonically because ZIP
+timestamps are not semantic content. Once one pack is admitted as the qualification target, its raw
+`.nupkg` SHA-256 also freezes the exact container which the later publication workflow must upload.
 
 CI runs the same validators after its ordinary solution build/test and pack. The docs link checker
 validates local Markdown paths and GitHub-style anchors. The shipping project treats missing public
@@ -122,10 +161,11 @@ constraint diagnostics, so a silently inactive or incomplete constraint gate can
 
 ## Publish and verify
 
-Publish only the `.nupkg` produced from the reviewed commit. Retain the workflow run, commit, canonical
-package manifest, test results, backend contract evidence, and release notes. After upload, download
-the registry artifact into a clean directory and run the same package validator and consumer smoke
-against it before announcing the release. NuGet.org adds a repository signature as the sole root
+Publish only the exact qualified unsigned `.nupkg` named by the version-2 identity record. Retain the
+workflow run, commit, both package identities, canonical manifest, test results, backend contract
+evidence, and release notes. After upload, download the registry artifact into a clean directory and
+run the same package validator and consumer smoke against it before announcing the release. NuGet.org
+adds a repository signature as the sole root
 `.signature.p7s` entry. Verify that signature with the SDK trust policy, exclude only that signature
 container from the semantic source-package comparison, and consume the exact downloaded artifact:
 

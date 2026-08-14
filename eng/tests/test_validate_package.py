@@ -98,6 +98,78 @@ class PackageAllowlistTests(unittest.TestCase):
                     self.assertEqual(1, invalid_code)
                     self.assertIn(expected_surface, invalid_error)
 
+    def test_validator_binds_exact_package_and_canonical_sha256(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowlist = root / "allowlist.txt"
+            allowlist.write_text(
+                "Orleans.SearchableStorage.nuspec\nREADME.md\nRELEASE_NOTES.md\n",
+                encoding="utf-8",
+            )
+            package = root / "Orleans.SearchableStorage.1.0.0-rc.2.nupkg"
+            write_zip_bytes(
+                package,
+                {
+                    "Orleans.SearchableStorage.nuspec": valid_nuspec(
+                        version="1.0.0-rc.2",
+                        description=(
+                            f"{VALIDATOR.PRERELEASE_WARNING} "
+                            f"{VALIDATOR.PACKAGE_DESCRIPTION}"
+                        ),
+                        release_notes=VALIDATOR.PRERELEASE_WARNING,
+                    ),
+                    "README.md": VALIDATOR.PRERELEASE_WARNING.encode(),
+                    "RELEASE_NOTES.md": VALIDATOR.PRERELEASE_WARNING.encode(),
+                },
+            )
+            canonical = root / "package.canonical.json"
+            baseline_code, baseline_error = run_validator(
+                package,
+                allowlist,
+                "--canonical-output",
+                str(canonical),
+            )
+            self.assertEqual(0, baseline_code, baseline_error)
+            package_sha256 = VALIDATOR.hashlib.sha256(package.read_bytes()).hexdigest()
+            canonical_sha256 = VALIDATOR.hashlib.sha256(canonical.read_bytes()).hexdigest()
+
+            accepted_code, accepted_error = run_validator(
+                package,
+                allowlist,
+                "--expected-package-sha256",
+                package_sha256,
+                "--expected-canonical-sha256",
+                canonical_sha256,
+            )
+            self.assertEqual(0, accepted_code, accepted_error)
+
+            package_code, package_error = run_validator(
+                package,
+                allowlist,
+                "--expected-package-sha256",
+                "0" * 64,
+            )
+            self.assertEqual(1, package_code)
+            self.assertIn("package SHA-256", package_error)
+
+            canonical_code, canonical_error = run_validator(
+                package,
+                allowlist,
+                "--expected-canonical-sha256",
+                "0" * 64,
+            )
+            self.assertEqual(1, canonical_code)
+            self.assertIn("canonical SHA-256", canonical_error)
+
+            malformed_code, malformed_error = run_validator(
+                package,
+                allowlist,
+                "--expected-package-sha256",
+                "A" * 64,
+            )
+            self.assertEqual(1, malformed_code)
+            self.assertIn("64 lowercase hexadecimal", malformed_error)
+
     def test_literal_content_types_name_is_not_treated_as_a_glob(self) -> None:
         self.assertTrue(VALIDATOR.matches("[Content_Types].xml", "[Content_Types].xml"))
         self.assertFalse(VALIDATOR.matches("[Content_Types].xml", "C.xml"))

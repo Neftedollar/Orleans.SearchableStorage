@@ -111,6 +111,11 @@ def require_prerelease_warning(value: str, surface: str) -> None:
         )
 
 
+def require_sha256(value: str, surface: str) -> None:
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{surface} must be exactly 64 lowercase hexadecimal characters")
+
+
 def validate_nuspec(
     data: bytes,
     expected_version: str | None,
@@ -458,6 +463,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allowlist", type=Path, default=Path(__file__).with_name("package-allowlist.txt"))
     parser.add_argument("--expected-version")
     parser.add_argument("--expected-commit")
+    parser.add_argument("--expected-package-sha256")
+    parser.add_argument("--expected-canonical-sha256")
     parser.add_argument("--canonical-output", type=Path)
     parser.add_argument(
         "--snapshot-output",
@@ -475,6 +482,10 @@ def main(argv: list[str] | None = None) -> int:
     snapshot_path: Path | None = None
     snapshot_created = False
     try:
+        if args.expected_package_sha256:
+            require_sha256(args.expected_package_sha256, "expected package SHA-256")
+        if args.expected_canonical_sha256:
+            require_sha256(args.expected_canonical_sha256, "expected canonical SHA-256")
         if args.snapshot_output:
             snapshot_path = args.snapshot_output
         else:
@@ -482,6 +493,13 @@ def main(argv: list[str] | None = None) -> int:
             snapshot_path = Path(temporary_snapshot.name) / "package.nupkg"
         package_file_bytes, container_sha256 = create_package_snapshot(args.package, snapshot_path)
         snapshot_created = True
+        if (
+            args.expected_package_sha256
+            and container_sha256 != args.expected_package_sha256
+        ):
+            raise ValueError(
+                f"package SHA-256 {container_sha256} != expected {args.expected_package_sha256}"
+            )
         patterns = load_allowlist(args.allowlist)
         canonical_entries: dict[str, dict[str, object]] = {}
         warning_entry_text: dict[str, str] = {}
@@ -590,6 +608,15 @@ def main(argv: list[str] | None = None) -> int:
             ],
         }
         rendered = json.dumps(canonical, indent=2, sort_keys=True) + "\n"
+        canonical_sha256 = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+        if (
+            args.expected_canonical_sha256
+            and canonical_sha256 != args.expected_canonical_sha256
+        ):
+            raise ValueError(
+                f"canonical SHA-256 {canonical_sha256} != expected "
+                f"{args.expected_canonical_sha256}"
+            )
         if args.canonical_output:
             args.canonical_output.parent.mkdir(parents=True, exist_ok=True)
             args.canonical_output.write_text(rendered, encoding="utf-8")

@@ -19,6 +19,9 @@ semantics.
 
 ### Evidence status
 
+- Formal qualification targets the exact unsigned `.nupkg`, canonical-manifest digest, and
+  repository commit frozen before publication. Qualification must consume those exact package
+  bytes from an isolated package-only source; a project reference or rebuild is invalid.
 - The build, unit and integration suites, Memory contract, container-backed PostgreSQL and Redis
   contracts, Azurite-backed Azure Blob contract, package provenance checks, and package-only
   consumer smoke are release gates.
@@ -32,10 +35,11 @@ semantics.
 ### Compatibility and rollout
 
 - The public API and source-compatibility baseline are frozen for this qualification candidate.
-  Any library implementation, public or durable contract, or observable behavior change requires
+  Any library implementation, dependency, generated binary, public or durable contract, observable
+  behavior, packaged documentation/content, or repository provenance change requires
   `1.0.0-rc.3` (or a later candidate) and invalidates qualification evidence collected for this
-  package. Stable SemVer compatibility obligations begin with the final `1.0.0` package. There is
-  no previously published package or continuation-token compatibility promise to migrate from.
+  package. Stable SemVer compatibility obligations begin with the final `1.0.0` package. There is no
+  previously published package or continuation-token compatibility promise to migrate from.
 - Package version numbers are independent of persistence, wire, schema, continuation, and movement
   protocol versions. Those versions remain frozen in `eng/compatibility-manifest.json` and are not
   changed merely for this package.
@@ -66,4 +70,7 @@ The command packs twice, compares canonical package contents, validates the exac
 metadata, warning surfaces, and commit provenance, and builds a standalone package-only consumer.
 Only after every gate passes does it retain
 `Orleans.SearchableStorage.1.0.0-rc.2.nupkg` and `package.canonical.json` in the requested directory.
-It does not publish anything to NuGet.org.
+Record the SHA-256 of both files and preserve them as immutable qualification-repository assets. It
+does not publish anything to NuGet.org. After qualification, the Trusted Publishing workflow must
+upload that exact unsigned `.nupkg`, verify the repository-signed download against the qualified
+canonical manifest, and record the signed package SHA-256.
