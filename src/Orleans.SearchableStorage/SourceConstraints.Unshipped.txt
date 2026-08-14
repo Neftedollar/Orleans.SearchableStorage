@@ -1,1 +1,3 @@
 # Entries added after the 1.0 freeze belong here until the next release.
+method global::Orleans.SearchableStorage.ISearchableStorageIndexWriter.RemoveAsync<TState>(string, global::Orleans.Runtime.GrainId, global::System.Threading.CancellationToken) :: TState = <none>
+method global::Orleans.SearchableStorage.ISearchableStorageIndexWriter.UpsertAsync<TState>(string, global::Orleans.Runtime.GrainId, TState, global::System.Threading.CancellationToken) :: TState = <none>

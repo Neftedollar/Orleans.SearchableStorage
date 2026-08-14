@@ -57,6 +57,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             _logger,
             _providerName);
         var records = await _persistence.ActivateAsync();
+        StoredRecordNamespaceValidation.ValidateAll(records.Values, _persistence.NamespaceMode);
         if (_persistence.RoutedOperationsRequired)
         {
             var routing = await GetRequiredRoutingSnapshotAsync();
@@ -85,6 +86,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         EnsureUsable();
         EnsureLegacyOperationAllowed();
+        EnsureNamespaceMode(StorageNamespaceMode.Integrated);
         ArgumentException.ThrowIfNullOrWhiteSpace(recordKey);
         StorageCapacityGuardrails.ValidateRecordKey(recordKey);
 
@@ -101,7 +103,9 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         return new StorageReadResult
         {
             Found = true,
-            Payload = [.. record.Payload],
+            Payload = [.. (record.Payload
+                ?? throw new InvalidOperationException(
+                    "An integrated storage record is missing its application payload."))],
             ETag = record.ETag,
         };
     }
@@ -115,6 +119,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         StorageCapacityGuardrails.ValidateRecordKey(request.RecordKey);
 
         var snapshot = await ValidatePointRouteAsync(request.Slot, request.Epoch);
+        EnsureNamespaceMode(snapshot, StorageNamespaceMode.Integrated);
         ValidateRoutedRecordIdentity(
             request.RecordKey,
             request.GrainId,
@@ -128,6 +133,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         EnsureUsable();
         EnsureLegacyOperationAllowed();
+        if (request.Persistence.NamespaceMode != StorageNamespaceMode.Integrated)
+        {
+            throw new InvalidOperationException(
+                "Index-only mutations require the routed writer protocol.");
+        }
+        EnsureNamespaceMode(StorageNamespaceMode.Integrated);
         return await WriteCoreAsync(request);
     }
 
@@ -135,8 +146,17 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
-        ArgumentNullException.ThrowIfNull(request.Payload);
         ArgumentNullException.ThrowIfNull(request.IndexEntries);
+        if (request.Unconditional != (request.Persistence.NamespaceMode == StorageNamespaceMode.IndexOnly))
+        {
+            throw new ArgumentException(
+                "Only an index-only writer can issue an unconditional payload-free write.",
+                nameof(request));
+        }
+        if (request.Persistence.NamespaceMode == StorageNamespaceMode.Integrated)
+        {
+            ArgumentNullException.ThrowIfNull(request.Payload);
+        }
         StorageCapacityGuardrails.ValidateWriteRequest(request);
         StoragePartitionPersistence.ValidateSettings(request.Persistence);
         Persistence.EnsureSettingsMatch(request.Persistence);
@@ -165,7 +185,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 "A managed write encountered a record outside the active schema generation.");
         }
 
-        EnsureETagMatches(request.RecordKey, currentRecord?.ETag, request.ExpectedETag, "write");
+        if (!request.Unconditional)
+        {
+            EnsureETagMatches(request.RecordKey, currentRecord?.ETag, request.ExpectedETag, "write");
+        }
 
         var nextVersion = Persistence.NextVersion;
         var etag = nextVersion.ToString(CultureInfo.InvariantCulture);
@@ -179,13 +202,14 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 ? null
                 : [.. request.IndexSchemaFingerprint],
         })!;
+        StoredRecordNamespaceValidation.Validate(storedRecord, request.Persistence.NamespaceMode);
         StoragePartitionIndexValidation.ValidateRecord(storedRecord);
         _view.ValidateProjectedUpsert(request.RecordKey, storedRecord);
 
         var validationEntry = CreateMutationJournalValidationEntry(
             StorageJournalOperation.Upsert,
             request.RecordKey,
-            request.ExpectedETag,
+            request.Unconditional ? currentRecord?.ETag : request.ExpectedETag,
             storedRecord,
             checked(nextVersion + 1));
         await PrepareForMutationAsync(request.Persistence, validationEntry);
@@ -197,7 +221,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             PreviousOperationId = Persistence.CommittedOperationId,
             Operation = StorageJournalOperation.Upsert,
             RecordKey = request.RecordKey,
-            ExpectedETag = request.ExpectedETag,
+            ExpectedETag = request.Unconditional ? currentRecord?.ETag : request.ExpectedETag,
             Record = storedRecord,
             NextVersionAfter = checked(nextVersion + 1),
         };
@@ -216,6 +240,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         StorageCapacityGuardrails.ValidateWriteRequest(request.Request);
 
         var snapshot = await ValidatePointRouteAsync(request.Slot, request.Epoch);
+        EnsureNamespaceMode(snapshot, request.Request.Persistence.NamespaceMode);
         ValidateRoutedRecordIdentity(
             request.Request.RecordKey,
             request.Request.GrainId,
@@ -232,6 +257,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         EnsureUsable();
         EnsureLegacyOperationAllowed();
+        if (request.Persistence.NamespaceMode != StorageNamespaceMode.Integrated)
+        {
+            throw new InvalidOperationException(
+                "Index-only mutations require the routed writer protocol.");
+        }
+        EnsureNamespaceMode(StorageNamespaceMode.Integrated);
         await ClearCoreAsync(request);
     }
 
@@ -239,6 +270,12 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.RecordKey);
+        if (request.Unconditional != (request.Persistence.NamespaceMode == StorageNamespaceMode.IndexOnly))
+        {
+            throw new ArgumentException(
+                "Only an index-only writer can issue an unconditional clear.",
+                nameof(request));
+        }
         StorageCapacityGuardrails.ValidateRecordKey(request.RecordKey);
         StoragePartitionPersistence.ValidateSettings(request.Persistence);
         Persistence.EnsureSettingsMatch(request.Persistence);
@@ -250,7 +287,10 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
 
         if (!_view.Records.TryGetValue(request.RecordKey, out var currentRecord))
         {
-            EnsureETagMatches(request.RecordKey, null, request.ExpectedETag, "clear");
+            if (!request.Unconditional)
+            {
+                EnsureETagMatches(request.RecordKey, null, request.ExpectedETag, "clear");
+            }
             return;
         }
 
@@ -264,11 +304,14 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 "A managed clear encountered a record outside the active schema generation.");
         }
 
-        EnsureETagMatches(request.RecordKey, currentRecord.ETag, request.ExpectedETag, "clear");
+        if (!request.Unconditional)
+        {
+            EnsureETagMatches(request.RecordKey, currentRecord.ETag, request.ExpectedETag, "clear");
+        }
         var validationEntry = CreateMutationJournalValidationEntry(
             StorageJournalOperation.Delete,
             request.RecordKey,
-            request.ExpectedETag,
+            request.Unconditional ? currentRecord.ETag : request.ExpectedETag,
             record: null,
             Persistence.NextVersion);
         await PrepareForMutationAsync(request.Persistence, validationEntry);
@@ -280,7 +323,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             PreviousOperationId = Persistence.CommittedOperationId,
             Operation = StorageJournalOperation.Delete,
             RecordKey = request.RecordKey,
-            ExpectedETag = request.ExpectedETag,
+            ExpectedETag = request.Unconditional ? currentRecord.ETag : request.ExpectedETag,
             NextVersionAfter = Persistence.NextVersion,
         };
 
@@ -300,6 +343,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         // Route validation deliberately precedes the missing-record fast path in ClearAsync. A
         // stale owner must not acknowledge a clear while the authoritative record lives elsewhere.
         var snapshot = await ValidatePointRouteAsync(request.Slot, request.Epoch);
+        EnsureNamespaceMode(snapshot, request.Request.Persistence.NamespaceMode);
         ValidateRoutedRecordIdentity(
             request.Request.RecordKey,
             request.GrainId,
@@ -333,6 +377,13 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         {
             throw new InvalidOperationException(
                 "Index-schema rebuild cannot touch a partition while a slot move is active.");
+        }
+        if (Persistence.NamespaceMode == StorageNamespaceMode.IndexOnly
+            && _view.Records.Count != 0)
+        {
+            throw new SearchableStorageIndexSchemaException(
+                "An index-only partition cannot rebuild indexes from application payloads. "
+                + "Replay the authoritative external corpus into a new index namespace.");
         }
         if (!string.Equals(request.ProviderName, _providerName, StringComparison.Ordinal))
         {
@@ -388,10 +439,13 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 IReadOnlyList<IndexEntry> indexes;
                 try
                 {
+                    var payload = current.Payload
+                        ?? throw new InvalidOperationException(
+                            "An integrated schema-rebuild record is missing its application payload.");
                     indexes = _stateRegistry.Extract(
                         request.ProviderName,
                         request.StateName,
-                        current.Payload,
+                        payload,
                         request.TargetFingerprint);
                 }
                 catch (Exception exception) when (IsSchemaMaterializationFailure(exception))
@@ -416,7 +470,9 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 var replacement = new StoredRecord
                 {
                     GrainId = current.GrainId,
-                    Payload = [.. current.Payload],
+                    Payload = [.. (current.Payload
+                        ?? throw new InvalidOperationException(
+                            "An integrated schema-rebuild record is missing its application payload."))],
                     ETag = current.ETag,
                     IndexEntries = [.. indexes],
                     IndexSchemaFingerprint = [.. request.TargetFingerprint],
@@ -501,6 +557,13 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         // maintenance therefore needs an authoritative read instead of a same-epoch cached
         // snapshot, otherwise a completed move can remain falsely visible until cache eviction.
         var routing = await ValidateFreshQueryRouteAsync(request.LayoutEpoch);
+        if (routing.NamespaceMode != request.Persistence.NamespaceMode)
+        {
+            throw new ArgumentException(
+                "The index-schema protocol request namespace mode does not match the persisted routing layout.",
+                nameof(request));
+        }
+
         var layoutFingerprint = StorageLayoutFingerprint.Compute(routing);
         if (!IndexSchemaIdentity.FixedTimeEquals(
                 layoutFingerprint,
@@ -735,7 +798,8 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         ValidateProtocolRequest(request);
         var routing = await GetRequiredRoutingSnapshotAsync();
         if (routing.VirtualSlotCount != request.VirtualSlotCount
-            || request.MinimumRoutingEpoch < routing.Epoch)
+            || request.MinimumRoutingEpoch < routing.Epoch
+            || routing.NamespaceMode != request.NamespaceMode)
         {
             throw new ArgumentException(
                 "The partition protocol request does not match the persisted routing layout.",
@@ -747,6 +811,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             JournalSegmentCapacity = request.JournalSegmentCapacity,
             MaximumJournalReplayEntries = request.MaximumJournalReplayEntries,
             CompactionThreshold = request.MaximumJournalReplayEntries,
+            NamespaceMode = request.NamespaceMode,
         };
         await Persistence.EnableMovementProtocolAsync(
             settings,
@@ -968,6 +1033,7 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
             Persistence.IndexSchemaProtocolVersion,
             _stateRegistry,
             request.Page.Records);
+        ValidateImportedNamespaceMode(request.Page.Records, Persistence.NamespaceMode);
 
         StorageMovePageOperations.ValidateImportAgainstCurrentView(
             _view,
@@ -1318,6 +1384,13 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
                 nameof(request),
                 request.IndexSchemaProtocolVersion,
                 "Unknown index-schema protocol version.");
+        }
+        if (!Enum.IsDefined(request.NamespaceMode))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                request.NamespaceMode,
+                "Unknown searchable-storage namespace mode.");
         }
     }
 
@@ -2327,6 +2400,42 @@ internal sealed class StoragePartitionGrain : Grain, IStoragePartitionGrain
         }
 
         return snapshot;
+    }
+
+    private void EnsureNamespaceMode(StorageNamespaceMode expected)
+    {
+        if (Persistence.NamespaceMode != expected)
+        {
+            throw new InvalidOperationException(
+                $"Partition namespace mode {Persistence.NamespaceMode} cannot serve a {expected} operation.");
+        }
+    }
+
+    private void EnsureNamespaceMode(
+        StorageLayoutSnapshot snapshot,
+        StorageNamespaceMode expected)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.NamespaceMode != expected)
+        {
+            throw new InvalidOperationException(
+                $"Layout namespace mode {snapshot.NamespaceMode} cannot serve a {expected} operation.");
+        }
+
+        EnsureNamespaceMode(expected);
+    }
+
+    private static void ValidateImportedNamespaceMode(
+        IReadOnlyList<StorageMoveRecord> imports,
+        StorageNamespaceMode namespaceMode)
+    {
+        ArgumentNullException.ThrowIfNull(imports);
+        foreach (var item in imports)
+        {
+            StoredRecordNamespaceValidation.Validate(
+                StorageMoveRecordCodec.Decode(item.Record),
+                namespaceMode);
+        }
     }
 
     private void ValidateRoutedRecordIdentity(

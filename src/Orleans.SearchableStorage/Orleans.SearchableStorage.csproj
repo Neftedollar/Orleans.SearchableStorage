@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Description>Orleans-native persistent storage with searchable secondary indexes.</Description>
     <VersionPrefix>1.0.0</VersionPrefix>
-    <VersionSuffix>rc.1</VersionSuffix>
+    <VersionSuffix>rc.2</VersionSuffix>
     <PackageDescription Condition="'$(VersionSuffix)' == ''">$(Description)</PackageDescription>
     <PackageDescription Condition="'$(VersionSuffix)' != ''">NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION. Orleans-native persistent storage with searchable secondary indexes. This prerelease exists for qualification and integration testing.</PackageDescription>
     <Authors>Orleans.SearchableStorage contributors</Authors>
@@ -14,7 +14,7 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageReleaseNotes Condition="'$(VersionSuffix)' != ''">NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION. Version 1.0.0-rc.1 exists for qualification and integration testing; the required scale evidence is not complete.</PackageReleaseNotes>
+    <PackageReleaseNotes Condition="'$(VersionSuffix)' != ''">NOT PRODUCTION-QUALIFIED. DO NOT USE THIS PACKAGE IN PRODUCTION. Version 1.0.0-rc.2 exists for qualification and integration testing; the required scale evidence is not complete.</PackageReleaseNotes>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <WarningsAsErrors>$(WarningsAsErrors);CS1591</WarningsAsErrors>
     <!-- The two extension families intentionally mirror ISiloBuilder and IServiceCollection. -->
@@ -50,6 +50,7 @@
     <None Include="../../docs/live-movement.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/maintainers.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/index-schema-lifecycle.md" Pack="true" PackagePath="/docs/" />
+    <None Include="../../docs/index-only-mode.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/one-zero-contract.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/operations.md" Pack="true" PackagePath="/docs/" />
     <None Include="../../docs/qualification-handoff.md" Pack="true" PackagePath="/docs/" />

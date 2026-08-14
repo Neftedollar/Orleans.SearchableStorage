@@ -261,7 +261,7 @@ public sealed class StoragePersistenceTests
         copy.Records["first"].IndexEntries[0].Value
             .Should().NotBeSameAs(original.Records["first"].IndexEntries[0].Value);
 
-        copy.Records["first"].Payload[0] = 99;
+        copy.Records["first"].Payload![0] = 99;
         copy.Records["first"].IndexEntries[0].Value.Text = "changed";
         copy.Records.Remove("second");
 
@@ -280,7 +280,7 @@ public sealed class StoragePersistenceTests
             .Reverse()
             .ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal);
         var changedPayload = original.Copy();
-        changedPayload.Records["first"].Payload[0]++;
+        changedPayload.Records["first"].Payload![0]++;
         var changedIndexValue = original.Copy();
         changedIndexValue.Records["first"].IndexEntries[0].Value.Text = "different";
         var changedIndexOrder = original.Copy();
@@ -303,7 +303,7 @@ public sealed class StoragePersistenceTests
         var journal = CreateJournalEntry(CreateRecord("journal", payloadSeed: 3));
         var equalJournal = journal.Copy();
         var changedJournal = journal.Copy();
-        changedJournal.Record!.Payload[0]++;
+        changedJournal.Record!.Payload![0]++;
 
         StoragePersistenceStateEquality.DescriptorEquals(descriptor, snapshot).Should().BeTrue();
         StoragePersistenceStateEquality.DescriptorEquals(changedDescriptor, snapshot).Should().BeFalse();

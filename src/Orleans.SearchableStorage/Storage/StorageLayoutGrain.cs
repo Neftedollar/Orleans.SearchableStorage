@@ -55,7 +55,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         EnsureUsable();
         ArgumentNullException.ThrowIfNull(descriptor);
 
-        if (descriptor.FormatVersion == StorageLayout.MovementFormatVersion)
+        if (StorageLayout.IsRoutingFormatVersion(descriptor.FormatVersion))
         {
             _ = await InitializeRoutingAsync(descriptor);
             return;
@@ -117,7 +117,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
 
         if (!_state.State.Initialized)
         {
-            if (descriptor.FormatVersion == StorageLayout.MovementFormatVersion)
+            if (StorageLayout.IsRoutingFormatVersion(descriptor.FormatVersion))
             {
                 ValidateRoutingSeed(descriptor);
             }
@@ -295,7 +295,9 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         }
 
         var candidate = _state.State.Copy();
-        candidate.FormatVersion = StorageLayout.IndexSchemaFormatVersion;
+        candidate.FormatVersion = candidate.NamespaceMode == StorageNamespaceMode.IndexOnly
+            ? StorageLayout.IndexOnlyFormatVersion
+            : StorageLayout.IndexSchemaFormatVersion;
         candidate.IndexSchemaEnablement = new StorageIndexSchemaEnableIntent
         {
             EnablementId = request.EnablementId,
@@ -354,6 +356,13 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         EnsureUsable();
         EnsureCurrentRoutingState();
         EnsureNoIndexSchemaEnablement();
+        if (_state.State.NamespaceMode == StorageNamespaceMode.IndexOnly
+            && _state.State.IndexSchemaProtocolVersion
+                != StorageLayout.CurrentIndexSchemaProtocolVersion)
+        {
+            throw new InvalidOperationException(
+                "An index-only namespace must activate its managed schema before movement can be enabled.");
+        }
         if (_state.State.MovementProtocolVersion == StorageLayout.CurrentMovementProtocolVersion)
         {
             return CreateSnapshot();
@@ -1201,6 +1210,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             JournalSegmentCapacity = _state.State.JournalSegmentCapacity,
             MaximumJournalReplayEntries = _state.State.MaximumJournalReplayEntries,
             IndexSchemaProtocolVersion = _state.State.IndexSchemaProtocolVersion,
+            NamespaceMode = _state.State.NamespaceMode,
         };
     }
 
@@ -1236,7 +1246,8 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             && state.MovementProtocolVersion == StorageLayout.CurrentMovementProtocolVersion
             && state.RoutedOperationsRequired
             && state.MinimumRoutingEpoch == minimumRoutingEpoch
-            && state.IndexSchemaProtocolVersion == _state.State.IndexSchemaProtocolVersion;
+            && state.IndexSchemaProtocolVersion == _state.State.IndexSchemaProtocolVersion
+            && state.NamespaceMode == _state.State.NamespaceMode;
     }
 
     private void ValidateProtocolState(
@@ -1266,6 +1277,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             || state.MovementProtocolVersion != identity.ProtocolVersion
             || !state.RoutedOperationsRequired
             || state.IndexSchemaProtocolVersion != _state.State.IndexSchemaProtocolVersion
+            || state.NamespaceMode != _state.State.NamespaceMode
             || state.MinimumRoutingEpoch < identity.SourceEpoch
             || state.MinimumRoutingEpoch > checked(identity.SourceEpoch + 1))
         {
@@ -1502,6 +1514,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             PartitionCount = descriptor.PartitionCount,
             JournalSegmentCapacity = descriptor.JournalSegmentCapacity,
             MaximumJournalReplayEntries = descriptor.MaximumJournalReplayEntries,
+            NamespaceMode = StorageNamespaceMode.Integrated,
         };
     }
 
@@ -1513,7 +1526,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         return new StorageLayoutState
         {
             Initialized = true,
-            FormatVersion = StorageLayout.MovementFormatVersion,
+            FormatVersion = descriptor.FormatVersion,
             ProviderName = descriptor.ProviderName,
             PartitionCount = descriptor.PartitionCount,
             JournalSegmentCapacity = descriptor.JournalSegmentCapacity,
@@ -1523,6 +1536,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
                 descriptor.PartitionCount,
                 virtualSlotCount),
             Epoch = InitialRoutingEpoch,
+            NamespaceMode = descriptor.NamespaceMode,
         };
     }
 
@@ -1566,6 +1580,13 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
                 "A version-3 layout descriptor cannot contain virtual-slot settings.",
                 nameof(descriptor));
         }
+
+        if (descriptor.NamespaceMode != StorageNamespaceMode.Integrated)
+        {
+            throw new ArgumentException(
+                "A version-3 layout can only describe integrated grain storage.",
+                nameof(descriptor));
+        }
     }
 
     private void ValidateRoutingDescriptorBase(StorageLayoutDescriptor descriptor)
@@ -1577,7 +1598,9 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             descriptor.PartitionCount,
             nameof(descriptor),
             "layout descriptor",
-            StorageLayout.MovementFormatVersion);
+            descriptor.NamespaceMode == StorageNamespaceMode.IndexOnly
+                ? StorageLayout.IndexOnlyFormatVersion
+                : StorageLayout.MovementFormatVersion);
         StoragePersistence.ValidateOptions(
             descriptor.JournalSegmentCapacity,
             descriptor.MaximumJournalReplayEntries);
@@ -1586,6 +1609,13 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             descriptor.MaximumJournalReplayEntries,
             nameof(descriptor.JournalSegmentCapacity),
             nameof(descriptor.MaximumJournalReplayEntries));
+        if (!Enum.IsDefined(descriptor.NamespaceMode))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(descriptor),
+                descriptor.NamespaceMode,
+                "Unknown searchable-storage namespace mode.");
+        }
     }
 
     private static void ValidateRoutingSeed(StorageLayoutDescriptor descriptor)
@@ -1599,7 +1629,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
     {
         ArgumentNullException.ThrowIfNull(identity);
         if (identity.FormatVersion is not StorageLayout.LegacyFormatVersion
-            and not StorageLayout.MovementFormatVersion)
+            && !StorageLayout.IsRoutingFormatVersion(identity.FormatVersion))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(identity),
@@ -1626,7 +1656,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             identity.PartitionCount,
             nameof(identity),
             "layout identity",
-            StorageLayout.MovementFormatVersion);
+            identity.FormatVersion);
     }
 
     private void ValidateIdentityValues(
@@ -1663,7 +1693,8 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             || (_state.State.SlotAssignments is not null && _state.State.SlotAssignments.Length != 0)
             || _state.State.Epoch != 0
             || _state.State.IndexSchemaProtocolVersion != 0
-            || _state.State.IndexSchemaEnablement is not null)
+            || _state.State.IndexSchemaEnablement is not null
+            || _state.State.NamespaceMode != StorageNamespaceMode.Integrated)
         {
             throw new InvalidOperationException(
                 "The persisted version-3 layout contains unexpected virtual-routing state and cannot be migrated.");
@@ -1682,7 +1713,8 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             || (_state.State.SlotAssignments is not null && _state.State.SlotAssignments.Length != 0)
             || _state.State.Epoch != 0
             || _state.State.IndexSchemaProtocolVersion != 0
-            || _state.State.IndexSchemaEnablement is not null)
+            || _state.State.IndexSchemaEnablement is not null
+            || _state.State.NamespaceMode != StorageNamespaceMode.Integrated)
         {
             throw new InvalidOperationException("The persisted version-3 layout contains invalid routing fields.");
         }
@@ -1709,6 +1741,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             && _state.State.MoveIntent is null
             && _state.State.IndexSchemaProtocolVersion == 0
             && _state.State.IndexSchemaEnablement is null
+            && _state.State.NamespaceMode == StorageNamespaceMode.Integrated
             && _state.State.Epoch == InitialRoutingEpoch
             && string.Equals(_state.State.ProviderName, descriptor.ProviderName, StringComparison.Ordinal)
             && _state.State.PartitionCount == descriptor.PartitionCount
@@ -1727,7 +1760,8 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
         if (string.Equals(_state.State.ProviderName, descriptor.ProviderName, StringComparison.Ordinal)
             && _state.State.PartitionCount == descriptor.PartitionCount
             && _state.State.JournalSegmentCapacity == descriptor.JournalSegmentCapacity
-            && _state.State.MaximumJournalReplayEntries == descriptor.MaximumJournalReplayEntries)
+            && _state.State.MaximumJournalReplayEntries == descriptor.MaximumJournalReplayEntries
+            && _state.State.NamespaceMode == descriptor.NamespaceMode)
         {
             // VirtualSlotTargetCount is a seed for new layouts, not an immutable runtime setting.
             return;
@@ -1756,6 +1790,7 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             && _state.State.MoveIntent is null
             && _state.State.IndexSchemaProtocolVersion == 0
             && _state.State.IndexSchemaEnablement is null
+            && _state.State.NamespaceMode == StorageNamespaceMode.Integrated
             && _state.State.Epoch == InitialRoutingEpoch
             && string.Equals(_state.State.ProviderName, identity.ProviderName, StringComparison.Ordinal)
             && _state.State.PartitionCount == identity.PartitionCount)
@@ -1769,7 +1804,10 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
     private void EnsureRoutingIdentityMatches(StorageLayoutIdentity identity)
     {
         ValidateRoutingState();
-        if (string.Equals(_state.State.ProviderName, identity.ProviderName, StringComparison.Ordinal)
+        if (StorageLayout.AreRoutingFormatsCompatible(
+                _state.State.FormatVersion,
+                identity.FormatVersion)
+            && string.Equals(_state.State.ProviderName, identity.ProviderName, StringComparison.Ordinal)
             && _state.State.PartitionCount == identity.PartitionCount)
         {
             return;
@@ -1796,10 +1834,17 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             || state.VirtualSlotCount % state.PartitionCount != 0
             || state.SlotAssignments is null
             || state.SlotAssignments.Length != state.VirtualSlotCount
-            || state.Epoch <= 0)
+            || state.Epoch <= 0
+            || !Enum.IsDefined(state.NamespaceMode))
         {
             throw new InvalidOperationException(
                 "The persisted routing layout contains invalid format or assignment boundaries.");
+        }
+        if ((state.FormatVersion == StorageLayout.IndexOnlyFormatVersion)
+                != (state.NamespaceMode == StorageNamespaceMode.IndexOnly))
+        {
+            throw new InvalidOperationException(
+                "The persisted routing format and namespace mode do not form a valid authority fence.");
         }
 
         StoragePersistence.ValidateOptions(
@@ -1824,6 +1869,33 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
                 throw new InvalidOperationException(
                     "A version-4 layout cannot contain managed index-schema capability state.");
             }
+        }
+        else if (state.FormatVersion == StorageLayout.IndexOnlyFormatVersion)
+        {
+            if (state.NamespaceMode != StorageNamespaceMode.IndexOnly)
+            {
+                throw new InvalidOperationException(
+                    "A version-6 layout must be an index-only namespace.");
+            }
+
+            var schemaBootstrap = state.IndexSchemaEnablement is null
+                && state.IndexSchemaProtocolVersion == 0;
+            var schemaMaintenanceActive = state.IndexSchemaEnablement is not null
+                && (state.IndexSchemaProtocolVersion is 0
+                    or StorageLayout.CurrentIndexSchemaProtocolVersion);
+            var schemaEnabled = state.IndexSchemaEnablement is null
+                && state.IndexSchemaProtocolVersion
+                    == StorageLayout.CurrentIndexSchemaProtocolVersion;
+            if (!schemaBootstrap && !schemaMaintenanceActive && !schemaEnabled)
+            {
+                throw new InvalidOperationException(
+                    "A version-6 layout contains invalid managed index-schema capability state.");
+            }
+        }
+        else if (state.NamespaceMode != StorageNamespaceMode.Integrated)
+        {
+            throw new InvalidOperationException(
+                "An integrated routing format cannot contain index-only namespace state.");
         }
         else
         {
@@ -2091,7 +2163,8 @@ internal sealed class StorageLayoutGrain : Grain, IStorageLayoutGrain
             + $"{descriptor.JournalSegmentCapacity}, and replay limit {descriptor.MaximumJournalReplayEntries}, but its persisted "
             + $"layout is version {_state.State.FormatVersion} for provider '{_state.State.ProviderName}' "
             + $"with {_state.State.PartitionCount} initial partitions, journal capacity {_state.State.JournalSegmentCapacity}, "
-            + $"and replay limit {_state.State.MaximumJournalReplayEntries}. Restore the persisted configuration or migrate the data.");
+            + $"replay limit {_state.State.MaximumJournalReplayEntries}, and namespace mode {_state.State.NamespaceMode}. "
+            + "Restore the persisted configuration or migrate the data.");
     }
 
     private void ThrowIdentityMismatch(StorageLayoutIdentity identity)

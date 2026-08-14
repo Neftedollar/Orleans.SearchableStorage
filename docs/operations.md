@@ -1,8 +1,9 @@
 # Operations index
 
 This page is the operator entry point. It links to the detailed runbooks instead of restating their
-invariants. Orleans grain state remains authoritative; the searchable provider's records and indexes
-must be backed up, restored, rolled out, and moved as one provider namespace.
+invariants. Integrated Orleans grain state remains authoritative inside the searchable namespace;
+in index-only mode the external application store is authoritative. The searchable provider's own
+records, indexes, and controls must be backed up, restored, rolled out, and moved as one namespace.
 
 ## Runbook map
 
@@ -12,6 +13,7 @@ must be backed up, restored, rolled out, and moved as one provider namespace.
 | Size partitions, journal, replay, and compaction | [Storage capacity limits](storage-capacity-limits.md) | [Architecture](architecture.md#recovery-and-bounded-compaction) |
 | Roll out paging/query changes or rotate continuation keys | [Bounded query contract](bounded-query-contract.md#compatibility-and-rollout) | [1.0 contract](one-zero-contract.md) |
 | Adopt/change a managed index schema | [Managed schema lifecycle](index-schema-lifecycle.md) | [Maintainer trace](maintainers.md#trace-a-schema-rebuild) |
+| Operate a payload-free external projection | [Index-only mode](index-only-mode.md) | The application's payload-store, outbox/reconciliation, hydration, backup, and recovery runbooks |
 | Enable movement, move a slot, or rebalance | [Live movement](live-movement.md) | [Maintainer trace](maintainers.md#trace-a-slot-move) |
 | Investigate a failed activation or write | [Maintainer diagnostics](maintainers.md#diagnose-fail-closed-and-poisoned-activations) | Physical-provider request/error telemetry |
 | Exercise a prerelease as an unfamiliar maintainer | [Clean-room human handoff](qualification-handoff.md#clean-room-human-protocol) | [API sample](../samples/Orleans.SearchableStorage.ApiSample/README.md) and this operations index |
@@ -28,6 +30,8 @@ Classify the release before deployment:
   be quiesced and every silo/client restarted on the same package before the gate is advanced.
 - A schema declaration change additionally requires every registered state to complete its rebuild
   and report `Active` before traffic resumes.
+- An index-only declaration change is a new namespace plus authoritative external replay; an
+  incompatible active format-6 namespace cannot rebuild itself from payloads it never retained.
 
 Take the namespace backup after traffic is paused and before advancing a one-way gate. A package
 rollback is safe only while its older binary understands every already-persisted format/protocol and
@@ -53,6 +57,11 @@ generation, epoch, and ETag. Let that recovery happen before repeating the same 
 admin operation. Do not force a new ETag, reuse a stale activation, or infer “not committed” from the
 exception alone.
 
+An index-only writer call has the same ambiguous-acknowledgement boundary. Retrying the intended
+final replacement or removal converges, but can append another journal entry. Because the library
+does not carry an application source version or deduplicate events, do not deliver an older mutation
+after a newer one; use the application's per-key ordering, outbox, or reconciliation policy.
+
 ## Backup and restore
 
 Back up one consistent physical-provider namespace while searchable traffic and admin protocols are
@@ -70,6 +79,11 @@ settings. Start one homogeneous package/configuration, keep traffic paused, veri
 schema status, allow activation recovery to finish pending publication/cleanup, and then resume. A
 data-only restore without layout or schema controls is invalid. Losing continuation keys invalidates
 tokens but does not lose grain state; issue fresh queries instead of restoring key bytes from logs.
+
+For index-only mode, this backup contains only the derived index and its controls. Back up and restore
+the authoritative payload store under its own consistency policy, or rebuild a new index namespace
+by replaying that store. Restoring an index snapshot does not restore application payloads, and the
+library cannot make the two restores atomic.
 
 ## Minimum alarms and dashboard cuts
 
@@ -112,6 +126,7 @@ The currently emitted operation/phase pairs are:
 | Operation | Phase(s) | Successful work value, when emitted |
 | --- | --- | --- |
 | `storage.read`, `storage.write`, `storage.clear` | `execute` | none |
+| `index.upsert`, `index.remove` | `execute` | none |
 | `query.page`, `query.legacy` | `execute` | returned `GrainId` count |
 | `query.facet.distinct`, `query.facet.count` | `execute` | returned facet item count |
 | `query.facet.min_max` | `execute` | `0` for no extrema, otherwise `2` |

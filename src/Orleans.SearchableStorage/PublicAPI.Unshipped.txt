@@ -1,1 +1,6 @@
 #nullable enable
+Orleans.SearchableStorage.ISearchableStorageIndexWriter
+Orleans.SearchableStorage.ISearchableStorageIndexWriter.RemoveAsync<TState>(string! stateName, Orleans.Runtime.GrainId grainId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Orleans.SearchableStorage.ISearchableStorageIndexWriter.UpsertAsync<TState>(string! stateName, Orleans.Runtime.GrainId grainId, TState state, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableIndex(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! providerName, System.Action<Orleans.SearchableStorage.SearchableStorageOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Orleans.SearchableStorage.SearchableStorageSiloBuilderExtensions.AddSearchableIndex(this Orleans.Hosting.ISiloBuilder! builder, string! providerName, System.Action<Orleans.SearchableStorage.SearchableStorageOptions!>? configure = null) -> Orleans.Hosting.ISiloBuilder!

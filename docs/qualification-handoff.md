@@ -16,9 +16,9 @@ This checked-in kit makes that exercise reproducible; it is not evidence that a 
 | Clean-room human handoff | The same package and published repository documentation | Completed worksheet, timings, commands, observations, and issue links from an unfamiliar .NET/Orleans maintainer | Throughput, capacity, or provider qualification |
 | Scale qualification | The exact package bytes named in a frozen external qualification release | Raw evidence, producer attestations, independent verification output, and a measured envelope | Database semantics, an untested package rebuild, or workloads outside the frozen profile |
 
-The shipping package remains an Orleans `IGrainStorage` implementation with rebuildable secondary
-indexes and bounded `GrainId` discovery. The qualification system must not broaden that product
-boundary into a general database claim.
+The shipping package exposes an integrated Orleans `IGrainStorage` mode and a separate payload-free
+index-only writer, both with bounded `GrainId` discovery. The qualification system must not broaden
+either ownership model into a general database or cross-store transaction claim.
 
 ## Package identity record
 
@@ -85,15 +85,17 @@ succeed without an unpublished workaround.
 | H3 | Write a deterministic set of at least 100 application grain states, update some records, and clear at least one through normal `IPersistentState<T>` use. | Point reads return the expected state and ETag behavior; the application grain remains authoritative. |
 | H4 | Execute exact and range predicates, traverse at least two public pages, and hydrate one bounded page through application grains. | Pages are sorted and distinct, a null token alone marks completion, hydration returns the matching authoritative states, and no API returns `TState` as a search result. |
 | H5 | Stop every silo without deleting physical storage, start a fresh process, and repeat point reads and queries. | Recovery returns the same committed records/index results and does not fall back to empty state. Record activation/recovery telemetry. |
-| H6 | Change one index declaration and application schema version under the documented quiescence procedure, then run and resume the managed rebuild. | The new fingerprint becomes `Active`, original serialized state/ETags remain unchanged, and an old page token is rejected rather than silently resumed. |
+| H6 | In integrated mode, change one index declaration and application schema version under the documented quiescence procedure, then run and resume the managed rebuild. | The new fingerprint becomes `Active`, original serialized state/ETags remain unchanged, and an old page token is rejected rather than silently resumed. |
 | H7 | Enable movement under homogeneous quiescence, plan one populated virtual-slot move to a different owner, advance or execute it through cleanup, and query before/after. | The layout epoch/owner changes as documented, no active move remains, point/query results are preserved, and progress can be explained from public status APIs. |
 | H8 | From the public docs alone, trace the implementation path for write, query page, activation recovery, schema rebuild, and slot movement. | The participant identifies the public entry point, durable/protocol owner, commit or visibility boundary, recovery/resume behavior, and primary tests for all five paths. |
 | H9 | Perform backup/restore or write the exact provider-specific procedure when disposable infrastructure cannot safely exercise it. | The procedure includes layout, manifests, journal/snapshot slots, schema controls, physical metadata/ETags, quiescence, homogeneous restart, and post-restore verification. A written-only result is explicitly marked `NOT EXERCISED`. |
 | H10 | Attempt one documented unsupported query or unsafe rollout action in a disposable namespace. | The system or procedure fails closed; the participant can locate the documented reason and safe recovery. |
+| H11 | Under a different provider key, keep payloads in an ordinary application store and maintain only their projection through `AddSearchableIndex` and `ISearchableStorageIndexWriter`. Exercise replacement, an exact retry, missing removal, query, and external hydration. | No index-only durable record retains the application payload; the final query reflects last arrival, missing removal succeeds, and the participant records that ordering, outbox/reconciliation, cross-store consistency, and hydration are application responsibilities. |
 
 Suggested public starting points are the [API sample](../samples/Orleans.SearchableStorage.ApiSample/README.md),
 [operations index](operations.md), [maintainer guide](maintainers.md),
-[schema runbook](index-schema-lifecycle.md), and [movement runbook](live-movement.md). Listing them is
+[schema runbook](index-schema-lifecycle.md), [index-only guide](index-only-mode.md), and
+[movement runbook](live-movement.md). Listing them is
 part of the public handoff and does not replace the participant's own navigation notes.
 
 ### Evidence template
@@ -148,6 +150,10 @@ H9: PASS | FAIL | BLOCKED | NOT EXERCISED
   elapsed time:
   observations:
 H10: PASS | FAIL | BLOCKED
+  commands/docs/evidence:
+  elapsed time:
+  observations:
+H11: PASS | FAIL | BLOCKED
   commands/docs/evidence:
   elapsed time:
   observations:

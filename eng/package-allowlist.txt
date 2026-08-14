@@ -13,6 +13,7 @@ docs/backends.md
 docs/benchmarks.md
 docs/bounded-query-contract.md
 docs/index-schema-lifecycle.md
+docs/index-only-mode.md
 docs/live-movement.md
 docs/maintainers.md
 docs/one-zero-contract.md

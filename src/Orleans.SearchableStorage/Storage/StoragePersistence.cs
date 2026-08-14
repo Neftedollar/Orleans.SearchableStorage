@@ -10,6 +10,7 @@ internal static class StoragePersistence
     public const int LegacyPersistenceFormatVersion = 3;
     public const int MovementPersistenceFormatVersion = 4;
     public const int CurrentPersistenceFormatVersion = 5;
+    public const int IndexOnlyPersistenceFormatVersion = 6;
 
     // Kept as an explicit alias because the version-3 format is still the format used by a
     // newly-created partition until an operator enables a newer capability.
@@ -23,18 +24,21 @@ internal static class StoragePersistence
     {
         return formatVersion is LegacyPersistenceFormatVersion
             or MovementPersistenceFormatVersion
-            or CurrentPersistenceFormatVersion;
+            or CurrentPersistenceFormatVersion
+            or IndexOnlyPersistenceFormatVersion;
     }
 
     public static bool SupportsMovement(int formatVersion)
     {
         return formatVersion is MovementPersistenceFormatVersion
-            or CurrentPersistenceFormatVersion;
+            or CurrentPersistenceFormatVersion
+            or IndexOnlyPersistenceFormatVersion;
     }
 
     public static bool SupportsIndexSchemas(int formatVersion)
     {
-        return formatVersion == CurrentPersistenceFormatVersion;
+        return formatVersion is CurrentPersistenceFormatVersion
+            or IndexOnlyPersistenceFormatVersion;
     }
 
     public static bool UsesLosslessSnapshots(int formatVersion)

@@ -35,6 +35,11 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     /// <exception cref="ArgumentNullException"><paramref name="grainFactory"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="partitionCount"/> is not positive.</exception>
+    /// <remarks>
+    /// This direct constructor targets integrated <c>IGrainStorage</c> namespaces. Configure an
+    /// index-only external client through <see cref="SearchableStorageSiloBuilderExtensions.AddSearchableIndex(Microsoft.Extensions.DependencyInjection.IServiceCollection, string, Action{SearchableStorageOptions}?)"/>
+    /// and resolve its keyed query client instead.
+    /// </remarks>
     public SearchableStorageClient(IGrainFactory grainFactory, string providerName, int partitionCount)
         : this(grainFactory, providerName, partitionCount, new SearchableStorageQueryOptions())
     {
@@ -50,6 +55,11 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     /// <exception cref="ArgumentNullException"><paramref name="grainFactory"/> or <paramref name="queryOptions"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="partitionCount"/> is not positive.</exception>
+    /// <remarks>
+    /// This direct constructor targets integrated <c>IGrainStorage</c> namespaces. Configure an
+    /// index-only external client through <see cref="SearchableStorageSiloBuilderExtensions.AddSearchableIndex(Microsoft.Extensions.DependencyInjection.IServiceCollection, string, Action{SearchableStorageOptions}?)"/>
+    /// and resolve its keyed query client instead.
+    /// </remarks>
     public SearchableStorageClient(
         IGrainFactory grainFactory,
         string providerName,
@@ -78,6 +88,11 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
     /// </exception>
     /// <exception cref="ArgumentException"><paramref name="providerName"/> is empty.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="partitionCount"/> is not positive.</exception>
+    /// <remarks>
+    /// This direct constructor targets integrated <c>IGrainStorage</c> namespaces. Configure an
+    /// index-only external client through <see cref="SearchableStorageSiloBuilderExtensions.AddSearchableIndex(Microsoft.Extensions.DependencyInjection.IServiceCollection, string, Action{SearchableStorageOptions}?)"/>
+    /// and register the same state declarations on that service collection.
+    /// </remarks>
     public SearchableStorageClient(
         IGrainFactory grainFactory,
         string providerName,
@@ -101,12 +116,37 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         SearchableStateRegistry stateRegistry,
         ILogger<SearchableStorageClient>? logger = null,
         Action<Task>? detachedFanoutObserver = null)
+        : this(
+            grainFactory,
+            providerName,
+            partitionCount,
+            queryOptions,
+            stateRegistry,
+            StorageNamespaceMode.Integrated,
+            logger,
+            detachedFanoutObserver)
+    {
+    }
+
+    internal SearchableStorageClient(
+        IGrainFactory grainFactory,
+        string providerName,
+        int partitionCount,
+        SearchableStorageQueryOptions queryOptions,
+        SearchableStateRegistry stateRegistry,
+        StorageNamespaceMode namespaceMode,
+        ILogger<SearchableStorageClient>? logger = null,
+        Action<Task>? detachedFanoutObserver = null)
     {
         ArgumentNullException.ThrowIfNull(grainFactory);
         ArgumentNullException.ThrowIfNull(queryOptions);
         ArgumentNullException.ThrowIfNull(stateRegistry);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(partitionCount);
+        if (!Enum.IsDefined(namespaceMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(namespaceMode));
+        }
 
         _providerName = providerName;
         _queryConfiguration = SearchableStorageQueryConfiguration.Create(queryOptions);
@@ -116,7 +156,7 @@ public sealed partial class SearchableStorageClient : ISearchableStorageQueryCli
         _logger = logger;
         _getIndexSchema = stateName => grainFactory.GetGrain<IStorageIndexSchemaGrain>(
             StorageIndexSchema.CreateGrainKey(providerName, stateName));
-        var layout = StorageLayout.CreateIdentity(providerName, partitionCount);
+        var layout = StorageLayout.CreateIdentity(providerName, partitionCount, namespaceMode);
         var layoutGrain = grainFactory.GetGrain<IStorageLayoutGrain>(providerName);
         _layoutCache = new StorageLayoutCache(() => layoutGrain.GetLayoutAsync(layout));
         var partitions = new ConcurrentDictionary<int, IStoragePartitionGrain>();

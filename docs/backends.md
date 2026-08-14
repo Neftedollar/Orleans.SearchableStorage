@@ -37,7 +37,7 @@ response-family-bound continuation.
 
 These are the defaults. `VirtualSlotTargetCount` seeds the exact persisted map for that provider
 namespace by rounding upward to a multiple of `PartitionCount`; it does not change an existing
-format-4 or format-5 map, although it must remain a valid configured value. The exact per-layout map
+format-4, format-5, or format-6 map, although it must remain a valid configured value. The exact per-layout map
 is capped at 262,144 owner integers. `PartitionCount` remains the persisted initial owner count; live
 rebalancing changes assignments and may introduce higher owner indices without changing that
 identity field. `JournalSegmentCapacity` and `MaximumJournalReplayEntries` are persisted choices and
@@ -57,11 +57,16 @@ format-3 or format-4 owner directly to format 5. Ordinary activation and mutatio
 newer capability. Both upgrades retain the bounded journal ring and two snapshot slots; formats 4
 and 5 use the lossless snapshot record representation.
 
+An index-only namespace is created directly in layout and partition-persistence format 6. It uses
+the same configured physical provider and lossless snapshot machinery but durably requires absent
+application payloads. Format 6 is not an upgrade of an integrated format-3/4/5 namespace and cannot
+be opened by a binary which does not understand the index-only mode.
+
 The v3-to-v4 transition requires a traffic pause rather than an online mixed-version rollout.
 Quiesce searchable storage and query traffic, update every silo and Orleans client, verify that no
 version-3 process remains, and keep traffic paused while one normal grain-state storage operation
 adopts each provider namespace. Verify that the admin read succeeds and reports epoch 1; the admin
-path returns a snapshot only for routing-capable layout format 4 or 5, and it does not perform
+path returns a snapshot only for routing-capable layout format 4, 5, or 6, and it does not perform
 adoption. A new storage activation immediately uses routed methods which an old silo does not
 implement, and an old activation cannot read the adopted format-4 layout. Updated consumers retain
 legacy methods while the epoch-1 identity map preserves old modulo placement. At this point either
@@ -76,9 +81,11 @@ supported. The complete procedure and recovery rules are in the
 [live-movement runbook](live-movement.md).
 
 Managed index schemas have a separate `index-schema` control document for every provider/state pair
-in the same physical provider. The first rebuild can initialize a fresh layout, upgrades every
-current owner to persistence format 5, rebuilds every record for that one state, and then publishes
-a provider-wide, one-way capability in the layout. Publication activates no other state: complete
+in the same physical provider. The first integrated rebuild can initialize a fresh layout, upgrades
+every current owner to persistence format 5, rebuilds every record for that one state, and then
+publishes a provider-wide, one-way capability in the layout. A fresh index-only provider initializes
+format 6 and activates an empty schema before corpus replay; it cannot later rebuild an incompatible
+fingerprint from absent payloads. Publication activates no other state: complete
 and verify every registered state's rebuild in that same quiesced first-adoption window before
 resuming provider traffic or movement. A durable per-rebuild layout intent blocks movement
 throughout the owner sweep and record pages, including for later generation changes. Every state
@@ -120,7 +127,7 @@ Never send a page or facet RPC to an old activation and never fall back to the o
 RPC. Facets require no durable migration: their messages are non-persisted wire protocol, and the
 canonical hash-value projection is rebuilt from the same durable records/index entries on activation.
 
-The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, snapshot, and schema-control states is required; the partition manifest is the record/index commit point and the per-state control is the generation commit point. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, snapshot, or `index-schema` control state.
+The physical provider must atomically replace or clear one grain-state value subject to its ETag, reject stale ETags, and provide authoritative point reads of durable state after reactivation or retry. No transaction across the manifest, journal, snapshot, and schema-control states is required; the partition manifest is the integrated record/index or index-only projection commit point, and the per-state control is the generation commit point. There is no transaction with an external application payload store. Do not configure provider TTLs or lifecycle rules which can independently expire layout, manifest, journal, snapshot, or `index-schema` control state.
 
 Journal segments have dual hard ceilings of 64 operations and 320 MiB of deterministic canonical
 entry bytes; each entry is capped at 5 MiB. A whole-partition snapshot is capped at 1,000,000 records

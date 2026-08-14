@@ -65,7 +65,7 @@ and a verdict for a prerelease does not silently transfer to a byte-different st
 
 ### One-time Trusted Publishing setup
 
-Before creating `v1.0.0-rc.1`, configure one NuGet.org Trusted Publishing policy with this exact
+Before creating `v1.0.0-rc.2`, configure one NuGet.org Trusted Publishing policy with this exact
 tuple:
 
 | Policy field | Required value |
@@ -83,7 +83,7 @@ the official `NuGet/login` action pinned to the reviewed `v1.2.0` commit and con
 NuGet API key secret. The OIDC exchange itself is the authoritative external-policy check: a missing,
 inactive, or mismatched policy stops the job, and there is no credential fallback.
 
-Publication accepts only an exact `v1.0.0-rc.1` tag on the current `main` commit whose CI and Security
+Publication accepts only an exact `v1.0.0-rc.2` tag on the current `main` commit whose CI and Security
 checks already succeeded. It repeats the source build/tests, runs the reproducible package dry-run,
 freezes and rechecks the exact unsigned package SHA-256 immediately before push, and does not use
 `--skip-duplicate`. After push it downloads the NuGet.org repository-signed bytes and applies the

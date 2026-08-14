@@ -99,7 +99,7 @@ jobs:
             exit 1
           fi
           python3 eng/validate-package.py "${packages[0]}" \
-            --expected-version "1.0.0-rc.1" \
+            --expected-version "1.0.0-rc.2" \
             --expected-commit "$GITHUB_SHA" \
             --canonical-output artifacts/release/package.canonical.json
 

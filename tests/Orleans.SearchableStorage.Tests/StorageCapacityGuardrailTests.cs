@@ -96,7 +96,7 @@ public sealed class StorageCapacityGuardrailTests
             {
                 GrainType = new byte[SearchableStorageCapacityLimits.MaximumGrainTypeBytes + 1],
                 GrainKey = [.. movedExact.Record.GrainKey],
-                Payload = [.. movedExact.Record.Payload],
+                Payload = [.. movedExact.Record.Payload!],
                 ETag = [.. movedExact.Record.ETag],
                 IndexEntries = movedExact.Record.IndexEntries.Select(static entry => new StorageMoveIndexEntry
                 {
@@ -213,7 +213,7 @@ public sealed class StorageCapacityGuardrailTests
             {
                 GrainType = [.. moved.Record.GrainType],
                 GrainKey = [.. moved.Record.GrainKey],
-                Payload = [.. moved.Record.Payload],
+                Payload = [.. moved.Record.Payload!],
                 ETag = [.. moved.Record.ETag],
                 IndexEntries = Enumerable.Repeat<StorageMoveIndexEntry>(
                         null!,

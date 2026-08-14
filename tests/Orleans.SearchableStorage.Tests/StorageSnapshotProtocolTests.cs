@@ -87,7 +87,7 @@ public sealed class StorageSnapshotProtocolTests
         StoragePersistenceStateEquality.SnapshotEquals(state.State, snapshot).Should().BeTrue();
 
         var conflict = snapshot.Copy();
-        conflict.LosslessRecords[0].Record.Payload[0]++;
+        conflict.LosslessRecords[0].Record.Payload![0]++;
         Func<Task> conflictingStore = () => recoveredActivation.StoreAsync(conflict);
         await conflictingStore.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*different metadata or payload*");
@@ -140,7 +140,7 @@ public sealed class StorageSnapshotProtocolTests
         }
         else
         {
-            conflict.Records["record"].Payload[0]++;
+            conflict.Records["record"].Payload![0]++;
         }
 
         Func<Task> store = () => grain.StoreAsync(conflict);
@@ -292,7 +292,7 @@ public sealed class StorageSnapshotProtocolTests
         var first = new StoredRecord
         {
             GrainId = seed.GrainId,
-            Payload = [.. seed.Payload],
+            Payload = [.. seed.Payload!],
             ETag = "1",
             IndexEntries =
             [

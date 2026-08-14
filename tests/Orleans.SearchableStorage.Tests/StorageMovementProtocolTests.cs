@@ -326,11 +326,6 @@ public sealed class StorageMovementProtocolTests
             new StorageMoveRecord
             {
                 RecordKey = [.. valid.RecordKey],
-                Record = CopyRecord(valid.Record, nullPayload: true),
-            },
-            new StorageMoveRecord
-            {
-                RecordKey = [.. valid.RecordKey],
                 Record = CopyRecord(
                     valid.Record,
                     value: new StorageMoveIndexValue
@@ -375,14 +370,13 @@ public sealed class StorageMovementProtocolTests
 
     private static StorageMoveStoredRecord CopyRecord(
         StorageMoveStoredRecord source,
-        bool nullPayload = false,
         StorageMoveIndexValue? value = null)
     {
         return new StorageMoveStoredRecord
         {
             GrainType = [.. source.GrainType],
             GrainKey = [.. source.GrainKey],
-            Payload = nullPayload ? null! : [.. source.Payload],
+            Payload = [.. source.Payload!],
             ETag = [.. source.ETag],
             IndexEntries =
             [

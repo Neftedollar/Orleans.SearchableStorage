@@ -84,6 +84,12 @@ internal sealed class StoragePartitionManifestState
     [Id(18)]
     public int IndexSchemaProtocolVersion { get; set; }
 
+    /// <summary>
+    /// Permanently binds this partition to payload-owning or index-only records.
+    /// </summary>
+    [Id(19)]
+    public StorageNamespaceMode NamespaceMode { get; set; }
+
     public StoragePartitionManifestState Copy()
     {
         return new StoragePartitionManifestState
@@ -107,6 +113,7 @@ internal sealed class StoragePartitionManifestState
             MinimumRoutingEpoch = MinimumRoutingEpoch,
             MoveControl = MoveControl.Copy(),
             IndexSchemaProtocolVersion = IndexSchemaProtocolVersion,
+            NamespaceMode = NamespaceMode,
         };
     }
 }
@@ -582,7 +589,7 @@ internal static class StoragePersistenceStateCopy
         return new StoredRecord
         {
             GrainId = record.GrainId,
-            Payload = [.. record.Payload],
+            Payload = record.Payload is null ? null : [.. record.Payload],
             ETag = record.ETag,
             IndexEntries = record.IndexEntries.Select(CopyIndexEntry).ToList(),
             IndexSchemaFingerprint = record.IndexSchemaFingerprint is null
@@ -883,7 +890,6 @@ internal static class StoragePersistenceStateValidation
 
         StorageGrainIdCapacity.Validate(record.GrainId, parameterName);
 
-        ArgumentNullException.ThrowIfNull(record.Payload, parameterName);
         ArgumentException.ThrowIfNullOrWhiteSpace(record.ETag, parameterName);
         ArgumentNullException.ThrowIfNull(record.IndexEntries, parameterName);
         if (record.IndexSchemaFingerprint is { } fingerprint)
@@ -1051,7 +1057,7 @@ internal static class StoragePersistenceStateEquality
     private static bool RecordEquals(StoredRecord left, StoredRecord right)
     {
         if (!left.GrainId.Equals(right.GrainId)
-            || !left.Payload.AsSpan().SequenceEqual(right.Payload)
+            || !NullableBytesEqual(left.Payload, right.Payload)
             || !string.Equals(left.ETag, right.ETag, StringComparison.Ordinal)
             || !NullableBytesEqual(
                 left.IndexSchemaFingerprint,

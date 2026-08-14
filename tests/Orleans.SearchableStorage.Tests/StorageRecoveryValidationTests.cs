@@ -328,7 +328,7 @@ public sealed class StorageRecoveryValidationTests
         {
             case MalformedManifestCase.UnsupportedFormat:
                 manifest.PersistenceFormatVersion = checked(
-                    StoragePersistence.CurrentPersistenceFormatVersion + 1);
+                    StoragePersistence.IndexOnlyPersistenceFormatVersion + 1);
                 break;
             case MalformedManifestCase.ReplayLimitExceeded:
                 manifest.WriterEpoch = 1;

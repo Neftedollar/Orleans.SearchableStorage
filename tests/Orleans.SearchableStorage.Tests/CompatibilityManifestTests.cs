@@ -22,6 +22,8 @@ public sealed class CompatibilityManifestTests
             .Should().Be(StorageLayout.MovementFormatVersion);
         CompatibilityManifest.GetInt("protocols", "layout", "managedSchemaFormat")
             .Should().Be(StorageLayout.IndexSchemaFormatVersion);
+        CompatibilityManifest.GetInt("protocols", "layout", "indexOnlyFormat")
+            .Should().Be(StorageLayout.IndexOnlyFormatVersion);
         CompatibilityManifest.GetInt("protocols", "layout", "movementProtocol")
             .Should().Be(StorageLayout.CurrentMovementProtocolVersion);
         CompatibilityManifest.GetInt("protocols", "layout", "managedSchemaProtocol")
@@ -33,6 +35,8 @@ public sealed class CompatibilityManifestTests
             .Should().Be(StoragePersistence.MovementPersistenceFormatVersion);
         CompatibilityManifest.GetInt("protocols", "partitionPersistence", "currentFormat")
             .Should().Be(StoragePersistence.CurrentPersistenceFormatVersion);
+        CompatibilityManifest.GetInt("protocols", "partitionPersistence", "indexOnlyFormat")
+            .Should().Be(StoragePersistence.IndexOnlyPersistenceFormatVersion);
 
         CompatibilityManifest.GetInt("protocols", "query", "paging")
             .Should().Be(QueryProtocol.PagingVersion);
@@ -88,6 +92,7 @@ public sealed class CompatibilityManifestTests
         AssertEnumMap<PartitionQueryResponseFamily>("partitionQueryResponseFamily");
         AssertEnumMap<PartitionQueryPageStopReason>("partitionQueryPageStopReason");
         AssertEnumMap<SearchableIndexKind>("searchableIndexKind");
+        AssertEnumMap<StorageNamespaceMode>("storageNamespaceMode");
         AssertEnumMap<IndexValueKind>("indexValueKind");
         AssertEnumMap<StorageJournalOperation>("storageJournalOperation");
         AssertEnumMap<StoragePartitionMoveRole>("storagePartitionMoveRole");

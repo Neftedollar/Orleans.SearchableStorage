@@ -71,12 +71,18 @@ boundary is still the accepted whole partition; see [storage capacity limits](st
 
 ## Trace a schema rebuild
 
-`SearchableStorageAdminClient.RebuildIndexSchemaAsync<TState>` starts or resumes one durable
-`StorageIndexSchemaGrain` intent. `AdvanceRebuildAsync` pins the layout, enables protocol and format
-5 on every current owner, asks each `StoragePartitionGrain.RebuildIndexSchemaPageAsync` to rematerialize
-at most 64 catalog records per page, publishes the provider-wide layout gate, then activates the new
-fingerprint. The original serialized state and ETag do not change. Keep the entire provider quiesced
-until every registered state is `Active`; follow the [managed schema runbook](index-schema-lifecycle.md).
+For integrated storage, `SearchableStorageAdminClient.RebuildIndexSchemaAsync<TState>` starts or
+resumes one durable `StorageIndexSchemaGrain` intent. `AdvanceRebuildAsync` pins the layout, enables
+protocol and format 5 on every current owner, asks each
+`StoragePartitionGrain.RebuildIndexSchemaPageAsync` to rematerialize at most 64 catalog records per
+page, publishes the provider-wide layout gate, then activates the new fingerprint. The original
+serialized state and ETag do not change.
+
+For index-only format 6, the same admin call can activate the initial empty fingerprint or confirm
+the same active fingerprint. An incompatible active fingerprint is rejected before an intent is
+created because the namespace retained no payload to rematerialize. Trace the replacement provider
+and authoritative external replay instead. Keep the affected provider quiesced until every
+registered state is `Active`; follow the [managed schema runbook](index-schema-lifecycle.md).
 
 ## Trace a slot move
 

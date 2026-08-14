@@ -4,12 +4,19 @@ This document describes the maintainer-facing design of the first Orleans.Search
 
 ## Components
 
-`SearchableGrainStorage` implements Orleans `IGrainStorage`. Application grains use it through normal `IPersistentState<T>` injection and do not coordinate index updates themselves.
+`SearchableGrainStorage` implements the integrated Orleans `IGrainStorage` mode. Application grains
+use it through normal `IPersistentState<T>` injection and do not coordinate index updates
+themselves. `SearchableStorageIndexWriter` implements the separate payload-free mode: application
+code persists and hydrates state elsewhere, then explicitly submits an unconditional index
+replacement or removal. The writer inspects the same `TState` through the indexing model but never
+serializes or retains its payload.
 
 Each searchable provider owns one `StorageLayoutGrain` and a set of
-`StoragePartitionGrain` instances addressed by physical owner index. Layout formats 4 and 5 hold the
+`StoragePartitionGrain` instances addressed by physical owner index. Integrated layout formats 4 and 5 hold the
 same immutable virtual-slot space, movement-capable assignment map, and routing epoch; format 5 adds
-the managed-schema capability and maintenance intent. A partition keeps its records and derived hash and range buckets
+the managed-schema capability and maintenance intent. Index-only layout format 6 retains those
+routing and schema semantics while durably fencing the namespace from integrated readers. A
+partition keeps its records and derived hash and range buckets
 in the activation. Its durable representation is split into one constant-size manifest, a fixed ring
 of bounded journal-segment grains, and two reusable snapshot-slot grains. All four grain kinds write
 through the physical Orleans storage provider registered as `Orleans.SearchableStorage.Physical`.
@@ -150,11 +157,15 @@ does not implement a load policy. See the operator [live-movement runbook](live-
 
 ## Journal commit protocol
 
-For one record, the serialized state and every local secondary-index entry are one logical mutation.
-The manifest is the only authoritative commit point:
+For one integrated record, the serialized state and every local secondary-index entry are one
+logical mutation. For one index-only record, the derived entries and an explicit null-payload marker
+are the mutation; external application storage is outside this commit protocol. The partition
+manifest is the only authoritative commit point for whichever local mutation applies:
 
-1. The storage provider serializes the application state and extracts index entries.
-2. The owning partition grain checks the expected record ETag.
+1. Integrated storage serializes the application state and extracts index entries. The index-only
+   writer extracts entries without serializing state.
+2. The owning partition grain checks the expected record ETag for integrated storage. Index-only
+   upserts and removals are unconditional replacements.
 3. Before the first mutation of an activation, the partition advances a writer epoch with a manifest
    compare-and-swap. This fences journal writes from an older activation.
 4. It creates one journal entry containing the absolute sequence, writer epoch, unique operation id,
@@ -164,13 +175,15 @@ The manifest is the only authoritative commit point:
    absolute sequence. The entry is still non-authoritative.
 6. The partition advances `CommittedSequence`, `CommittedOperationId`, and `NextVersion` in one
    small manifest compare-and-swap. This makes the journal entry and all of its index entries visible.
-7. The activation applies only that record's hash and range bucket delta. Only then does a successful
-   write return its record ETag.
+7. The activation applies only that record's hash and range bucket delta. Only then does an
+   integrated write return its record ETag or an index-only mutation complete.
 
 Steady mutations therefore perform one bounded journal-segment write and one constant-size manifest
-write. The first mutation after activation also acquires its writer epoch. A clear is a journaled
-delete and does not allocate a new record ETag. The non-reentrant partition activation serializes
-these transitions, while physical provider ETags protect against duplicate or stale activations.
+write. The first mutation after activation also acquires its writer epoch. A clear or index removal
+is a journaled delete and does not allocate a new record ETag. Removing an absent index-only record
+succeeds. The non-reentrant partition activation serializes these transitions, while physical
+provider ETags protect against duplicate or stale activations. Index-only application events carry
+no source version or mutation id: arrival order is authoritative and the last arrival wins.
 
 Journal entries have unique operation ids and an exact predecessor chain. An exact retry is
 idempotent. At most one entry can exist immediately after the manifest commit point; a new activation
@@ -406,20 +419,23 @@ scalar-only fingerprints remain byte-for-byte v1, while membership fingerprints 
 Applications register exactly one CLR type/version for every provider/state-name pair. The
 deterministic fingerprint binds those inputs to physical scopes and is stored on each rebuilt record.
 A separate per-state control grain stores the active fingerprint, last completed count, and one
-resumable rebuild cursor. Partitions commit page-limited `Reindex` WAL
-entries which preserve payload, `GrainId`, ETag, and the object-version allocator. A page covers at
+resumable rebuild cursor. In integrated mode, partitions commit page-limited `Reindex` WAL entries
+which preserve payload, `GrainId`, ETag, and the object-version allocator. A page covers at
 most 64 catalog records but can trigger retained whole-partition compaction, so it is not a strict
 work, memory, or wall-clock bound.
 
-The first rebuild is also a provider-wide, one-way capability transition. It upgrades every current
-owner to persistence format 5 and rebuilds every record for its one state name before publishing
-schema protocol version 1 in layout format 5. One additional control commit then activates only
+The first integrated rebuild is also a provider-wide, one-way capability transition. It upgrades
+every current owner to persistence format 5 and rebuilds every record for its one state name before
+publishing schema protocol version 1 in layout format 5. A fresh index-only namespace instead starts
+with schema-capable format 6 and activates the declaration before it accepts index entries. One
+additional control commit then activates only
 that state fingerprint. Other registered states retain independent controls and remain unavailable
 until their own rebuilds reach `Active`; first adoption therefore completes all registered states in
 one quiesced provider window before traffic or movement resumes.
 After publication, every state using that provider must be registered on every silo, and every
-direct query client must declare every state it queries. Schema-unbound writes, clears, queries,
-pages, and facets are rejected; current routed point reads remain generation-independent. Managed
+direct query client must declare every state it queries. Schema-unbound integrated writes/clears,
+index-only mutations, queries, pages, and facets are rejected; integrated routed point reads remain
+generation-independent. Managed
 operations reject an absent, rebuilding, or different generation. The control automatically resets
 its owner/frontier scan when a different completed routing layout appears before the maintenance
 intent is acquired. Once that intent exists, movement cannot change the layout until schema work
@@ -465,6 +481,16 @@ is published. Ordinary activation and mutation do not opt into a newer capabilit
 version 2 partitions are intentionally not interpreted as formats 3, 4, or 5 and still require an
 explicit migration or complete rewrite.
 
+Layout and partition-persistence format 6 identify index-only namespaces. Their records must carry
+a null payload; integrated formats require a non-null payload and preserve an empty serialized byte
+array as a real payload. The mode is validated during recovery before pending snapshot publication
+or cleanup, and is preserved by journal, snapshot, compaction, and movement codecs. Format 6 is a
+downgrade fence rather than an in-place migration from formats 3 through 5: a process which does not
+understand index-only mode must reject it, while a provider key already used by one mode cannot be
+opened by the other. Format 6 keeps the same slot derivation and placement algorithms but has a
+distinct routing-fingerprint and continuation domain, preventing a token from crossing between an
+otherwise identical integrated and index-only namespace.
+
 The per-state `index-schema` control document is persisted through the same physical provider but is
 not embedded in a partition manifest or layout. It must be retained and backed up with both. Losing
 only that control leaves a schema-enabled provider fail-closed. A quiesced rebuild can recreate the
@@ -477,6 +503,12 @@ page after earlier records in that page have committed; its durable control curs
 retry after payload compatibility is restored. The remote failure identifies the provider, state,
 record, owner, and exception type, but deliberately omits the application-controlled exception
 message and all raw index or payload values.
+
+That in-place recovery path applies only to integrated storage. An index-only namespace can activate
+its initial fingerprint while empty, but an incompatible fingerprint after activation is rejected
+because no application payload exists to scan. The application creates a new index-only namespace
+and replays its authoritative external corpus. The library does not coordinate that replay with the
+external store and provides no cross-store transaction, ordering, or deduplication protocol.
 
 Orleans serializer `[Id]` values on persisted layout, manifest, journal, snapshot, record,
 index-entry, and `IndexValue` types are field identities. Existing IDs must never be reused or
@@ -508,7 +540,7 @@ normal grain-state storage operation must adopt each provider namespace as the e
 operators should verify that the admin read succeeds and reports epoch 1.
 Starting a managed-schema rebuild is an alternative quiesced adoption path: its first step invokes
 the same idempotent routing initializer before it creates the schema-rebuild intent.
-The admin path returns a snapshot only for routing-capable format 4 or 5. Version-3 adoption performs one layout CAS and no
+The admin path returns a snapshot only for routing-capable format 4, 5, or 6. Version-3 adoption performs one layout CAS and no
 partition-persistence write. Query and admin reads do not perform adoption. Legacy calls remain
 available on updated processes, and the identity map preserves their modulo placement, but this is
 not an online rolling upgrade guarantee. Operators may then resume traffic with movement disabled,

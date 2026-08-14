@@ -12,6 +12,7 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
     private readonly SearchableStateRegistry _registrations;
     private readonly IOptionsMonitor<SearchableStorageOptions> _options;
     private readonly Action _requestDeactivation;
+    private readonly string? _grainKeyOverride;
     private bool _usable = true;
 
     public StorageIndexSchemaGrain(
@@ -19,6 +20,15 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
         IPersistentState<StorageIndexSchemaState> state,
         SearchableStateRegistry registrations,
         IOptionsMonitor<SearchableStorageOptions> options)
+        : this(state, registrations, options, grainKeyOverride: null)
+    {
+    }
+
+    internal StorageIndexSchemaGrain(
+        IPersistentState<StorageIndexSchemaState> state,
+        SearchableStateRegistry registrations,
+        IOptionsMonitor<SearchableStorageOptions> options,
+        string? grainKeyOverride)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(registrations);
@@ -26,6 +36,7 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
         _state = state;
         _registrations = registrations;
         _options = options;
+        _grainKeyOverride = grainKeyOverride;
         _requestDeactivation = DeactivateOnIdle;
     }
 
@@ -70,6 +81,15 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
             && IndexSchemaIdentity.FixedTimeEquals(fingerprint, request.Fingerprint))
         {
             return CreateSnapshot(request);
+        }
+
+        if (_options.Get(request.ProviderName).NamespaceMode == StorageNamespaceMode.IndexOnly
+            && _state.State.ActiveFingerprint is not null)
+        {
+            throw new SearchableStorageIndexSchemaException(
+                "An index-only namespace cannot rebuild an incompatible schema from application "
+                + "payloads because it does not retain those payloads. Create a new index namespace "
+                + "and replay the authoritative external corpus instead.");
         }
 
         var layout = await GetRequiredStableLayoutAsync(
@@ -164,7 +184,8 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
             var fencedLayout = await layoutGrain.BeginIndexSchemaProtocolEnablementAsync(
                 enablementRequest);
             var activeEnablement = fencedLayout.CopyIndexSchemaEnablement();
-            if (fencedLayout.FormatVersion != StorageLayout.IndexSchemaFormatVersion
+            var expectedLayoutFormat = GetExpectedLayoutFormat(command.Schema.ProviderName);
+            if (fencedLayout.FormatVersion != expectedLayoutFormat
                 || fencedLayout.Epoch != progress.LayoutEpoch
                 || !StorageLayoutFingerprint.Equals(
                     StorageLayoutFingerprint.Compute(fencedLayout),
@@ -195,7 +216,7 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
                     Persistence = settings,
                 });
             if (protocol.PersistenceFormatVersion
-                    != StoragePersistence.CurrentPersistenceFormatVersion
+                    != GetExpectedPersistenceFormat(command.Schema.ProviderName)
                 || protocol.IndexSchemaProtocolVersion != StorageIndexSchema.ProtocolVersion
                 || protocol.MoveControl.IsPresent)
             {
@@ -300,7 +321,8 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
                 options.PartitionCount,
                 options.JournalSegmentCapacity,
                 options.MaximumJournalReplayEntries,
-                options.VirtualSlotTargetCount));
+                options.VirtualSlotTargetCount,
+                options.NamespaceMode));
         }
         else
         {
@@ -318,6 +340,17 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
                 "Index-schema rebuild and virtual-slot movement cannot run at the same time.");
         }
 
+        var configuredMode = _options.Get(providerName).NamespaceMode;
+        var validFormat = configuredMode == StorageNamespaceMode.IndexOnly
+            ? layout.FormatVersion == StorageLayout.IndexOnlyFormatVersion
+            : layout.FormatVersion is StorageLayout.MovementFormatVersion
+                or StorageLayout.IndexSchemaFormatVersion;
+        if (!validFormat || layout.NamespaceMode != configuredMode)
+        {
+            throw new InvalidOperationException(
+                "The persisted storage layout belongs to a different namespace mode or format.");
+        }
+
         return layout;
     }
 
@@ -329,7 +362,22 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
             JournalSegmentCapacity = options.JournalSegmentCapacity,
             MaximumJournalReplayEntries = options.MaximumJournalReplayEntries,
             CompactionThreshold = options.CompactionThreshold,
+            NamespaceMode = options.NamespaceMode,
         };
+    }
+
+    private int GetExpectedLayoutFormat(string providerName)
+    {
+        return _options.Get(providerName).NamespaceMode == StorageNamespaceMode.IndexOnly
+            ? StorageLayout.IndexOnlyFormatVersion
+            : StorageLayout.IndexSchemaFormatVersion;
+    }
+
+    private int GetExpectedPersistenceFormat(string providerName)
+    {
+        return _options.Get(providerName).NamespaceMode == StorageNamespaceMode.IndexOnly
+            ? StoragePersistence.IndexOnlyPersistenceFormatVersion
+            : StoragePersistence.CurrentPersistenceFormatVersion;
     }
 
     private void ValidateRegistration(StorageIndexSchemaRequest request)
@@ -394,7 +442,7 @@ internal sealed class StorageIndexSchemaGrain : Grain, IStorageIndexSchemaGrain
         IndexSchemaIdentity.ValidateIdentity(request.SchemaKey, nameof(request));
         IndexSchemaIdentity.ValidateIdentity(request.Fingerprint, nameof(request));
         if (!string.Equals(
-                this.GetPrimaryKeyString(),
+                _grainKeyOverride ?? this.GetPrimaryKeyString(),
                 StorageIndexSchema.CreateGrainKey(request.ProviderName, request.StateName),
                 StringComparison.Ordinal))
         {
