@@ -305,7 +305,7 @@ public class QueryPlanEvaluationBenchmarks
     public int EvaluatePartitionPlan() => Variant switch
     {
         QueryEvaluationVariant.MaterializingWholePlan =>
-            StoragePartitionQueryEvaluator.Evaluate(_plan, _view.Indexes).Count,
+            StoragePartitionQueryEvaluator.Evaluate(_plan, _view.OrderedIndexes).Count,
         QueryEvaluationVariant.OrderedDefaultPartitionPage
             or QueryEvaluationVariant.OrderedConstrainedWorkPartitionPage
             or QueryEvaluationVariant.OrderedMaximumPolicyPartitionPage =>
@@ -318,7 +318,9 @@ public class QueryPlanEvaluationBenchmarks
 
     internal void ValidateFixture()
     {
-        var evaluation = StoragePartitionQueryEvaluator.EvaluateWithWork(_plan, _view.Indexes);
+        var evaluation = StoragePartitionQueryEvaluator.EvaluateWithWork(
+            _plan,
+            _view.OrderedIndexes);
         if (!evaluation.RecordKeys.SetEquals(_expectedRecordKeys))
         {
             throw new InvalidOperationException(

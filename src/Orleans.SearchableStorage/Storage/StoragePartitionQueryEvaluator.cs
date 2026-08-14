@@ -9,7 +9,7 @@ internal static class StoragePartitionQueryEvaluator
 {
     public static HashSet<string> Evaluate(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionOrderedIndexes indexes)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(indexes);
@@ -23,30 +23,32 @@ internal static class StoragePartitionQueryEvaluator
     /// </summary>
     internal static StoragePartitionQueryEvaluation EvaluateWithWork(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionOrderedIndexes indexes)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(indexes);
         QueryPlanValidator.Validate(query);
 
         var work = default(CountingPartitionQueryWorkSink);
-        var recordKeys = EvaluateCore(query, indexes, ref work);
-        return new StoragePartitionQueryEvaluation(recordKeys, work.Snapshot);
+        var recordRefs = EvaluateCore(query, indexes, ref work);
+        return new StoragePartitionQueryEvaluation(
+            indexes.ResolveRecordKeys(recordRefs),
+            work.Snapshot);
     }
 
     internal static HashSet<string> EvaluateValidated(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes)
+        StoragePartitionOrderedIndexes indexes)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(indexes);
         var work = default(NoPartitionQueryWorkSink);
-        return EvaluateCore(query, indexes, ref work);
+        return indexes.ResolveRecordKeys(EvaluateCore(query, indexes, ref work));
     }
 
-    private static HashSet<string> EvaluateCore<TWorkSink>(
+    private static HashSet<int> EvaluateCore<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes,
+        StoragePartitionOrderedIndexes indexes,
         ref TWorkSink work)
         where TWorkSink : struct, IPartitionQueryWorkSink
     {
@@ -64,16 +66,16 @@ internal static class StoragePartitionQueryEvaluator
         };
     }
 
-    private static HashSet<string> EvaluateEmpty<TWorkSink>(ref TWorkSink work)
+    private static HashSet<int> EvaluateEmpty<TWorkSink>(ref TWorkSink work)
         where TWorkSink : struct, IPartitionQueryWorkSink
     {
         work.RecordEmpty();
-        return new HashSet<string>(StringComparer.Ordinal);
+        return [];
     }
 
-    private static HashSet<string> EvaluateExact<TWorkSink>(
+    private static HashSet<int> EvaluateExact<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes,
+        StoragePartitionOrderedIndexes indexes,
         ref TWorkSink work)
         where TWorkSink : struct, IPartitionQueryWorkSink
     {
@@ -81,25 +83,17 @@ internal static class StoragePartitionQueryEvaluator
             ?? throw new ArgumentException("An exact query requires an index scope.", nameof(query));
         var value = query.Value
             ?? throw new ArgumentException("An exact query requires an index value.", nameof(query));
-        var records = query.IndexKind switch
-        {
-            SearchableIndexKind.Hash => indexes.FindHashEntries(scope, value),
-            SearchableIndexKind.Range => indexes.FindRangeEntries(scope, value),
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(query),
-                query.IndexKind,
-                "Unknown index kind."),
-        };
+        var records = indexes.FindExactRecordRefs(scope, query.IndexKind, value);
 
         work.RecordExact(records.Count);
-        // Lookup methods return live buckets. Boolean nodes mutate only this private copy so a
-        // query cannot corrupt the derived indexes used by later reads.
-        return new HashSet<string>(records, StringComparer.Ordinal);
+        // The ordered index returns a private set of activation-local references, so Boolean
+        // nodes cannot mutate the retained postings used by later reads.
+        return records;
     }
 
-    private static HashSet<string> EvaluateRange<TWorkSink>(
+    private static HashSet<int> EvaluateRange<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes,
+        StoragePartitionOrderedIndexes indexes,
         ref TWorkSink work)
         where TWorkSink : struct, IPartitionQueryWorkSink
     {
@@ -120,8 +114,8 @@ internal static class StoragePartitionQueryEvaluator
         }
 
         work.RecordRange();
-        var records = new HashSet<string>(StringComparer.Ordinal);
-        indexes.UnionRange(
+        var records = new HashSet<int>();
+        indexes.UnionRangeRecordRefs(
             scope,
             query.LowerBound,
             query.UpperBound,
@@ -132,9 +126,9 @@ internal static class StoragePartitionQueryEvaluator
         return records;
     }
 
-    private static HashSet<string> EvaluateAnd<TWorkSink>(
+    private static HashSet<int> EvaluateAnd<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes,
+        StoragePartitionOrderedIndexes indexes,
         ref TWorkSink work)
         where TWorkSink : struct, IPartitionQueryWorkSink
     {
@@ -145,9 +139,9 @@ internal static class StoragePartitionQueryEvaluator
         return left;
     }
 
-    private static HashSet<string> EvaluateOr<TWorkSink>(
+    private static HashSet<int> EvaluateOr<TWorkSink>(
         PartitionQueryPlan query,
-        StoragePartitionIndexes indexes,
+        StoragePartitionOrderedIndexes indexes,
         ref TWorkSink work)
         where TWorkSink : struct, IPartitionQueryWorkSink
     {

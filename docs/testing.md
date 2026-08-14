@@ -117,9 +117,10 @@ operands at different prepared heights, maximum-depth linear predicate work, bou
 canonical-preparation allocation, duplicate-heavy eight-bucket range and eight-input union
 source-admission sweeps across their catalog transitions, odd-budget half-turn rounding, small-turn
 fallback-minimum precedence, fixed-share permutation invariance, and ordered-catalog fallback. The
-PR13 materializing evaluator remains the benchmark baseline; the ordered implementation matrix adds
-activation-build, mutation, retained-memory, latency, allocation, paging-progress, and work-vector
-evidence.
+PR13 materializing representation remains a benchmark baseline but is no longer retained by a
+production activation. The ordered implementation matrix adds activation-build, mutation,
+record-reference reuse, singleton/multi-record grouping, canonical sharing, retained-memory,
+latency, allocation, paging-progress, and work-vector evidence.
 
 Facet tests separately cover indexed-selector validation, null exclusion, and materialization of
 every supported CLR shape; canonical distinct-value pages and family-bound tokens; exact filtered

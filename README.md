@@ -63,9 +63,11 @@ or physical-provider bytes. A partition activation still loads its whole accepte
 memory, and compaction still serializes that whole partition; the 1,000,000-record and 512 MiB
 canonical snapshot ceilings are safety boundaries, not small latency or transient-memory bounds.
 One collection membership scope contributes at most 64 unique canonical entries per record.
-Range indexes now use logarithmic bucket seeks and incremental bucket updates. Paging adds
-activation-local ordered catalogs/postings, so retained index memory is higher even though live
-updates remain logarithmic.
+Range indexes use logarithmic bucket seeks and incremental bucket updates. One activation-local
+ordered catalog/posting projection now serves paging, facets, and legacy materialized queries.
+Its postings use compact local record references and inline the normal one-record group; these
+references never enter persistence, public results, or continuations. Live updates remain
+logarithmic.
 The exact accounting, failure behavior, and pre-1.0 rollout procedure are documented in the
 [storage capacity envelope](docs/storage-capacity-limits.md).
 Every query page still contacts every distinct current owner. Moving slots can change that owner set,
@@ -441,8 +443,8 @@ partition data.
 Facet support does not change a durable record, journal, manifest, snapshot, layout, or write-path
 format. On activation, hash scopes now derive the same balanced, canonical value projection already
 used for range scopes instead of retaining unordered hash-bucket enumeration as their facet source.
-Rebuild and every committed incremental mutation update that projection together with the existing
-lookup indexes. Value seek and live add/remove are logarithmic in the number of distinct values;
+Rebuild and every committed incremental mutation update that single lookup and ordering projection.
+Value seek and live add/remove are logarithmic in the number of distinct values;
 candidate nomination reads bucket cardinality metadata and does not enumerate posting members.
 
 Index declarations and value accessors are resolved through a cached [PolyType](https://github.com/eiriktsarpalis/PolyType) runtime type model. Complete index scopes are cached per state name, so steady-state writes do not rebuild persisted type identities through reflection. Collection, scalar, and other non-object state shapes remain valid storage values and simply contribute no index entries. Applications only use `SearchableIndexAttribute`; no PolyType attributes or generated witness types are required. This project uses PolyType's reflection provider and does not support Native AOT or trimming.

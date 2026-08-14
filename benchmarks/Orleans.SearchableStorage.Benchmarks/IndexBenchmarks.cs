@@ -95,7 +95,6 @@ public class IndexMutationBenchmarks
     internal void ValidateFixture()
     {
         var records = GetRecords();
-        var indexes = GetIndexes();
         if (!records.TryGetValue(_targetKey, out var record)
             || !string.Equals(record.ETag, _expectedRecord.ETag, StringComparison.Ordinal))
         {
@@ -117,12 +116,19 @@ public class IndexMutationBenchmarks
             static entry => entry.Kind == SearchableIndexKind.Hash).Value;
         var originalSalary = _originalRecord.IndexEntries.Single(
             static entry => entry.Kind == SearchableIndexKind.Range).Value;
-        if (!indexes.FindHashEntries(BenchmarkData.CityScope, expectedCity).Contains(_targetKey)
-            || !indexes.FindRangeEntries(BenchmarkData.SalaryScope, expectedSalary).Contains(_targetKey)
-            || indexes.FindHashEntries(BenchmarkData.CityScope, alternateCity).Contains(_targetKey)
-            || indexes.FindRangeEntries(BenchmarkData.SalaryScope, alternateSalary).Contains(_targetKey)
-            || indexes.FindHashEntries(BenchmarkData.CityScope, originalCity).Contains(_targetKey)
-            || indexes.FindRangeEntries(BenchmarkData.SalaryScope, originalSalary).Contains(_targetKey))
+        if (Representation == DerivedIndexRepresentation.MaterializingHashSets
+            && (!_materializingIndexes.FindHashEntries(BenchmarkData.CityScope, expectedCity)
+                    .Contains(_targetKey)
+                || !_materializingIndexes.FindRangeEntries(BenchmarkData.SalaryScope, expectedSalary)
+                    .Contains(_targetKey)
+                || _materializingIndexes.FindHashEntries(BenchmarkData.CityScope, alternateCity)
+                    .Contains(_targetKey)
+                || _materializingIndexes.FindRangeEntries(BenchmarkData.SalaryScope, alternateSalary)
+                    .Contains(_targetKey)
+                || _materializingIndexes.FindHashEntries(BenchmarkData.CityScope, originalCity)
+                    .Contains(_targetKey)
+                || _materializingIndexes.FindRangeEntries(BenchmarkData.SalaryScope, originalSalary)
+                    .Contains(_targetKey)))
         {
             throw new InvalidOperationException(
                 "The indexed mutation fixture contains stale or missing index entries.");
@@ -215,11 +221,6 @@ public class IndexMutationBenchmarks
             ? _records
             : _view.Records;
 
-    private StoragePartitionIndexes GetIndexes() =>
-        Representation == DerivedIndexRepresentation.MaterializingHashSets
-            ? _materializingIndexes
-            : _view.Indexes;
-
     private void ApplyUpsert(string recordKey, StoredRecord record)
     {
         if (Representation == DerivedIndexRepresentation.BoundedOrderedView)
@@ -294,46 +295,47 @@ public class DerivedIndexBuildBenchmarks
             static entry => entry.Kind == SearchableIndexKind.Hash).Value;
         var expectedSalary = targetRecord.IndexEntries.Single(
             static entry => entry.Kind == SearchableIndexKind.Range).Value;
-        var indexes = result switch
+        if (result is StoragePartitionIndexes materializing)
         {
-            StoragePartitionIndexes materializing => materializing,
-            StoragePartitionView bounded => bounded.Indexes,
-            _ => throw new InvalidOperationException(
-                "The derived-index build benchmark returned an unexpected representation."),
-        };
-
-        if (!indexes.FindHashEntries(BenchmarkData.CityScope, expectedCity).Contains(targetKey)
-            || !indexes.FindRangeEntries(BenchmarkData.SalaryScope, expectedSalary).Contains(targetKey))
-        {
-            throw new InvalidOperationException(
-                "The derived-index build benchmark omitted an expected posting.");
-        }
-
-        if (result is StoragePartitionView view)
-        {
-            var catalog = view.OrderedIndexes.GetStateCatalog(BenchmarkData.StateName);
-            var orderedCity = view.OrderedIndexes.GetExactPosting(
-                BenchmarkData.CityScope,
-                SearchableIndexKind.Hash,
-                expectedCity);
-            var orderedSalary = view.OrderedIndexes.GetExactPosting(
-                BenchmarkData.SalaryScope,
-                SearchableIndexKind.Range,
-                expectedSalary);
-            if (catalog.CopyGrainIds().Length != RecordCount
-                || view.OrderedIndexes.GetFacetRecordCount(
-                    BenchmarkData.CityScope,
-                    SearchableIndexKind.Hash) != RecordCount
-                || view.OrderedIndexes.GetFacetRecordCount(
-                    BenchmarkData.SalaryScope,
-                    SearchableIndexKind.Range) != RecordCount
-                || !PostingContains(catalog, targetGrainId, targetKey)
-                || !PostingContains(orderedCity, targetGrainId, targetKey)
-                || !PostingContains(orderedSalary, targetGrainId, targetKey))
+            if (!materializing.FindHashEntries(BenchmarkData.CityScope, expectedCity).Contains(targetKey)
+                || !materializing.FindRangeEntries(BenchmarkData.SalaryScope, expectedSalary)
+                    .Contains(targetKey))
             {
                 throw new InvalidOperationException(
-                    "The bounded derived-index build benchmark omitted ordered catalog/posting entries.");
+                    "The derived-index build benchmark omitted an expected posting.");
             }
+
+            return;
+        }
+
+        if (result is not StoragePartitionView view)
+        {
+            throw new InvalidOperationException(
+                "The derived-index build benchmark returned an unexpected representation.");
+        }
+
+        var catalog = view.OrderedIndexes.GetStateCatalog(BenchmarkData.StateName);
+        var orderedCity = view.OrderedIndexes.GetExactPosting(
+            BenchmarkData.CityScope,
+            SearchableIndexKind.Hash,
+            expectedCity);
+        var orderedSalary = view.OrderedIndexes.GetExactPosting(
+            BenchmarkData.SalaryScope,
+            SearchableIndexKind.Range,
+            expectedSalary);
+        if (catalog.CopyGrainIds().Length != RecordCount
+            || view.OrderedIndexes.GetFacetRecordCount(
+                BenchmarkData.CityScope,
+                SearchableIndexKind.Hash) != RecordCount
+            || view.OrderedIndexes.GetFacetRecordCount(
+                BenchmarkData.SalaryScope,
+                SearchableIndexKind.Range) != RecordCount
+            || !PostingContains(catalog, targetGrainId, targetKey)
+            || !PostingContains(orderedCity, targetGrainId, targetKey)
+            || !PostingContains(orderedSalary, targetGrainId, targetKey))
+        {
+            throw new InvalidOperationException(
+                "The bounded derived-index build benchmark omitted ordered catalog/posting entries.");
         }
     }
 
@@ -350,6 +352,163 @@ public enum DerivedIndexRepresentation
     MaterializingHashSets,
     BoundedOrderedView,
 }
+
+internal enum RetainedMemoryDatasetProfile
+{
+    CompaniesHouseDeShared,
+}
+
+/// <summary>
+/// Builds a company-register-shaped retained-memory fixture. Equal categorical values and scopes
+/// deliberately use distinct string instances, matching records recovered independently from a
+/// durable snapshot instead of benefiting from benchmark-only reference sharing.
+/// </summary>
+internal static class RetainedMemoryProfileData
+{
+    private const string StateName = "companies-house-company";
+
+    public static Dictionary<string, StoredRecord> CreateCompaniesHouseRecords(
+        int count,
+        int indexCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (indexCount is not 4 and not 8)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(indexCount),
+                indexCount,
+                "The retained-memory company profile supports exactly four or eight indexes.");
+        }
+
+        var records = new Dictionary<string, StoredRecord>(count, StringComparer.Ordinal);
+        for (var index = 0; index < count; index++)
+        {
+            var grainId = BenchmarkData.CreateGrainId(index);
+            records.Add(
+                BenchmarkData.CreateStoredRecordKey(StateName, grainId),
+                new StoredRecord
+                {
+                    GrainId = grainId,
+                    Payload = CreatePayload(index),
+                    ETag = checked(index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    IndexEntries = CreateIndexEntries(index, indexCount),
+                });
+        }
+
+        return records;
+    }
+
+    internal static RetainedMemoryProfileDiagnostics CaptureDeSharingDiagnostics(int indexCount)
+    {
+        var records = new[]
+        {
+            new StoredRecord
+            {
+                GrainId = BenchmarkData.CreateGrainId(0),
+                Payload = CreatePayload(0),
+                ETag = "1",
+                IndexEntries = CreateIndexEntries(0, indexCount),
+            },
+            new StoredRecord
+            {
+                GrainId = BenchmarkData.CreateGrainId(1),
+                Payload = CreatePayload(1),
+                ETag = "2",
+                IndexEntries = CreateIndexEntries(0, indexCount),
+            },
+        };
+        var first = records[0];
+        var repeated = records[1];
+        var scopesAreEqualAndDistinct = first.IndexEntries
+            .Zip(repeated.IndexEntries)
+            .All(static pair =>
+                string.Equals(pair.First.Scope, pair.Second.Scope, StringComparison.Ordinal)
+                && !ReferenceEquals(pair.First.Scope, pair.Second.Scope));
+        var categoricalValuesAreEqualAndDistinct = first.IndexEntries
+            .Zip(repeated.IndexEntries)
+            .Where(static pair => pair.First.Kind == SearchableIndexKind.Hash)
+            .All(static pair =>
+                pair.First.Value.Equals(pair.Second.Value)
+                && !ReferenceEquals(pair.First.Value, pair.Second.Value)
+                && string.Equals(pair.First.Value.Text, pair.Second.Value.Text, StringComparison.Ordinal)
+                && !ReferenceEquals(pair.First.Value.Text, pair.Second.Value.Text));
+
+        return new RetainedMemoryProfileDiagnostics(
+            RecordCount: records.Length,
+            IndexCount: first.IndexEntries.Count,
+            ScopesAreEqualByValueAndDistinctByReference: scopesAreEqualAndDistinct,
+            CategoricalValuesAreEqualByValueAndDistinctByReference:
+                categoricalValuesAreEqualAndDistinct);
+    }
+
+    private static List<IndexEntry> CreateIndexEntries(int recordOrdinal, int indexCount)
+    {
+        var result = new List<IndexEntry>(indexCount);
+        for (var indexOrdinal = 0; indexOrdinal < indexCount; indexOrdinal++)
+        {
+            var kind = indexOrdinal is 2 or 3 or 7
+                ? SearchableIndexKind.Range
+                : SearchableIndexKind.Hash;
+            result.Add(new IndexEntry
+            {
+                Scope = CloneText(GetScope(indexOrdinal)),
+                Kind = kind,
+                Value = CreateValue(recordOrdinal, indexOrdinal),
+            });
+        }
+
+        return result;
+    }
+
+    private static IndexValue CreateValue(int recordOrdinal, int indexOrdinal) => indexOrdinal switch
+    {
+        0 => IndexValue.Create(CloneText($"status-{recordOrdinal % 4:D2}")),
+        1 => IndexValue.Create(CloneText($"company-type-{recordOrdinal % 16:D2}")),
+        2 => IndexValue.FromSignedInteger(recordOrdinal % 20_000),
+        3 => IndexValue.FromSignedInteger(recordOrdinal % 730),
+        4 => IndexValue.Create(CloneText($"jurisdiction-{recordOrdinal % 8:D2}")),
+        5 => IndexValue.Create(CloneText($"sic-{recordOrdinal % 1_024:D4}")),
+        6 => IndexValue.Create(CloneText($"postal-area-{recordOrdinal % 256:D3}")),
+        7 => IndexValue.FromSignedInteger(recordOrdinal % 3_650),
+        _ => throw new ArgumentOutOfRangeException(nameof(indexOrdinal), indexOrdinal, null),
+    };
+
+    private static string GetScope(int indexOrdinal) => indexOrdinal switch
+    {
+        0 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company6:Status13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        1 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company11:CompanyType13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        2 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company17:IncorporationDate13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        3 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company15:AccountsDueDate13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        4 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company12:Jurisdiction13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        5 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company7:SicCode13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        6 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company10:PostalArea13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        7 => "107:Orleans.SearchableStorage.Qualification.CompaniesHouse.CompanyState23:companies-house-company14:LastFilingDate13:oss-schema-v164:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        _ => throw new ArgumentOutOfRangeException(nameof(indexOrdinal), indexOrdinal, null),
+    };
+
+    private static byte[] CreatePayload(int recordOrdinal)
+    {
+        var result = new byte[BenchmarkData.DefaultPayloadSize];
+        for (var offset = 0; offset < result.Length; offset++)
+        {
+            result[offset] = unchecked((byte)((recordOrdinal * 31) + offset));
+        }
+
+        return result;
+    }
+
+    private static string CloneText(string value) =>
+        string.Create(
+            value.Length,
+            value,
+            static (destination, source) => source.AsSpan().CopyTo(destination));
+}
+
+internal sealed record RetainedMemoryProfileDiagnostics(
+    int RecordCount,
+    int IndexCount,
+    bool ScopesAreEqualByValueAndDistinctByReference,
+    bool CategoricalValuesAreEqualByValueAndDistinctByReference);
 
 [BenchmarkCategory("Indexing", "Query")]
 public class ExactRangeLookupBenchmarks

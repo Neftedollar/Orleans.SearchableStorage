@@ -136,8 +136,8 @@ approximately four raw bytes per slot before serializer overhead and is read as 
 Partition activations share one retained map per provider and silo instead of cloning it per
 partition. The keyed storage provider and query/admin clients retain a bounded constant number of
 additional process-local snapshots, never one per partition activation.
-Each partition also derives and retains canonical ordered catalogs/postings for paging in addition to
-the existing hash/range lookup indexes; these are activation memory, not physical-backend bytes.
+Each partition derives and retains one canonical ordered catalog/posting projection shared by
+lookup, paging, and facets; this is activation memory, not physical-backend bytes.
 Hash and range scopes share a balanced canonical value projection for facets. Candidate nomination
 reads only bucket metadata, while exact filtered probes traverse nominated postings in bounded
 slices. No facet candidate, count, cursor, or owner data version is persisted in the backend.

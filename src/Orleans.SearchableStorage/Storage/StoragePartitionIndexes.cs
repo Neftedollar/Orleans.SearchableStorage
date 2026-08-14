@@ -26,19 +26,7 @@ internal sealed class StoragePartitionIndexes
 
     public static void ValidateRecord(StoredRecord record)
     {
-        ArgumentNullException.ThrowIfNull(record);
-        ArgumentNullException.ThrowIfNull(record.IndexEntries);
-
-        foreach (var entry in record.IndexEntries)
-        {
-            ArgumentNullException.ThrowIfNull(entry);
-            ArgumentException.ThrowIfNullOrWhiteSpace(entry.Scope);
-            ArgumentNullException.ThrowIfNull(entry.Value);
-            if (entry.Kind is not SearchableIndexKind.Hash and not SearchableIndexKind.Range)
-            {
-                throw new InvalidOperationException($"Unknown index kind '{entry.Kind}'.");
-            }
-        }
+        StoragePartitionIndexValidation.ValidateRecord(record);
     }
 
     public void AddRecord(string recordKey, StoredRecord record)

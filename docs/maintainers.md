@@ -8,7 +8,7 @@ rules remain in the linked design documents.
 
 | Flow | Entry point | Durable or protocol owners | In-memory owner |
 | --- | --- | --- | --- |
-| Point read/write/clear | `SearchableGrainStorage` | `StorageLayoutGrain`, `StoragePartitionGrain`, `StoragePartitionPersistence`, `StorageJournalSegmentGrain`, `StorageSnapshotGrain` | `StoragePartitionView` and `StoragePartitionIndexes` |
+| Point read/write/clear | `SearchableGrainStorage` | `StorageLayoutGrain`, `StoragePartitionGrain`, `StoragePartitionPersistence`, `StorageJournalSegmentGrain`, `StorageSnapshotGrain` | `StoragePartitionView`, `StoragePartitionRecordRefs`, and `StoragePartitionOrderedIndexes` |
 | Query translation | `SearchableStorageClient` and `SearchableStorageQueryableExtensions` | `QueryTranslator`, `QueryPlanBuilder`, `PartitionQueryPlanFactory`, `QueryProtocol` | `ScalarQueryAccessPathPlanner` and `StoragePartitionQueryPageEvaluator` |
 | Facets | `SearchableStorageClient.Facets` | the same plan and continuation contracts as paging | `StoragePartitionFacetEvaluator` |
 | Activation recovery | `StoragePartitionGrain.OnActivateAsync` | `StoragePartitionPersistence`, `StorageJournalReplay`, `StorageSnapshotFactory` | a freshly rebuilt `StoragePartitionView` |

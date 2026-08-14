@@ -86,20 +86,16 @@ internal static class StoragePartitionQueryPageEvaluator
             var slot = StorageLayout.GetSlot(candidate, routing.VirtualSlotCount);
             var isOwned = routing.GetOwner(slot) == partitionIndex;
             var matches = false;
-            if (isOwned && catalog.TryGetRecordKeys(candidate, out var recordKeys))
+            if (isOwned && catalog.TryGetRecordRefs(candidate, out var recordRefs))
             {
-                foreach (var recordKey in recordKeys)
+                foreach (var recordRef in recordRefs)
                 {
                     if (!work.TryRecordRecordProbe())
                     {
                         return StopForWork();
                     }
 
-                    if (!view.Records.TryGetValue(recordKey, out var record))
-                    {
-                        throw new InvalidOperationException(
-                            $"The ordered state catalog references missing record '{recordKey}'.");
-                    }
+                    var record = view.RecordRefs.GetRecord(recordRef);
 
                     var predicate = EvaluateRecord(query, record, ref work);
                     if (!predicate.Completed)

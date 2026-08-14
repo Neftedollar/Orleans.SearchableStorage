@@ -469,6 +469,13 @@ jobs:
             --no-build \
             --no-restore \
             -- --retained-memory "$evidence" --quick
+          dotnet run \
+            --project benchmarks/Orleans.SearchableStorage.Benchmarks/Orleans.SearchableStorage.Benchmarks.csproj \
+            --configuration Release \
+            --no-build \
+            --no-restore \
+            -- --retained-memory-v2 "$evidence" --quick \
+            --maximum-production-to-materializing-ratio-bps 6000
 
           jq --exit-status '
             .SchemaVersion == "oss-query-work-matrix/v2"
@@ -548,6 +555,29 @@ jobs:
               == ["HotLowCardinality", "UniformUniqueRange"]
             and ([.Measurements[] | [.Representation, .Distribution]] | unique | length) == 4
           ' "$evidence/retained-memory.json" >/dev/null
+
+          jq --exit-status '
+            .SchemaVersion == "oss-retained-managed-memory/v2"
+            and .Quick == true
+            and .RatioBasisPointScale == 10000
+            and .Gate.MaximumProductionToMaterializingRatioBasisPoints == 6000
+            and .Gate.Passed == true
+            and (.Measurements | length) == 1
+            and all(.Measurements[];
+              .RecordCount == 4096
+              and .Profile == "CompaniesHouseDeShared"
+              and .IndexCount == 4
+              and .MaterializingRepresentation == "MaterializingHashSets"
+              and .ProductionRepresentation == "BoundedOrderedView"
+              and (.MaterializingRawRetainedManagedBytes | length) == 5
+              and (.ProductionRawRetainedManagedBytes | length) == 5
+              and all(.MaterializingRawRetainedManagedBytes[]; . > 0)
+              and all(.ProductionRawRetainedManagedBytes[]; . > 0)
+              and .MaterializingMedianRetainedManagedBytes > 0
+              and .ProductionMedianRetainedManagedBytes > 0
+              and .ProductionToMaterializingRatioBasisPoints > 0
+              and .ProductionToMaterializingRatioBasisPoints <= 6000)
+          ' "$evidence/retained-memory-v2.json" >/dev/null
 
           jq --exit-status \
             --arg commit "$OSS_BENCHMARK_GIT_COMMIT" '
