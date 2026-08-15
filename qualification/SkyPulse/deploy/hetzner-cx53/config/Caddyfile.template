@@ -1,0 +1,36 @@
+{
+    admin off
+}
+
+__DOMAIN__ {
+    encode zstd gzip
+
+    basic_auth {
+        __USERNAME__ __PASSWORD_HASH__
+    }
+
+    request_body {
+        max_size 64KB
+    }
+
+    @private_operator path_regexp private_operator (?i)^/(health|api/corpus-capacity)(/.*)?$
+    respond @private_operator 404
+
+    header {
+        Content-Security-Policy "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        Referrer-Policy "no-referrer"
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        -Server
+    }
+
+    reverse_proxy 127.0.0.1:5080 {
+        header_up -Authorization
+        header_up -X-SkyPulse-Corpus-Admin
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 30s
+        }
+    }
+}

@@ -1,0 +1,19 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+terraform.tfstate.d/
+*.tfplan
+crash.log
+crash.*.log
+terraform.tfvars
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# The dependency lock is a required, reviewed release artifact and must remain
+# visible to Git. This rule protects it if broader ignore patterns are added.
+!.terraform.lock.hcl

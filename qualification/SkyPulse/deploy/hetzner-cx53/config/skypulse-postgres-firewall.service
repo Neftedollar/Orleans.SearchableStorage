@@ -1,0 +1,16 @@
+[Unit]
+Description=SkyPulse PostgreSQL private-network firewall
+Wants=network-online.target
+After=network-online.target
+Before=docker.service ssh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/libexec/skypulse-firewall-interface-check /etc/skypulse-postgres-firewall.interface
+ExecStart=/usr/sbin/nft -f /etc/skypulse-postgres-firewall.nft
+ExecReload=/usr/local/libexec/skypulse-firewall-interface-check /etc/skypulse-postgres-firewall.interface
+ExecReload=/usr/sbin/nft -f /etc/skypulse-postgres-firewall.nft
+
+[Install]
+WantedBy=multi-user.target

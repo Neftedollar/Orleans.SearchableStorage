@@ -1,0 +1,7 @@
+# Render with scripts/render-pg-hba.sh. Never expose PostgreSQL publicly.
+local   all              all                                      trust
+local   replication      skypulse_admin                           trust
+hostssl skypulse         skypulse_app      __APP_PRIVATE_IP__/32  scram-sha-256
+hostssl skypulse_tap     skypulse_tap      __APP_PRIVATE_IP__/32  scram-sha-256
+host    all              all               0.0.0.0/0               reject
+host    all              all               ::/0                    reject

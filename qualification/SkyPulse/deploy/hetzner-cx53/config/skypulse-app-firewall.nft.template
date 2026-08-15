@@ -1,0 +1,21 @@
+destroy table inet skypulse_app
+table inet skypulse_app {
+    chain input {
+        type filter hook input priority -10; policy accept;
+
+        iifname "__PRIVATE_INTERFACE__" ct state established,related accept
+        iifname "__PRIVATE_INTERFACE__" udp sport 67 udp dport 68 accept
+        iifname "__PRIVATE_INTERFACE__" ip saddr __POSTGRES_PRIVATE_IP__ ip protocol icmp accept
+        iifname "__PRIVATE_INTERFACE__" counter drop
+    }
+
+    chain output {
+        type filter hook output priority -10; policy accept;
+
+        oifname "__PRIVATE_INTERFACE__" ct state established,related accept
+        oifname "__PRIVATE_INTERFACE__" udp sport 68 udp dport 67 accept
+        oifname "__PRIVATE_INTERFACE__" ip saddr __APP_PRIVATE_IP__ ip daddr __POSTGRES_PRIVATE_IP__ ip protocol icmp accept
+        oifname "__PRIVATE_INTERFACE__" ip saddr __APP_PRIVATE_IP__ ip daddr __POSTGRES_PRIVATE_IP__ tcp dport 5432 accept
+        oifname "__PRIVATE_INTERFACE__" counter drop
+    }
+}
