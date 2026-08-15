@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Orleans.SearchableStorage.Qualification.SkyPulse.Core</AssemblyName>
+    <RootNamespace>Orleans.SearchableStorage.Qualification.SkyPulse</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Orleans.SearchableStorage.Qualification.SkyPulse.Web" />
+  </ItemGroup>
+</Project>

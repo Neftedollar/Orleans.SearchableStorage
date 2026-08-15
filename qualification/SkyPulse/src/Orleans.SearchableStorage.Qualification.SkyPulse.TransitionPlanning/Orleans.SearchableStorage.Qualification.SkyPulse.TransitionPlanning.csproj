@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning</AssemblyName>
+    <RootNamespace>Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.csproj" />
+    <InternalsVisibleTo Include="Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning.Tests" />
+    <InternalsVisibleTo Include="Orleans.SearchableStorage.Qualification.SkyPulse.DurableIngestion.Tests" />
+  </ItemGroup>
+</Project>

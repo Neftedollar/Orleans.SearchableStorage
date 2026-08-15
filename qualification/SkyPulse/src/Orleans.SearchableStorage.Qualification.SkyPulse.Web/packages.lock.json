@@ -1,0 +1,314 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net10.0": {
+      "Microsoft.Orleans.Persistence.Memory": {
+        "type": "Direct",
+        "requested": "[10.2.2, )",
+        "resolved": "10.2.2",
+        "contentHash": "y3CcCkeeIkyzYSOdcxTkwpnO39TcbCq4SiNMp09xZ+Iovf/mWCkDnCd7HIJujVsKo4me7BOetkew30Yxt5Wguw==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "5.0.0",
+          "Microsoft.CodeAnalysis.Workspaces.Common": "5.0.0",
+          "Microsoft.Extensions.DependencyModel": "10.0.5",
+          "Microsoft.Orleans.Analyzers": "10.2.2",
+          "Microsoft.Orleans.CodeGenerator": "10.2.2",
+          "Microsoft.Orleans.Runtime": "10.2.2",
+          "Newtonsoft.Json": "13.0.4",
+          "System.IO.Hashing": "10.0.3",
+          "System.Memory.Data": "10.0.3"
+        }
+      },
+      "Microsoft.Orleans.Server": {
+        "type": "Direct",
+        "requested": "[10.2.2, )",
+        "resolved": "10.2.2",
+        "contentHash": "EeF/MjdE7mMQHw2NUfavAD8wTEN0OLs3KcZ8oPHSipV6r6Xb2r9IFDJaNO1dL0FpkKcH6kqEsrS5uACsWj1zXA==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "5.0.0",
+          "Microsoft.CodeAnalysis.Workspaces.Common": "5.0.0",
+          "Microsoft.Extensions.DependencyModel": "10.0.5",
+          "Microsoft.Orleans.Persistence.Memory": "10.2.2",
+          "Microsoft.Orleans.Runtime": "10.2.2",
+          "Microsoft.Orleans.Sdk": "10.2.2",
+          "Newtonsoft.Json": "13.0.4",
+          "System.IO.Hashing": "10.0.3",
+          "System.Memory.Data": "10.0.3"
+        }
+      },
+      "Npgsql": {
+        "type": "Direct",
+        "requested": "[8.0.8, )",
+        "resolved": "8.0.8",
+        "contentHash": "1g7tA1easureueqyS5SqJtojI7FwEdw50UYTh0l576iWZNnyRyAVfFi1bJp4BzO8IwYodP8YCRp6ThNQvvBn8A=="
+      },
+      "Orleans.SearchableStorage": {
+        "type": "Direct",
+        "requested": "[1.0.0-rc.2, )",
+        "resolved": "1.0.0-rc.2",
+        "contentHash": "4yK21TVYZYWVUd7hX/exxB+8mFgDDpirHPlysrE72DCiUslJbWs4cLVnTJ373zdO+nV8z7d2UZKkeWO/ZZGr6g==",
+        "dependencies": {
+          "Microsoft.Orleans.Runtime": "10.2.2",
+          "PolyType": "1.4.1"
+        }
+      },
+      "Humanizer.Core": {
+        "type": "Transitive",
+        "resolved": "2.14.1",
+        "contentHash": "lQKvtaTDOXnoVJ20ibTuSIOf2i0uO0MPbDhd1jm238I+U/2ZnRENj0cktKZhtchBMtCUSRQ5v4xBCUbKNmyVMw=="
+      },
+      "Microsoft.CodeAnalysis.Analyzers": {
+        "type": "Transitive",
+        "resolved": "3.11.0",
+        "contentHash": "v/EW3UE8/lbEYHoC2Qq7AR/DnmvpgdtAMndfQNmpuIMx/Mto8L5JnuCfdBYtgvalQOtfNCnxFejxuRrryvUTsg=="
+      },
+      "Microsoft.CodeAnalysis.Common": {
+        "type": "Transitive",
+        "resolved": "5.0.0",
+        "contentHash": "ZXRAdvH6GiDeHRyd3q/km8Z44RoM6FBWHd+gen/la81mVnAdHTEsEkO5J0TCNXBymAcx5UYKt5TvgKBhaLJEow==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0"
+        }
+      },
+      "Microsoft.CodeAnalysis.Workspaces.Common": {
+        "type": "Transitive",
+        "resolved": "5.0.0",
+        "contentHash": "ZbUmIvT6lqTNKiv06Jl5wf0MTMi1vQ1oH7ou4CLcs2C/no/L7EhP3T8y3XXvn9VbqMcJaJnEsNA1jwYUMgc5jg==",
+        "dependencies": {
+          "Humanizer.Core": "2.14.1",
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "[5.0.0]",
+          "System.Composition": "9.0.0"
+        }
+      },
+      "Microsoft.Extensions.DependencyModel": {
+        "type": "Transitive",
+        "resolved": "10.0.5",
+        "contentHash": "xA4kkL+QS6KCAOKz/O0oquHs44Ob8J7zpBCNt3wjkBWDg5aCqfwG8rWWLsg5V86AM0sB849g9JjPjIdksTCIKg=="
+      },
+      "Microsoft.Orleans.Analyzers": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "IhN/7e8ClI9oJIGBTVBwUROdjeu8MODH00V/l/v0Y5BfyxMpUxfxBwHpLCN3G17OjxomwKZQBQQjq2PT9CpMVQ=="
+      },
+      "Microsoft.Orleans.CodeGenerator": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "3vG6A4+aB83JJccJKuwnsewgaCiUz9kH25gAAP2PujRjRHmcm+myif/Pp/fOtbEoyicWUgl7ZlqO4Bc3K2hhgA=="
+      },
+      "Microsoft.Orleans.Core": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "2n0Vn/5go3qLeqF4NpJw4Zc8nvLBgIItVX3Z7p9wo6dA8gi5iaqGleHzRmO8imSrcopMSGNnvzIsBpj+qQhiLA==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "5.0.0",
+          "Microsoft.CodeAnalysis.Workspaces.Common": "5.0.0",
+          "Microsoft.Extensions.DependencyModel": "10.0.5",
+          "Microsoft.Orleans.Analyzers": "10.2.2",
+          "Microsoft.Orleans.CodeGenerator": "10.2.2",
+          "Microsoft.Orleans.Core.Abstractions": "10.2.2",
+          "Newtonsoft.Json": "13.0.4",
+          "System.IO.Hashing": "10.0.3",
+          "System.Memory.Data": "10.0.3"
+        }
+      },
+      "Microsoft.Orleans.Core.Abstractions": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "ykaLjcPnPFBTz33ETCD7uLsOhU0ZV3OoG7pV6AOTY6XXQmTaxvvZXp4jC+yb6h70nSmLWW2BnVe4W2xGqBgpVQ==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "5.0.0",
+          "Microsoft.CodeAnalysis.Workspaces.Common": "5.0.0",
+          "Microsoft.Extensions.DependencyModel": "10.0.5",
+          "Microsoft.Orleans.Analyzers": "10.2.2",
+          "Microsoft.Orleans.CodeGenerator": "10.2.2",
+          "Microsoft.Orleans.Serialization": "10.2.2",
+          "System.IO.Hashing": "10.0.3"
+        }
+      },
+      "Microsoft.Orleans.Runtime": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "u1dYpZB8DvflJHoiYoe4OCcaqfFWVlsVhMNWhUZIPuXYIdj/fRuIdZ3ABXCiuN8VuZdFvdYWX8M9p9h2BVyeHg==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "5.0.0",
+          "Microsoft.CodeAnalysis.Workspaces.Common": "5.0.0",
+          "Microsoft.Extensions.DependencyModel": "10.0.5",
+          "Microsoft.Orleans.Analyzers": "10.2.2",
+          "Microsoft.Orleans.CodeGenerator": "10.2.2",
+          "Microsoft.Orleans.Core": "10.2.2",
+          "Newtonsoft.Json": "13.0.4",
+          "System.IO.Hashing": "10.0.3",
+          "System.Memory.Data": "10.0.3"
+        }
+      },
+      "Microsoft.Orleans.Sdk": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "sadctdbGXiraM813SqzaKU3bbz9La0M9ONdON+LUrSnLDyZ/WWa7vz0+lGCXzCepDEqFZgCWwht32Chjb8Y9qQ==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "5.0.0",
+          "Microsoft.CodeAnalysis.Workspaces.Common": "5.0.0",
+          "Microsoft.Extensions.DependencyModel": "10.0.5",
+          "Microsoft.Orleans.Analyzers": "10.2.2",
+          "Microsoft.Orleans.CodeGenerator": "10.2.2",
+          "Microsoft.Orleans.Core": "10.2.2",
+          "Newtonsoft.Json": "13.0.4",
+          "System.IO.Hashing": "10.0.3",
+          "System.Memory.Data": "10.0.3"
+        }
+      },
+      "Microsoft.Orleans.Serialization": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "E9AtD26i2Kxf3fqZRtFXBnEvX9NUyQ97dSFS9aiPvKK8Fp7tCbQs/GIEXVzysmIcLet5yY3wywW7cwAQS04UCA==",
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Analyzers": "3.11.0",
+          "Microsoft.CodeAnalysis.Common": "5.0.0",
+          "Microsoft.CodeAnalysis.Workspaces.Common": "5.0.0",
+          "Microsoft.Extensions.DependencyModel": "10.0.5",
+          "Microsoft.Orleans.Analyzers": "10.2.2",
+          "Microsoft.Orleans.CodeGenerator": "10.2.2",
+          "Microsoft.Orleans.Serialization.Abstractions": "10.2.2",
+          "System.IO.Hashing": "10.0.3"
+        }
+      },
+      "Microsoft.Orleans.Serialization.Abstractions": {
+        "type": "Transitive",
+        "resolved": "10.2.2",
+        "contentHash": "ON8/madVyLpJBKtncxTAgTS9HnStBv37D4ZwsvFEqxrFPK8UWAl6/iRiVk/4Bmin1GYh8GDtskmuMytG8y+l0w=="
+      },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      },
+      "PolyType": {
+        "type": "Transitive",
+        "resolved": "1.4.1",
+        "contentHash": "pWxJ5tNPtwZx0GzKRqvGbSZ7EwBgM0DjUyOSg2/iQ9pn5XhvmeWZfIj3SBs36hpS89oGoRqmjjA+3+Qekbisyw=="
+      },
+      "System.Composition": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "3Djj70fFTraOarSKmRnmRy/zm4YurICm+kiCtI0dYRqGJnLX6nJ+G3WYuFJ173cAPax/gh96REcbNiVqcrypFQ==",
+        "dependencies": {
+          "System.Composition.AttributedModel": "9.0.0",
+          "System.Composition.Convention": "9.0.0",
+          "System.Composition.Hosting": "9.0.0",
+          "System.Composition.Runtime": "9.0.0",
+          "System.Composition.TypedParts": "9.0.0"
+        }
+      },
+      "System.Composition.AttributedModel": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "iri00l/zIX9g4lHMY+Nz0qV1n40+jFYAmgsaiNn16xvt2RDwlqByNG4wgblagnDYxm3YSQQ0jLlC/7Xlk9CzyA=="
+      },
+      "System.Composition.Convention": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "+vuqVP6xpi582XIjJi6OCsIxuoTZfR0M7WWufk3uGDeCl3wGW6KnpylUJ3iiXdPByPE0vR5TjJgR6hDLez4FQg==",
+        "dependencies": {
+          "System.Composition.AttributedModel": "9.0.0"
+        }
+      },
+      "System.Composition.Hosting": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "OFqSeFeJYr7kHxDfaViGM1ymk7d4JxK//VSoNF9Ux0gpqkLsauDZpu89kTHHNdCWfSljbFcvAafGyBoY094btQ==",
+        "dependencies": {
+          "System.Composition.Runtime": "9.0.0"
+        }
+      },
+      "System.Composition.Runtime": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "w1HOlQY1zsOWYussjFGZCEYF2UZXgvoYnS94NIu2CBnAGMbXFAX8PY8c92KwUItPmowal68jnVLBCzdrWLeEKA=="
+      },
+      "System.Composition.TypedParts": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "aRZlojCCGEHDKqh43jaDgaVpYETsgd7Nx4g1zwLKMtv4iTo0627715ajEFNpEEBTgLmvZuv8K0EVxc3sM4NWJA==",
+        "dependencies": {
+          "System.Composition.AttributedModel": "9.0.0",
+          "System.Composition.Hosting": "9.0.0",
+          "System.Composition.Runtime": "9.0.0"
+        }
+      },
+      "System.IO.Hashing": {
+        "type": "Transitive",
+        "resolved": "10.0.3",
+        "contentHash": "La6ICwsdTKhVX+LKN+pvFjQRR3LhLwq3uKdi2knjLzRyPYBSydF4cjXidYxIiTcDD6XVYdsBWQEI8ZxiZ/OdIg=="
+      },
+      "System.Memory.Data": {
+        "type": "Transitive",
+        "resolved": "10.0.3",
+        "contentHash": "MaGhRfGunmrj/nHjtsi9XkhlYJ/ERGWrbA+BiSKNtGnAjc9XlG5EhAvak6VRcX5LYzPF6pBO8nJ613dTgzabig=="
+      },
+      "orleans.searchablestorage.qualification.skypulse.core": {
+        "type": "Project"
+      },
+      "orleans.searchablestorage.qualification.skypulse.corpusacquisition": {
+        "type": "Project",
+        "dependencies": {
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Core": "[1.0.0, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.CorpusBuilder": "[1.0.0, )"
+        }
+      },
+      "orleans.searchablestorage.qualification.skypulse.corpusbuilder": {
+        "type": "Project",
+        "dependencies": {
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Core": "[1.0.0, )"
+        }
+      },
+      "orleans.searchablestorage.qualification.skypulse.durableingestion": {
+        "type": "Project",
+        "dependencies": {
+          "Npgsql": "[8.0.8, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Core": "[1.0.0, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.CorpusAcquisition": "[1.0.0, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Ingestion": "[1.0.0, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql": "[1.0.0, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Tap": "[1.0.0, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning": "[1.0.0, )"
+        }
+      },
+      "orleans.searchablestorage.qualification.skypulse.ingestion": {
+        "type": "Project",
+        "dependencies": {
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Core": "[1.0.0, )"
+        }
+      },
+      "orleans.searchablestorage.qualification.skypulse.persistence.postgresql": {
+        "type": "Project",
+        "dependencies": {
+          "Npgsql": "[8.0.8, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Core": "[1.0.0, )"
+        }
+      },
+      "orleans.searchablestorage.qualification.skypulse.runtime": {
+        "type": "Project",
+        "dependencies": {
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Core": "[1.0.0, )",
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql": "[1.0.0, )"
+        }
+      },
+      "orleans.searchablestorage.qualification.skypulse.tap": {
+        "type": "Project"
+      },
+      "orleans.searchablestorage.qualification.skypulse.transitionplanning": {
+        "type": "Project",
+        "dependencies": {
+          "Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}

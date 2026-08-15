@@ -1,0 +1,65 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #0a0d14;
+  color: #e8edf5;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; }
+
+main { width: min(1500px, 96vw); margin: 0 auto; padding: 2rem 0 4rem; }
+
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; }
+
+h1 { margin: 0.2rem 0; font-size: clamp(2rem, 5vw, 4rem); letter-spacing: -0.04em; }
+
+h2 { margin-top: 0; }
+
+.eyebrow { color: #67e8f9; text-transform: uppercase; letter-spacing: 0.13em; font-size: 0.75rem; }
+
+.lede, .note, #status { color: #aeb8ca; }
+
+.panel, .results { background: #111725; border: 1px solid #273149; border-radius: 16px; padding: 1.25rem; margin-top: 1.5rem; }
+
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.9rem; }
+
+label { display: grid; gap: 0.35rem; color: #cbd5e1; font-size: 0.85rem; }
+
+input, select { width: 100%; padding: 0.7rem; border: 1px solid #34415e; border-radius: 8px; background: #0b1020; color: inherit; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-top: 1rem; }
+
+button { border: 0; border-radius: 9px; padding: 0.75rem 1rem; background: #67e8f9; color: #071018; font-weight: 700; cursor: pointer; }
+
+button.secondary { background: #26334d; color: #e8edf5; }
+
+button:disabled { cursor: not-allowed; opacity: 0.45; }
+
+.state { white-space: nowrap; border-radius: 999px; padding: 0.5rem 0.8rem; font-size: 0.8rem; font-weight: 700; }
+
+.state-online { color: #86efac; background: #12321f; }
+
+.state-offline { color: #fca5a5; background: #3a191e; }
+
+.results { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+
+th, td { padding: 0.75rem; border-bottom: 1px solid #273149; text-align: right; white-space: nowrap; }
+
+th:first-child, td:first-child { text-align: left; }
+
+th { color: #8fa0ba; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+td:first-child { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
+
+tr.changed { animation: changed 1.2s ease-out; }
+
+@keyframes changed { from { background: #174254; } to { background: transparent; } }
+
+@media (max-width: 700px) {
+  header { display: block; }
+  .state { display: inline-block; margin-top: 0.7rem; }
+}

@@ -1,0 +1,2930 @@
+diff --git a/cmd/tap/event_manager.go b/cmd/tap/event_manager.go
+index 4c9d4e022895f4a78e254a8d66c28da39c4dd991..e697a505513e1b195c23c0ffe760749e863ff1d6 100644
+--- a/cmd/tap/event_manager.go
++++ b/cmd/tap/event_manager.go
+@@ -3,7 +3,10 @@ package main
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
++	"fmt"
+ 	"log/slog"
++	"math"
+ 	"sync"
+ 	"sync/atomic"
+ 	"time"
+@@ -17,7 +20,8 @@ type EventManager struct {
+ 	logger *slog.Logger
+ 	db     *gorm.DB
+ 
+-	nextID atomic.Uint64
++	nextID   atomic.Uint64
++	appendMu sync.Mutex
+ 
+ 	cacheSize       int
+ 	finishedLoading atomic.Bool
+@@ -34,7 +38,7 @@ func NewEventManager(logger *slog.Logger, db *gorm.DB, config *TapConfig) *Event
+ 		db:         db,
+ 		cacheSize:  config.EventCacheSize,
+ 		cache:      make(map[uint]*OutboxEvt),
+-		pendingIDs: make(chan uint, config.EventCacheSize*2), // give us some buffer room in channel since we can overshoot
++		pendingIDs: make(chan uint, config.EventCacheSize*2),
+ 	}
+ }
+ 
+@@ -79,11 +83,9 @@ func (em *EventManager) DeleteEvents(ctx context.Context, ids []uint) error {
+ 	if len(ids) == 0 {
+ 		return nil
+ 	}
+-
+ 	if err := em.db.WithContext(ctx).Delete(&models.OutboxBuffer{}, ids).Error; err != nil {
+ 		return err
+ 	}
+-
+ 	em.cacheLk.Lock()
+ 	defer em.cacheLk.Unlock()
+ 	for _, id := range ids {
+@@ -94,6 +96,13 @@ func (em *EventManager) DeleteEvents(ctx context.Context, ids []uint) error {
+ }
+ 
+ func (em *EventManager) LoadEvents(ctx context.Context) {
++	var state models.MetadataOnlyOverlayState
++	if err := em.db.WithContext(ctx).First(&state, "id = ?", 1).Error; err != nil {
++		em.logger.Error("failed to load metadata-only delivery high-water", "error", err)
++		return
++	}
++	em.nextID.Store(state.LastEventID)
++
+ 	lastID := 0
+ 	for {
+ 		select {
+@@ -104,7 +113,6 @@ func (em *EventManager) LoadEvents(ctx context.Context) {
+ 				time.Sleep(10 * time.Millisecond)
+ 				continue
+ 			}
+-
+ 			lastPageID, err := em.loadEventPage(ctx, lastID)
+ 			if err != nil {
+ 				em.logger.Error("failed to load events into cache", "error", err, "lastID", lastID)
+@@ -121,221 +129,290 @@ func (em *EventManager) LoadEvents(ctx context.Context) {
+ }
+ 
+ func (em *EventManager) loadEventPage(ctx context.Context, lastID int) (int, error) {
+-	batchSize := 1000
+-	dbEvts := make([]models.OutboxBuffer, 0, batchSize)
++	const pageSize = 1000
++	dbEvts := make([]models.OutboxBuffer, 0, pageSize)
+ 	if err := em.db.WithContext(ctx).Raw(
+ 		"SELECT * FROM outbox_buffers WHERE id > ? ORDER BY id ASC LIMIT ?",
+ 		lastID,
+-		batchSize,
++		pageSize,
+ 	).Scan(&dbEvts).Error; err != nil {
+ 		return 0, err
+ 	}
+-
+-	resultSize := len(dbEvts)
+-	if resultSize == 0 {
++	if len(dbEvts) == 0 {
+ 		return lastID, nil
+ 	}
+ 
+ 	em.cacheLk.Lock()
+ 	for i := range dbEvts {
+-		entry := &OutboxEvt{
+-			ID:    dbEvts[i].ID,
+-			Did:   dbEvts[i].Did,
+-			Live:  dbEvts[i].Live,
+-			Event: []byte(dbEvts[i].Data),
+-		}
++		entry := &OutboxEvt{ID: dbEvts[i].ID, Did: dbEvts[i].Did, Live: dbEvts[i].Live, Event: []byte(dbEvts[i].Data)}
+ 		em.cache[entry.ID] = entry
+ 	}
+ 	eventCacheSize.Set(float64(len(em.cache)))
+ 	em.cacheLk.Unlock()
+-
+-	maxID := dbEvts[len(dbEvts)-1].ID
+-	em.nextID.Store(uint64(maxID + 1))
+-
+ 	for i := range dbEvts {
+ 		em.pendingIDs <- dbEvts[i].ID
+ 	}
+-
+-	return int(dbEvts[resultSize-1].ID), nil
++	return int(dbEvts[len(dbEvts)-1].ID), nil
+ }
+ 
+ func (em *EventManager) AddCommit(ctx context.Context, commit *Commit, dbCallback DBCallback) error {
+-	if len(commit.Ops) == 0 {
+-		return updateRepoCommitMeta(em.db, commit)
+-	}
+-
+-	evts := make([]*RecordEvt, 0, len(commit.Ops))
+-
+-	for _, op := range commit.Ops {
+-		evt := &RecordEvt{
+-			Live:       true,
+-			Did:        commit.Did,
+-			Rev:        commit.Rev,
+-			Collection: op.Collection,
+-			Rkey:       op.Rkey,
+-			Action:     op.Action,
+-			Record:     op.Record,
+-			Cid:        op.Cid,
+-		}
+-		evts = append(evts, evt)
++	safeCommit, err := sanitizeCommitForDurableStorage(commit)
++	if err != nil {
++		return err
++	}
++	if len(safeCommit.Ops) == 0 {
++		return em.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++			if dbCallback != nil {
++				if err := dbCallback(tx); err != nil {
++					return err
++				}
++			}
++			return updateRepoCommitMeta(tx, safeCommit)
++		})
+ 	}
+ 
++	evts := make([]*RecordEvt, 0, len(safeCommit.Ops))
++	for _, op := range safeCommit.Ops {
++		evts = append(evts, &RecordEvt{
++			Live:           true,
++			Did:            safeCommit.Did,
++			Rev:            safeCommit.Rev,
++			Collection:     op.Collection,
++			Rkey:           op.Rkey,
++			Action:         op.Action,
++			Cid:            op.Cid,
++			MetadataStatus: op.MetadataStatus,
++			Metadata:       op.Metadata,
++		})
++	}
+ 	return em.AddRecordEvents(ctx, evts, true, func(tx *gorm.DB) error {
+-		if err := dbCallback(tx); err != nil {
+-			return err
++		if dbCallback != nil {
++			if err := dbCallback(tx); err != nil {
++				return err
++			}
+ 		}
+-
+-		return updateRepoCommitMeta(tx, commit)
++		return updateRepoCommitMeta(tx, safeCommit)
+ 	})
+ }
+ 
+ func updateRepoCommitMeta(dbOrTx *gorm.DB, commit *Commit) error {
+ 	return dbOrTx.Model(&models.Repo{}).
+ 		Where("did = ?", commit.Did).
+-		Updates(map[string]any{
+-			"rev":       commit.Rev,
+-			"prev_data": commit.DataCid,
+-		}).Error
++		Updates(map[string]any{"rev": commit.Rev, "prev_data": commit.DataCid}).Error
+ }
+ 
+ func (em *EventManager) AddRecordEvents(ctx context.Context, evts []*RecordEvt, live bool, dbCallback DBCallback) error {
+-	toPut := make([]*models.RepoRecord, 0, len(evts))
+-	toDel := make([]*models.RepoRecord, 0)
+-	dbEvts := make([]*models.OutboxBuffer, 0, len(evts))
+-	cacheEvts := make(map[uint]OutboxEvt, len(evts))
+-	evtIDs := make([]uint, 0, len(evts))
+-
+-	for _, evt := range evts {
+-		if evt.Action == "delete" {
+-			toDel = append(toDel, &models.RepoRecord{
+-				Did:        evt.Did,
+-				Collection: evt.Collection,
+-				Rkey:       evt.Rkey,
+-			})
+-		} else {
+-			toPut = append(toPut, &models.RepoRecord{
+-				Did:        evt.Did,
+-				Collection: evt.Collection,
+-				Rkey:       evt.Rkey,
+-				Cid:        evt.Cid,
+-			})
+-		}
+-
+-		evtID := uint(em.nextID.Add(1))
+-		evtIDs = append(evtIDs, evtID)
+-
+-		jsonData, err := evt.MarshalWithId(evtID)
++	safeEvents := make([]*RecordEvt, 0, len(evts))
++	mutateCatalog := make([]bool, 0, len(evts))
++	for i, evt := range evts {
++		safe, mutate, err := sanitizeRecordEvent(evt)
+ 		if err != nil {
+-			return err
+-		}
+-
+-		dbEvts = append(dbEvts, &models.OutboxBuffer{
+-			ID:   evtID,
+-			Did:  evt.Did,
+-			Live: live,
+-			Data: string(jsonData),
+-		})
+-
+-		cacheEvts[evtID] = OutboxEvt{
+-			ID:    evtID,
+-			Did:   evt.Did,
+-			Live:  live,
+-			Event: jsonData,
++			return fmt.Errorf("sanitize outbox record %d: %w", i, err)
+ 		}
++		safe.Live = live
++		safeEvents = append(safeEvents, safe)
++		mutateCatalog = append(mutateCatalog, mutate)
+ 	}
+ 
++	em.appendMu.Lock()
++	defer em.appendMu.Unlock()
++
++	var cacheEvts []OutboxEvt
+ 	err := em.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+-		if err := dbCallback(tx); err != nil {
+-			return err
++		if dbCallback != nil {
++			if err := dbCallback(tx); err != nil {
++				return err
++			}
+ 		}
+ 
+-		if len(toDel) > 0 {
+-			for _, op := range toDel {
+-				if err := tx.Delete(&models.RepoRecord{}, "did = ? AND collection = ? AND rkey = ?",
+-					op.Did, op.Collection, op.Rkey).Error; err != nil {
++		for i, evt := range safeEvents {
++			if !mutateCatalog[i] {
++				continue
++			}
++			if evt.Action == "delete" {
++				if err := tx.Delete(&models.RepoRecord{}, "did = ? AND collection = ? AND rkey = ?", evt.Did, evt.Collection, evt.Rkey).Error; err != nil {
+ 					return err
+ 				}
++				continue
+ 			}
+-		}
+-
+-		if len(toPut) > 0 {
++			record := &models.RepoRecord{Did: evt.Did, Collection: evt.Collection, Rkey: evt.Rkey, Cid: evt.Cid}
+ 			if err := tx.Clauses(clause.OnConflict{
+ 				Columns:   []clause.Column{{Name: "did"}, {Name: "collection"}, {Name: "rkey"}},
+ 				DoUpdates: clause.AssignmentColumns([]string{"cid"}),
+-			}).CreateInBatches(toPut, 100).Error; err != nil {
++			}).Create(record).Error; err != nil {
+ 				return err
+ 			}
+ 		}
+ 
+-		if len(dbEvts) > 0 {
+-			if err := tx.CreateInBatches(dbEvts, 100).Error; err != nil {
++		firstID, err := reserveEventIDs(tx, len(safeEvents))
++		if err != nil {
++			return err
++		}
++		dbEvts := make([]models.OutboxBuffer, 0, len(safeEvents))
++		cacheEvts = make([]OutboxEvt, 0, len(safeEvents))
++		for i, evt := range safeEvents {
++			id := firstID + uint64(i)
++			if id > uint64(math.MaxInt) {
++				return errors.New("TAP delivery ID exceeds platform uint range")
++			}
++			jsonData, err := evt.MarshalWithId(uint(id))
++			if err != nil {
+ 				return err
+ 			}
++			dbEvts = append(dbEvts, models.OutboxBuffer{ID: uint(id), Did: evt.Did, Live: live, Data: string(jsonData)})
++			cacheEvts = append(cacheEvts, OutboxEvt{ID: uint(id), Did: evt.Did, Live: live, Event: jsonData})
++		}
++		if len(dbEvts) > 0 {
++			return tx.CreateInBatches(&dbEvts, 100).Error
+ 		}
+ 		return nil
+ 	})
+ 	if err != nil {
+ 		return err
+ 	}
+-
+-	em.cacheLk.Lock()
+-	for id, entry := range cacheEvts {
+-		entryCopy := entry // Create heap copy
+-		em.cache[id] = &entryCopy
+-	}
+-	eventCacheSize.Set(float64(len(em.cache)))
+-	em.cacheLk.Unlock()
+-
+-	for _, evtID := range evtIDs {
+-		em.pendingIDs <- evtID
+-	}
+-
++	em.publishEvents(cacheEvts)
+ 	return nil
+ }
+ 
+ func (em *EventManager) AddIdentityEvent(ctx context.Context, evt *IdentityEvt, dbCallback DBCallback) error {
+-	evtID := uint(em.nextID.Add(1))
+-	jsonData, err := evt.MarshalWithId(evtID)
+-	if err != nil {
++	if err := validateIdentityEvent(evt); err != nil {
++		return err
++	}
++	return em.addSingleEvent(ctx, evt.Did, true, dbCallback, evt.MarshalWithId)
++}
++
++func (em *EventManager) AddRepoSyncEvent(ctx context.Context, evt *RepoSyncEvt, dbCallback DBCallback) error {
++	if evt == nil {
++		return errors.New("repo_sync event is nil")
++	}
++	if err := validateDurableDID(evt.Did); err != nil {
+ 		return err
+ 	}
++	if err := validateDurableRev(evt.Rev); err != nil {
++		return err
++	}
++	if evt.Status != models.AccountStatusActive {
++		return errors.New("repo_sync status must be active")
++	}
++	return em.addSingleEvent(ctx, evt.Did, true, dbCallback, evt.MarshalWithId)
++}
+ 
+-	if err := em.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+-		if err := dbCallback(tx); err != nil {
++func (em *EventManager) addSingleEvent(ctx context.Context, did string, live bool, dbCallback DBCallback, marshal func(uint) ([]byte, error)) error {
++	em.appendMu.Lock()
++	defer em.appendMu.Unlock()
++	var cacheEvt OutboxEvt
++	err := em.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++		if dbCallback != nil {
++			if err := dbCallback(tx); err != nil {
++				return err
++			}
++		}
++		firstID, err := reserveEventIDs(tx, 1)
++		if err != nil {
+ 			return err
+ 		}
+-		return tx.Create(&models.OutboxBuffer{
+-			ID:   evtID,
+-			Did:  evt.Did,
+-			Live: false,
+-			Data: string(jsonData),
+-		}).Error
+-	}); err != nil {
++		if firstID > uint64(math.MaxInt) {
++			return errors.New("TAP delivery ID exceeds platform uint range")
++		}
++		jsonData, err := marshal(uint(firstID))
++		if err != nil {
++			return err
++		}
++		row := &models.OutboxBuffer{ID: uint(firstID), Did: did, Live: live, Data: string(jsonData)}
++		if err := tx.Create(row).Error; err != nil {
++			return err
++		}
++		cacheEvt = OutboxEvt{ID: row.ID, Did: did, Live: live, Event: jsonData}
++		return nil
++	})
++	if err != nil {
+ 		return err
+ 	}
++	em.publishEvents([]OutboxEvt{cacheEvt})
++	return nil
++}
++
++func reserveEventIDs(tx *gorm.DB, count int) (uint64, error) {
++	if count == 0 {
++		return 0, nil
++	}
++	var lastID uint64
++	result := tx.Raw(`
++		UPDATE metadata_only_overlay_states
++		SET last_event_id = last_event_id + ?
++		WHERE id = ? AND version = ?
++		RETURNING last_event_id`, count, 1, metadataOnlyOverlayVersion).Scan(&lastID)
++	if result.Error != nil {
++		return 0, result.Error
++	}
++	if result.RowsAffected != 1 || lastID < uint64(count) {
++		return 0, errors.New("metadata-only TAP delivery high-water is unavailable")
++	}
++	return lastID - uint64(count) + 1, nil
++}
+ 
++func (em *EventManager) publishEvents(events []OutboxEvt) {
++	if len(events) == 0 {
++		return
++	}
+ 	em.cacheLk.Lock()
+-	em.cache[evtID] = &OutboxEvt{
+-		ID:    evtID,
+-		Did:   evt.Did,
+-		Live:  false,
+-		Event: jsonData,
++	for i := range events {
++		entry := events[i]
++		em.cache[entry.ID] = &entry
++		for {
++			current := em.nextID.Load()
++			if uint64(entry.ID) <= current || em.nextID.CompareAndSwap(current, uint64(entry.ID)) {
++				break
++			}
++		}
+ 	}
+ 	eventCacheSize.Set(float64(len(em.cache)))
+ 	em.cacheLk.Unlock()
++	for i := range events {
++		em.pendingIDs <- events[i].ID
++	}
++}
+ 
+-	em.pendingIDs <- evtID
+-
++func validateIdentityEvent(evt *IdentityEvt) error {
++	if evt == nil {
++		return errors.New("identity event is nil")
++	}
++	if err := validateDurableDID(evt.Did); err != nil {
++		return err
++	}
++	validStatus := false
++	switch evt.Status {
++	case models.AccountStatusActive, models.AccountStatusDeactivated, models.AccountStatusTakendown, models.AccountStatusSuspended, models.AccountStatusDeleted:
++		validStatus = true
++	}
++	if !validStatus {
++		return errors.New("identity status is outside the closed set")
++	}
++	if evt.IsActive != (evt.Status == models.AccountStatusActive) {
++		return errors.New("identity active flag does not match status")
++	}
+ 	return nil
+ }
+ 
+-func (em *EventManager) addToResyncBuffer(ctx context.Context, commit *Commit) error {
+-	jsonData, err := json.Marshal(commit)
++func (em *EventManager) addToResyncBuffer(ctx context.Context, commit *Commit, expectedToken string) error {
++	safeCommit, err := sanitizeCommitForDurableStorage(commit)
+ 	if err != nil {
+ 		return err
+ 	}
+-	return em.db.WithContext(ctx).Create(&models.ResyncBuffer{
+-		Did:  commit.Did,
+-		Data: string(jsonData),
+-	}).Error
++	jsonData, err := json.Marshal(safeCommit)
++	if err != nil {
++		return err
++	}
++	return em.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++		result := tx.Model(&models.Repo{}).
++			Where("did = ? AND state = ? AND status = ? AND sync_token = ?", safeCommit.Did, models.RepoStateResyncing, models.AccountStatusActive, expectedToken).
++			UpdateColumn("sync_token", gorm.Expr("sync_token"))
++		if result.Error != nil {
++			return result.Error
++		}
++		if result.RowsAffected != 1 {
++			return errResyncClaimLost
++		}
++		return tx.Create(&models.ResyncBuffer{Did: safeCommit.Did, Data: string(jsonData)}).Error
++	})
+ }
+diff --git a/cmd/tap/firehose.go b/cmd/tap/firehose.go
+index 7182563491ee81ee3430d5b84da8621d338441b9..8a93cd056835295986ba6e3498a6f67986ae1127 100644
+--- a/cmd/tap/firehose.go
++++ b/cmd/tap/firehose.go
+@@ -2,6 +2,7 @@ package main
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"log/slog"
+ 	"net/http"
+@@ -19,6 +20,7 @@ import (
+ 	"github.com/gorilla/websocket"
+ 	"go.opentelemetry.io/otel"
+ 	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
+ )
+ 
+ var tracer = otel.Tracer("tap")
+@@ -78,13 +80,20 @@ func (fp *FirehoseProcessor) ProcessCommit(ctx context.Context, evt *comatproto.
+ 
+ 	defer fp.updateLastSeq(evt.Seq)
+ 
++	if err := validateDurableDID(evt.Repo); err != nil {
++		return err
++	}
++	if err := validateDurableRev(evt.Rev); err != nil {
++		return err
++	}
++
+ 	curr, err := fp.repos.GetRepoState(ctx, evt.Repo)
+ 	if err != nil {
+ 		return err
+ 	} else if curr == nil {
+ 		shouldTrack := fp.fullNetworkMode || (fp.signalCollection != "" && evtHasSignalCollection(evt, fp.signalCollection))
+ 		if shouldTrack {
+-			if err := fp.repos.EnsureRepo(ctx, evt.Repo); err != nil {
++			if err := fp.ensureActiveRepoWithIdentity(ctx, evt.Repo); err != nil {
+ 				fp.logger.Error("failed to auto-track repo", "did", evt.Repo, "error", err)
+ 				return err
+ 			}
+@@ -110,36 +119,81 @@ func (fp *FirehoseProcessor) ProcessCommit(ctx context.Context, evt *comatproto.
+ 		fp.logger.Error("failed to parse operations", "did", evt.Repo, "error", err)
+ 		return err
+ 	}
++	lock := fp.repos.lockForDID(evt.Repo)
++	lock.Lock()
++	defer lock.Unlock()
+ 
+-	if curr.State == models.RepoStateResyncing {
+-		firehoseEventsSkipped.Inc()
+-		return fp.events.addToResyncBuffer(ctx, commit)
+-	}
+-
+-	if evt.PrevData == nil {
+-		fp.logger.Debug("legacy commit event, skipping prev data check", "did", evt.Repo, "rev", evt.Rev)
+-	} else if evt.PrevData.String() != curr.PrevData {
+-		fp.logger.Warn("repo state desynchronized", "did", evt.Repo, "rev", evt.Rev)
+-		// gets picked up by resync workers
+-		if err := fp.repos.UpdateRepoState(ctx, evt.Repo, models.RepoStateDesynchronized); err != nil {
+-			fp.logger.Error("failed to update repo state to desynchronized", "did", evt.Repo, "error", err)
++	for attempts := 0; attempts < 3; attempts++ {
++		curr, err = fp.repos.GetRepoState(ctx, evt.Repo)
++		if err != nil {
+ 			return err
+ 		}
+-		return nil
+-	}
++		if curr == nil || curr.Status != models.AccountStatusActive {
++			firehoseEventsSkipped.Inc()
++			return nil
++		}
++		if curr.State == models.RepoStateResyncing {
++			err = fp.events.addToResyncBuffer(ctx, commit, curr.SyncToken)
++			if errors.Is(err, errResyncClaimLost) {
++				continue
++			}
++			firehoseEventsSkipped.Inc()
++			return err
++		}
++		if curr.State != models.RepoStateActive {
++			firehoseEventsSkipped.Inc()
++			return nil
++		}
++		if evt.PrevData != nil && evt.PrevData.String() != curr.PrevData {
++			fp.logger.Warn("repo state desynchronized", "did", evt.Repo, "rev", evt.Rev)
++			token, tokenErr := newSyncToken()
++			if tokenErr != nil {
++				return tokenErr
++			}
++			result := fp.db.WithContext(ctx).Model(&models.Repo{}).
++				Where("did = ? AND state = ? AND status = ? AND sync_token = ?", evt.Repo, models.RepoStateActive, models.AccountStatusActive, curr.SyncToken).
++				Updates(map[string]any{"state": models.RepoStateDesynchronized, "sync_token": token})
++			if result.Error != nil {
++				return result.Error
++			}
++			if result.RowsAffected == 0 {
++				continue
++			}
++			return nil
++		}
+ 
+-	if err := fp.events.AddCommit(ctx, commit, func(tx *gorm.DB) error {
++		err = fp.events.AddCommit(ctx, commit, func(tx *gorm.DB) error {
++			result := tx.Model(&models.Repo{}).
++				Where("did = ? AND state = ? AND status = ? AND sync_token = ?", commit.Did, models.RepoStateActive, models.AccountStatusActive, curr.SyncToken).
++				UpdateColumn("sync_token", gorm.Expr("sync_token"))
++			if result.Error != nil {
++				return result.Error
++			}
++			if result.RowsAffected != 1 {
++				return errResyncClaimLost
++			}
++			return nil
++		})
++		if errors.Is(err, errResyncClaimLost) {
++			continue
++		}
++		if err != nil {
++			fp.logger.Error("failed to update repo state", "did", commit.Did, "rev", commit.Rev, "error", err)
++			return err
++		}
++		firehoseEventsProcessed.Inc()
+ 		return nil
+-	}); err != nil {
+-		fp.logger.Error("failed to update repo state", "did", commit.Did, "rev", commit.Rev, "error", err)
+-		return err
+ 	}
+-
+-	firehoseEventsProcessed.Inc()
+-	return nil
++	return errors.New("repo lifecycle changed repeatedly while applying commit")
+ }
+ 
+ func (fp *FirehoseProcessor) validateCommitAndFilterOps(ctx context.Context, evt *comatproto.SyncSubscribeRepos_Commit) (*Commit, error) {
++	if err := validateDurableDID(evt.Repo); err != nil {
++		return nil, err
++	}
++	if err := validateDurableRev(evt.Rev); err != nil {
++		return nil, err
++	}
+ 	if err := repo.VerifyCommitSignature(ctx, fp.repos.idDir, evt); err != nil {
+ 		return nil, err
+ 	}
+@@ -171,8 +225,7 @@ func (fp *FirehoseProcessor) validateCommitAndFilterOps(ctx context.Context, evt
+ 
+ 			recBytes, _, err := r.GetRecordBytes(ctx, collection, rkey)
+ 			if err != nil {
+-				fp.logger.Error("failed to get record bytes", "did", evt.Repo, "path", op.Path, "error", err)
+-				continue
++				return nil, fmt.Errorf("failed to get record bytes for %s: %w", op.Path, err)
+ 			}
+ 
+ 			record, err := atdata.UnmarshalCBOR(recBytes)
+@@ -184,7 +237,7 @@ func (fp *FirehoseProcessor) validateCommitAndFilterOps(ctx context.Context, evt
+ 			parsed.Record = record
+ 		}
+ 
+-		if matchesCollection(parsed.Collection, fp.collectionFilters) {
++		if matchesCollection(parsed.Collection, fp.collectionFilters) && isMetadataCollection(parsed.Collection) {
+ 			parsedOps = append(parsedOps, parsed)
+ 		}
+ 	}
+@@ -217,12 +270,15 @@ func (fp *FirehoseProcessor) ProcessSync(ctx context.Context, evt *comatproto.Sy
+ 
+ 	defer fp.updateLastSeq(evt.Seq)
+ 
++	if err := validateDurableDID(evt.Did); err != nil {
++		return err
++	}
+ 	curr, err := fp.repos.GetRepoState(ctx, evt.Did)
+ 	if err != nil {
+ 		return err
+ 	} else if curr == nil {
+ 		if fp.fullNetworkMode {
+-			if err := fp.repos.EnsureRepo(ctx, evt.Did); err != nil {
++			if err := fp.ensureActiveRepoWithIdentity(ctx, evt.Did); err != nil {
+ 				fp.logger.Error("failed to auto-track repo", "did", evt.Did, "error", err)
+ 				return err
+ 			}
+@@ -237,6 +293,9 @@ func (fp *FirehoseProcessor) ProcessSync(ctx context.Context, evt *comatproto.Sy
+ 	if err != nil {
+ 		return fmt.Errorf("failed to verify sync message: %w", err)
+ 	}
++	if err := validateDurableRev(commit.Rev); err != nil {
++		return err
++	}
+ 
+ 	if curr.State != models.RepoStateActive {
+ 		firehoseEventsSkipped.Inc()
+@@ -268,12 +327,15 @@ func (fp *FirehoseProcessor) ProcessIdentity(ctx context.Context, evt *comatprot
+ 	firehoseEventsReceived.Inc()
+ 	defer fp.updateLastSeq(evt.Seq)
+ 
++	if err := validateDurableDID(evt.Did); err != nil {
++		return err
++	}
+ 	curr, err := fp.repos.GetRepoState(ctx, evt.Did)
+ 	if err != nil {
+ 		return err
+ 	} else if curr == nil {
+ 		if fp.fullNetworkMode {
+-			if err := fp.repos.EnsureRepo(ctx, evt.Did); err != nil {
++			if err := fp.ensureActiveRepoWithIdentity(ctx, evt.Did); err != nil {
+ 				return err
+ 			}
+ 			firehoseEventsSkipped.Inc()
+@@ -295,20 +357,8 @@ func (fp *FirehoseProcessor) ProcessAccount(ctx context.Context, evt *comatproto
+ 	firehoseEventsReceived.Inc()
+ 	defer fp.updateLastSeq(evt.Seq)
+ 
+-	curr, err := fp.repos.GetRepoState(ctx, evt.Did)
+-	if err != nil {
++	if err := validateDurableDID(evt.Did); err != nil {
+ 		return err
+-	} else if curr == nil {
+-		if fp.fullNetworkMode && evt.Active {
+-			if err := fp.repos.EnsureRepo(ctx, evt.Did); err != nil {
+-				fp.logger.Error("failed to auto-track repo", "did", evt.Did, "error", err)
+-				return err
+-			}
+-			firehoseEventsSkipped.Inc()
+-			return nil
+-		}
+-		firehoseEventsSkipped.Inc()
+-		return nil
+ 	}
+ 
+ 	var updateTo models.AccountStatus
+@@ -322,6 +372,25 @@ func (fp *FirehoseProcessor) ProcessAccount(ctx context.Context, evt *comatproto
+ 		return nil
+ 	}
+ 
++	lock := fp.repos.lockForDID(evt.Did)
++	lock.Lock()
++	defer lock.Unlock()
++
++	curr, err := fp.repos.GetRepoState(ctx, evt.Did)
++	if err != nil {
++		return err
++	}
++	if curr == nil {
++		if fp.fullNetworkMode && updateTo == models.AccountStatusActive {
++			if err := fp.ensureActiveRepoWithIdentity(ctx, evt.Did); err != nil {
++				return err
++			}
++			firehoseEventsProcessed.Inc()
++			return nil
++		}
++		firehoseEventsSkipped.Inc()
++		return nil
++	}
+ 	if curr.Status == updateTo {
+ 		firehoseEventsSkipped.Inc()
+ 		return nil
+@@ -329,13 +398,25 @@ func (fp *FirehoseProcessor) ProcessAccount(ctx context.Context, evt *comatproto
+ 
+ 	identityEvt := &IdentityEvt{
+ 		Did:      curr.Did,
+-		Handle:   curr.Handle,
+ 		IsActive: evt.Active,
+ 		Status:   updateTo,
+ 	}
++	token, err := newSyncToken()
++	if err != nil {
++		return err
++	}
+ 
+ 	if updateTo == models.AccountStatusDeleted {
+ 		if err := fp.events.AddIdentityEvent(ctx, identityEvt, func(tx *gorm.DB) error {
++			result := tx.Model(&models.Repo{}).
++				Where("did = ? AND sync_token = ?", evt.Did, curr.SyncToken).
++				UpdateColumn("sync_token", gorm.Expr("sync_token"))
++			if result.Error != nil {
++				return result.Error
++			}
++			if result.RowsAffected != 1 {
++				return errResyncClaimLost
++			}
+ 			return deleteRepo(tx, evt.Did)
+ 		}); err != nil {
+ 			fp.logger.Error("failed to delete repo", "did", evt.Did, "error", err)
+@@ -343,9 +424,29 @@ func (fp *FirehoseProcessor) ProcessAccount(ctx context.Context, evt *comatproto
+ 		}
+ 	} else {
+ 		if err := fp.events.AddIdentityEvent(ctx, identityEvt, func(tx *gorm.DB) error {
+-			return tx.Model(&models.Repo{}).
+-				Where("did = ?", evt.Did).
+-				Update("status", updateTo).Error
++			updates := map[string]any{"status": updateTo, "sync_token": token}
++			if updateTo == models.AccountStatusActive {
++				updates["state"] = models.RepoStateDesynchronized
++				updates["error_msg"] = ""
++				updates["retry_count"] = 0
++				updates["retry_after"] = 0
++			} else {
++				updates["state"] = repoStateForStatus(updateTo)
++			}
++			result := tx.Model(&models.Repo{}).Where("did = ? AND sync_token = ?", evt.Did, curr.SyncToken).Updates(updates)
++			if result.Error != nil {
++				return result.Error
++			}
++			if result.RowsAffected != 1 {
++				return errResyncClaimLost
++			}
++			if err := tx.Delete(&models.ResyncBuffer{}, "did = ?", evt.Did).Error; err != nil {
++				return err
++			}
++			if updateTo == models.AccountStatusActive {
++				return tx.Delete(&models.RepoRecord{}, "did = ?", evt.Did).Error
++			}
++			return nil
+ 		}); err != nil {
+ 			fp.logger.Error("failed to update repo status", "did", evt.Did, "status", updateTo, "error", err)
+ 			return err
+@@ -356,6 +457,42 @@ func (fp *FirehoseProcessor) ProcessAccount(ctx context.Context, evt *comatproto
+ 	return nil
+ }
+ 
++func (fp *FirehoseProcessor) ensureActiveRepoWithIdentity(ctx context.Context, did string) error {
++	if err := validateDurableDID(did); err != nil {
++		return err
++	}
++	token, err := newSyncToken()
++	if err != nil {
++		return err
++	}
++	evt := &IdentityEvt{Did: did, IsActive: true, Status: models.AccountStatusActive}
++	return fp.events.AddIdentityEvent(ctx, evt, func(tx *gorm.DB) error {
++		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.Repo{
++			Did: did, State: models.RepoStatePending, Status: models.AccountStatusActive, SyncToken: token,
++		})
++		if result.Error != nil {
++			return result.Error
++		}
++		if result.RowsAffected != 1 {
++			return errResyncClaimLost
++		}
++		return nil
++	})
++}
++
++func repoStateForStatus(status models.AccountStatus) models.RepoState {
++	switch status {
++	case models.AccountStatusDeactivated:
++		return models.RepoStateDeactivated
++	case models.AccountStatusTakendown:
++		return models.RepoStateTakendown
++	case models.AccountStatusSuspended:
++		return models.RepoStateSuspended
++	default:
++		return models.RepoStateError
++	}
++}
++
+ func (fp *FirehoseProcessor) saveCursor(ctx context.Context) error {
+ 	seq := fp.lastSeq.Load()
+ 	if seq < 1 {
+diff --git a/cmd/tap/firehose_test.go b/cmd/tap/firehose_test.go
+index e7808a28504eec980ae451b59b10b7329740ad0f..a76fe2fe72cd68f55e38f744648fbc46e1e92395 100644
+--- a/cmd/tap/firehose_test.go
++++ b/cmd/tap/firehose_test.go
+@@ -320,7 +320,7 @@ func TestProcessAccount_FullNetworkAutoTrack(t *testing.T) {
+ 
+ // --- ProcessIdentity tests ---
+ 
+-func TestProcessIdentity_HandleChange(t *testing.T) {
++func TestProcessIdentity_HandleChangeIsNotPersistedOrEmitted(t *testing.T) {
+ 	te := newTestEnv(t, testEnvOpts{})
+ 	fp := newTestFirehoseProcessor(te, false)
+ 
+@@ -344,18 +344,18 @@ func TestProcessIdentity_HandleChange(t *testing.T) {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+ 
+-	// Handle should be updated in DB
++	// Handles are outside the metadata-only durable contract.
+ 	var repo models.Repo
+ 	te.db.First(&repo, "did = ?", did)
+-	if repo.Handle != "new-handle.test" {
+-		t.Fatalf("expected handle=new-handle.test, got %s", repo.Handle)
++	if repo.Handle != "" {
++		t.Fatalf("expected scrubbed handle, got %s", repo.Handle)
+ 	}
+ 
+-	// Identity event should be emitted
++	// A handle-only identity update must not create an outbox event.
+ 	var bufCount int64
+ 	te.db.Model(&models.OutboxBuffer{}).Where("did = ?", did).Count(&bufCount)
+-	if bufCount != 1 {
+-		t.Fatalf("expected 1 outbox event, got %d", bufCount)
++	if bufCount != 0 {
++		t.Fatalf("expected no outbox event, got %d", bufCount)
+ 	}
+ }
+ 
+diff --git a/cmd/tap/metadata_sanitizer.go b/cmd/tap/metadata_sanitizer.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b49e8c88c15fc1913e0591919345fe1a98371618
+--- /dev/null
++++ b/cmd/tap/metadata_sanitizer.go
+@@ -0,0 +1,235 @@
++package main
++
++import (
++	"errors"
++	"fmt"
++
++	"github.com/bluesky-social/indigo/atproto/syntax"
++)
++
++const (
++	metadataStatusValid   = "valid"
++	metadataStatusInvalid = "invalid"
++	invalidCollection     = "invalid"
++	invalidAction         = "invalid"
++
++	collectionFeedPost     = "app.bsky.feed.post"
++	collectionFeedLike     = "app.bsky.feed.like"
++	collectionFeedRepost   = "app.bsky.feed.repost"
++	collectionGraphFollow  = "app.bsky.graph.follow"
++	collectionActorProfile = "app.bsky.actor.profile"
++)
++
++var errResyncClaimLost = errors.New("resync claim is no longer current")
++
++// sanitizeCommitForDurableStorage is the last boundary before a commit may be
++// serialized into ResyncBuffer. It deliberately drops every source record body.
++func sanitizeCommitForDurableStorage(commit *Commit) (*Commit, error) {
++	if commit == nil {
++		return nil, errors.New("commit is nil")
++	}
++	if err := validateDurableDID(commit.Did); err != nil {
++		return nil, err
++	}
++	if err := validateDurableRev(commit.Rev); err != nil {
++		return nil, err
++	}
++
++	sanitized := &Commit{
++		Did:      commit.Did,
++		Rev:      commit.Rev,
++		DataCid:  commit.DataCid,
++		PrevData: commit.PrevData,
++		Ops:      make([]CommitOp, 0, len(commit.Ops)),
++	}
++	for i := range commit.Ops {
++		evt := &RecordEvt{
++			Did:            commit.Did,
++			Rev:            commit.Rev,
++			Collection:     commit.Ops[i].Collection,
++			Rkey:           commit.Ops[i].Rkey,
++			Action:         commit.Ops[i].Action,
++			Record:         commit.Ops[i].Record,
++			Cid:            commit.Ops[i].Cid,
++			MetadataStatus: commit.Ops[i].MetadataStatus,
++			Metadata:       commit.Ops[i].Metadata,
++		}
++		safe, _, err := sanitizeRecordEvent(evt)
++		if err != nil {
++			return nil, fmt.Errorf("sanitize operation %d: %w", i, err)
++		}
++		sanitized.Ops = append(sanitized.Ops, CommitOp{
++			Collection:     safe.Collection,
++			Rkey:           safe.Rkey,
++			Action:         safe.Action,
++			Cid:            safe.Cid,
++			MetadataStatus: safe.MetadataStatus,
++			Metadata:       safe.Metadata,
++		})
++	}
++	return sanitized, nil
++}
++
++// sanitizeRecordEvent creates the only RecordEvt shape permitted in durable
++// outbox storage. The returned boolean controls RepoRecord catalog mutation.
++func sanitizeRecordEvent(evt *RecordEvt) (*RecordEvt, bool, error) {
++	if evt == nil {
++		return nil, false, errors.New("record event is nil")
++	}
++	if err := validateDurableDID(evt.Did); err != nil {
++		return nil, false, err
++	}
++	if err := validateDurableRev(evt.Rev); err != nil {
++		return nil, false, err
++	}
++	if _, err := syntax.ParseRecordKey(evt.Rkey); err != nil {
++		return nil, false, fmt.Errorf("invalid record key: %w", err)
++	}
++
++	safe := &RecordEvt{
++		Live:       evt.Live,
++		Did:        evt.Did,
++		Rev:        evt.Rev,
++		Collection: evt.Collection,
++		Rkey:       evt.Rkey,
++		Action:     evt.Action,
++		Cid:        evt.Cid,
++	}
++
++	if !isMetadataCollection(evt.Collection) {
++		safe.Collection = invalidCollection
++		safe.Rkey = "invalid"
++		safe.Action = invalidAction
++		safe.Cid = ""
++		return safe, false, nil
++	}
++
++	switch evt.Action {
++	case "delete":
++		safe.Cid = ""
++		return safe, true, nil
++	case "create", "update":
++		// Continue below.
++	default:
++		safe.Collection = invalidCollection
++		safe.Rkey = "invalid"
++		safe.Action = invalidAction
++		safe.Cid = ""
++		return safe, false, nil
++	}
++
++	status, metadata := sanitizeMetadata(evt.Collection, evt.Record, evt.MetadataStatus, evt.Metadata)
++	safe.MetadataStatus = status
++	safe.Metadata = metadata
++	return safe, true, nil
++}
++
++func sanitizeMetadata(collection string, record map[string]any, existingStatus string, existing map[string]string) (string, map[string]string) {
++	if existingStatus != "" {
++		if existingStatus == metadataStatusInvalid && len(existing) == 0 {
++			return metadataStatusInvalid, nil
++		}
++		if existingStatus == metadataStatusValid && validateSanitizedMetadata(collection, existing) {
++			return metadataStatusValid, cloneMetadata(existing)
++		}
++		return metadataStatusInvalid, nil
++	}
++
++	switch collection {
++	case collectionActorProfile:
++		return metadataStatusValid, nil
++	case collectionFeedPost:
++		replyValue, hasReply := record["reply"]
++		if !hasReply {
++			return metadataStatusValid, nil
++		}
++		reply, ok := replyValue.(map[string]any)
++		if !ok {
++			return metadataStatusInvalid, nil
++		}
++		parent, ok := reply["parent"].(map[string]any)
++		if !ok {
++			return metadataStatusInvalid, nil
++		}
++		uri, ok := parent["uri"].(string)
++		if !ok || !validRecordATURI(uri) {
++			return metadataStatusInvalid, nil
++		}
++		return metadataStatusValid, map[string]string{"reply_parent_uri": uri}
++	case collectionFeedLike, collectionFeedRepost:
++		subject, ok := record["subject"].(map[string]any)
++		if !ok {
++			return metadataStatusInvalid, nil
++		}
++		uri, ok := subject["uri"].(string)
++		if !ok || !validRecordATURI(uri) {
++			return metadataStatusInvalid, nil
++		}
++		return metadataStatusValid, map[string]string{"subject_uri": uri}
++	case collectionGraphFollow:
++		did, ok := record["subject"].(string)
++		if !ok || validateDurableDID(did) != nil {
++			return metadataStatusInvalid, nil
++		}
++		return metadataStatusValid, map[string]string{"follow_subject_did": did}
++	default:
++		return metadataStatusInvalid, nil
++	}
++}
++
++func validateSanitizedMetadata(collection string, metadata map[string]string) bool {
++	switch collection {
++	case collectionActorProfile:
++		return len(metadata) == 0
++	case collectionFeedPost:
++		if len(metadata) == 0 {
++			return true
++		}
++		return len(metadata) == 1 && validRecordATURI(metadata["reply_parent_uri"])
++	case collectionFeedLike, collectionFeedRepost:
++		return len(metadata) == 1 && validRecordATURI(metadata["subject_uri"])
++	case collectionGraphFollow:
++		return len(metadata) == 1 && validateDurableDID(metadata["follow_subject_did"]) == nil
++	default:
++		return false
++	}
++}
++
++func validRecordATURI(raw string) bool {
++	uri, err := syntax.ParseATURI(raw)
++	return err == nil && uri.Authority().IsDID() && uri.Collection() != "" && uri.RecordKey() != ""
++}
++
++func isMetadataCollection(collection string) bool {
++	switch collection {
++	case collectionFeedPost, collectionFeedLike, collectionFeedRepost, collectionGraphFollow, collectionActorProfile:
++		return true
++	default:
++		return false
++	}
++}
++
++func validateDurableDID(raw string) error {
++	if _, err := syntax.ParseDID(raw); err != nil {
++		return fmt.Errorf("invalid DID: %w", err)
++	}
++	return nil
++}
++
++func validateDurableRev(raw string) error {
++	if _, err := syntax.ParseTID(raw); err != nil {
++		return fmt.Errorf("invalid repository revision: %w", err)
++	}
++	return nil
++}
++
++func cloneMetadata(source map[string]string) map[string]string {
++	if len(source) == 0 {
++		return nil
++	}
++	result := make(map[string]string, len(source))
++	for key, value := range source {
++		result[key] = value
++	}
++	return result
++}
+diff --git a/cmd/tap/metadata_sanitizer_test.go b/cmd/tap/metadata_sanitizer_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..25dbbfd2a3f1bfcde2cd4a9a2bd53b4bd58e8bea
+--- /dev/null
++++ b/cmd/tap/metadata_sanitizer_test.go
+@@ -0,0 +1,389 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"log/slog"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	comatproto "github.com/bluesky-social/indigo/api/atproto"
++	"github.com/bluesky-social/indigo/cmd/tap/models"
++	"github.com/stretchr/testify/require"
++	"gorm.io/gorm"
++)
++
++const (
++	testActorDID  = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
++	testTargetDID = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
++	testRevA      = "3jzfcijpj2z2a"
++	testRevB      = "3jzfcijpj2z2b"
++	testRevC      = "3jzfcijpj2z2c"
++)
++
++func TestMetadataOnlySanitizerRunsBeforeOutboxPersistence(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{})
++	secret := "SOURCE-CONTENT-MUST-NOT-PERSIST"
++	evt := &RecordEvt{
++		Did: testActorDID, Rev: testRevA, Collection: collectionFeedPost,
++		Rkey: "post-a", Action: "create", Cid: "bafy-record",
++		Record: map[string]any{
++			"text":  secret,
++			"embed": map[string]any{"alt": secret},
++			"reply": map[string]any{
++				"parent": map[string]any{"uri": "at://" + testTargetDID + "/app.bsky.feed.post/parent", "cid": secret},
++				"root":   map[string]any{"uri": "at://" + testTargetDID + "/app.bsky.feed.post/root", "cid": secret},
++			},
++		},
++	}
++	require.NoError(t, te.events.AddRecordEvents(te.ctx, []*RecordEvt{evt}, true, nil))
++
++	var row models.OutboxBuffer
++	require.NoError(t, te.db.First(&row).Error)
++	require.NotContains(t, row.Data, secret)
++	require.NotContains(t, row.Data, "text")
++	require.NotContains(t, row.Data, "embed")
++	require.NotContains(t, row.Data, "root")
++
++	var wire map[string]any
++	require.NoError(t, json.Unmarshal([]byte(row.Data), &wire))
++	record := wire["record"].(map[string]any)
++	require.Equal(t, metadataStatusValid, record["metadata_status"])
++	metadata := record["metadata"].(map[string]any)
++	require.Equal(t, "at://"+testTargetDID+"/app.bsky.feed.post/parent", metadata["reply_parent_uri"])
++	require.Len(t, metadata, 1)
++}
++
++func TestMetadataOnlySanitizerRunsBeforeResyncBufferPersistence(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{})
++	te.insertRepo(testActorDID, models.RepoStateResyncing, testRevA, "bafy-a", "")
++	var repo models.Repo
++	require.NoError(t, te.db.First(&repo, "did = ?", testActorDID).Error)
++	secret := "RESYNC-SOURCE-CONTENT-MUST-NOT-PERSIST"
++	commit := &Commit{
++		Did: testActorDID, Rev: testRevB, PrevData: "bafy-a", DataCid: "bafy-b",
++		Ops: []CommitOp{{
++			Collection: collectionFeedLike, Rkey: "like-a", Action: "create", Cid: "bafy-like",
++			Record: map[string]any{
++				"subject":   map[string]any{"uri": "at://" + testTargetDID + "/app.bsky.feed.post/target", "cid": secret},
++				"createdAt": secret,
++			},
++		}},
++	}
++	require.NoError(t, te.events.addToResyncBuffer(te.ctx, commit, repo.SyncToken))
++	var row models.ResyncBuffer
++	require.NoError(t, te.db.First(&row).Error)
++	require.NotContains(t, row.Data, secret)
++	require.NotContains(t, row.Data, "createdAt")
++	require.NotContains(t, row.Data, "record")
++	require.Contains(t, row.Data, "subject_uri")
++}
++
++func TestInvalidRequiredMetadataUsesOnlyFixedStatus(t *testing.T) {
++	tests := []struct {
++		name       string
++		collection string
++		record     map[string]any
++	}{
++		{"like handle authority", collectionFeedLike, map[string]any{"subject": map[string]any{"uri": "at://alice.example/app.bsky.feed.post/target", "cid": "secret-cid"}}},
++		{"follow malformed DID", collectionGraphFollow, map[string]any{"subject": "not-a-did", "diagnostic": "secret-diagnostic"}},
++		{"reply incomplete URI", collectionFeedPost, map[string]any{"reply": map[string]any{"parent": map[string]any{"uri": "at://" + testTargetDID, "cid": "secret-cid"}}}},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			safe, mutate, err := sanitizeRecordEvent(&RecordEvt{
++				Did: testActorDID, Rev: testRevA, Collection: test.collection,
++				Rkey: "record-a", Action: "create", Cid: "bafy-record", Record: test.record,
++			})
++			require.NoError(t, err)
++			require.True(t, mutate)
++			require.Equal(t, metadataStatusInvalid, safe.MetadataStatus)
++			require.Nil(t, safe.Metadata)
++			encoded, err := safe.MarshalWithId(1)
++			require.NoError(t, err)
++			require.NotContains(t, string(encoded), "secret")
++			require.NotContains(t, string(encoded), "alice.example")
++			require.NotContains(t, string(encoded), "not-a-did")
++		})
++	}
++}
++
++func TestUnknownActionAndCollectionCannotPersistSourceStringsOrMutateCatalog(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{})
++	events := []*RecordEvt{
++		{Did: testActorDID, Rev: testRevA, Collection: collectionFeedPost, Rkey: "post-a", Action: "secret-action", Cid: "secret-cid", Record: map[string]any{"text": "secret-body"}},
++		{Did: testActorDID, Rev: testRevA, Collection: "secret.collection", Rkey: "post-b", Action: "create", Cid: "secret-cid", Record: map[string]any{"text": "secret-body"}},
++	}
++	require.NoError(t, te.events.AddRecordEvents(te.ctx, events, true, nil))
++	var rows []models.OutboxBuffer
++	require.NoError(t, te.db.Order("id").Find(&rows).Error)
++	require.Len(t, rows, 2)
++	for _, row := range rows {
++		require.NotContains(t, row.Data, "secret")
++		require.Contains(t, row.Data, `"collection":"invalid"`)
++		require.Contains(t, row.Data, `"action":"invalid"`)
++	}
++	var count int64
++	require.NoError(t, te.db.Model(&models.RepoRecord{}).Count(&count).Error)
++	require.Zero(t, count)
++}
++
++func TestIdentityAndRepoSyncHaveExactClosedWireShapes(t *testing.T) {
++	identity := &IdentityEvt{Did: testActorDID, IsActive: true, Status: models.AccountStatusActive}
++	identityJSON, err := identity.MarshalWithId(7)
++	require.NoError(t, err)
++	require.JSONEq(t, `{"id":7,"type":"identity","identity":{"did":"`+testActorDID+`","is_active":true,"status":"active"}}`, string(identityJSON))
++	require.NotContains(t, string(identityJSON), "handle")
++
++	syncEvent := &RepoSyncEvt{Did: testActorDID, Rev: testRevA, Status: models.AccountStatusActive}
++	syncJSON, err := syncEvent.MarshalWithId(8)
++	require.NoError(t, err)
++	require.JSONEq(t, `{"id":8,"type":"repo_sync","repo_sync":{"did":"`+testActorDID+`","rev":"`+testRevA+`","status":"active"}}`, string(syncJSON))
++}
++
++func TestDurableDeliveryHighWaterSurvivesAnEmptyOutboxRestart(t *testing.T) {
++	databasePath := filepath.Join(t.TempDir(), "tap.sqlite")
++	config := TapConfig{EventCacheSize: 100, OutboxParallelism: 1}
++	db, err := SetupDatabase("sqlite://"+databasePath, 1)
++	require.NoError(t, err)
++	events := NewEventManager(slog.Default(), db, &config)
++	require.NoError(t, events.AddIdentityEvent(context.Background(), &IdentityEvt{Did: testActorDID, IsActive: true, Status: models.AccountStatusActive}, nil))
++	require.NoError(t, db.Delete(&models.OutboxBuffer{}, 1).Error)
++	sqlDB, err := db.DB()
++	require.NoError(t, err)
++	require.NoError(t, sqlDB.Close())
++
++	db, err = SetupDatabase("sqlite://"+databasePath, 1)
++	require.NoError(t, err)
++	events = NewEventManager(slog.Default(), db, &config)
++	require.NoError(t, events.AddIdentityEvent(context.Background(), &IdentityEvt{Did: testTargetDID, IsActive: true, Status: models.AccountStatusActive}, nil))
++	var row models.OutboxBuffer
++	require.NoError(t, db.First(&row).Error)
++	require.Equal(t, uint(2), row.ID)
++	var state models.MetadataOnlyOverlayState
++	require.NoError(t, db.First(&state, "id = ?", 1).Error)
++	require.Equal(t, uint64(2), state.LastEventID)
++	sqlDB, err = db.DB()
++	require.NoError(t, err)
++	require.NoError(t, sqlDB.Close())
++}
++
++func TestStartupRejectsTamperedOrLegacyDurableBuffers(t *testing.T) {
++	t.Run("outbox body", func(t *testing.T) {
++		path := filepath.Join(t.TempDir(), "tap.sqlite")
++		db, err := SetupDatabase("sqlite://"+path, 1)
++		require.NoError(t, err)
++		raw := `{"id":1,"type":"record","record":{"live":true,"did":"` + testActorDID + `","rev":"` + testRevA + `","collection":"app.bsky.feed.post","rkey":"post-a","action":"create","cid":"bafy","record":{"text":"must-not-survive"}}}`
++		require.NoError(t, db.Create(&models.OutboxBuffer{ID: 1, Did: testActorDID, Live: true, Data: raw}).Error)
++		require.NoError(t, db.Model(&models.MetadataOnlyOverlayState{}).Where("id = ?", 1).Update("last_event_id", 1).Error)
++		sqlDB, err := db.DB()
++		require.NoError(t, err)
++		require.NoError(t, sqlDB.Close())
++		_, err = SetupDatabase("sqlite://"+path, 1)
++		require.Error(t, err)
++		require.Contains(t, err.Error(), "invalid metadata-only outbox row")
++	})
++
++	t.Run("resync body", func(t *testing.T) {
++		path := filepath.Join(t.TempDir(), "tap.sqlite")
++		db, err := SetupDatabase("sqlite://"+path, 1)
++		require.NoError(t, err)
++		raw := `{"did":"` + testActorDID + `","rev":"` + testRevA + `","data_cid":"bafy","prev_data":"","ops":[{"collection":"app.bsky.feed.post","rkey":"post-a","action":"create","cid":"bafy","record":{"text":"must-not-survive"}}]}`
++		require.NoError(t, db.Create(&models.ResyncBuffer{Did: testActorDID, Data: raw}).Error)
++		sqlDB, err := db.DB()
++		require.NoError(t, err)
++		require.NoError(t, sqlDB.Close())
++		_, err = SetupDatabase("sqlite://"+path, 1)
++		require.Error(t, err)
++		require.Contains(t, err.Error(), "invalid metadata-only resync row")
++	})
++}
++
++func TestResyncMissingRecordsBecomeCanonicalDeletes(t *testing.T) {
++	existing := map[string]models.RepoRecord{
++		collectionFeedPost + "/z": {Did: testActorDID, Collection: collectionFeedPost, Rkey: "z", Cid: "bafy-z"},
++		collectionFeedPost + "/a": {Did: testActorDID, Collection: collectionFeedPost, Rkey: "a", Cid: "bafy-a"},
++	}
++	events := sortedMissingDeleteEvents(testActorDID, testRevB, existing)
++	require.Len(t, events, 2)
++	require.Equal(t, "a", events[0].Rkey)
++	require.Equal(t, "z", events[1].Rkey)
++	require.Equal(t, "delete", events[0].Action)
++	require.Empty(t, events[0].Cid)
++	require.Nil(t, events[0].Record)
++}
++
++func TestReactivationForcesFullProjectionThenRepoSyncBeforeBufferedLive(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{outboxMode: OutboxModeWebsocketAck})
++	fp := newTestFirehoseProcessor(te, true)
++
++	te.insertRepo(testActorDID, models.RepoStateDeactivated, testRevA, "bafy-before-inactive", "")
++	require.NoError(t, te.db.Model(&models.Repo{}).Where("did = ?", testActorDID).Update("status", models.AccountStatusDeactivated).Error)
++	require.NoError(t, te.db.Create(&models.RepoRecord{
++		Did: testActorDID, Collection: collectionActorProfile, Rkey: "self", Cid: "bafy-unchanged-profile",
++	}).Error)
++
++	// Reactivation must invalidate the old CID catalog because the consumer
++	// purged its projection at the preceding inactive identity barrier.
++	require.NoError(t, fp.ProcessAccount(te.ctx, &comatproto.SyncSubscribeRepos_Account{Did: testActorDID, Active: true, Seq: 2}))
++	var catalogCount int64
++	require.NoError(t, te.db.Model(&models.RepoRecord{}).Where("did = ?", testActorDID).Count(&catalogCount).Error)
++	require.Zero(t, catalogCount)
++
++	r := newTestResyncer(te)
++	claim, found, err := r.claimResyncJob(te.ctx)
++	require.NoError(t, err)
++	require.True(t, found)
++	require.Equal(t, testActorDID, claim.Did)
++
++	require.NoError(t, te.events.AddRecordEvents(te.ctx, []*RecordEvt{{
++		Did: testActorDID, Rev: testRevA, Collection: collectionActorProfile,
++		Rkey: "self", Action: "create", Cid: "bafy-profile", Record: map[string]any{"displayName": "must-not-persist"},
++	}}, false, func(tx *gorm.DB) error { return guardResyncClaim(tx, claim) }))
++
++	buffered := &Commit{Did: testActorDID, Rev: testRevB, PrevData: "bafy-snapshot", DataCid: "bafy-live", Ops: []CommitOp{{
++		Collection: collectionFeedPost, Rkey: "live-post", Action: "create", Cid: "bafy-live-post", Record: map[string]any{"text": "must-not-persist"},
++	}}}
++	require.NoError(t, te.events.addToResyncBuffer(te.ctx, buffered, claim.Token))
++	require.NoError(t, r.completeResyncCutover(te.ctx, claim, testRevA, "bafy-snapshot"))
++	require.NoError(t, r.drainResyncBuffer(te.ctx, claim.Did, claim.Token))
++
++	var rows []models.OutboxBuffer
++	require.NoError(t, te.db.Order("id ASC").Find(&rows).Error)
++	require.Len(t, rows, 4)
++	require.True(t, strings.Contains(rows[0].Data, `"type":"identity"`), rows[0].Data)
++	require.True(t, strings.Contains(rows[1].Data, `"type":"record"`), rows[1].Data)
++	require.True(t, strings.Contains(rows[2].Data, `"type":"repo_sync"`), rows[2].Data)
++	require.True(t, strings.Contains(rows[3].Data, `"type":"record"`), rows[3].Data)
++	require.True(t, rows[0].Live)
++	require.False(t, rows[1].Live)
++	require.True(t, rows[2].Live)
++	require.True(t, rows[3].Live)
++	for _, row := range rows {
++		require.NotContains(t, row.Data, "must-not-persist")
++	}
++}
++
++func TestFullNetworkMissingActiveAccountCreatesIdentityBeforeResync(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{outboxMode: OutboxModeWebsocketAck})
++	fp := newTestFirehoseProcessor(te, true)
++	require.NoError(t, fp.ProcessAccount(te.ctx, &comatproto.SyncSubscribeRepos_Account{
++		Did: testActorDID, Active: true, Seq: 1,
++	}))
++	var repo models.Repo
++	require.NoError(t, te.db.First(&repo, "did = ?", testActorDID).Error)
++	require.Equal(t, models.RepoStatePending, repo.State)
++	require.Equal(t, models.AccountStatusActive, repo.Status)
++	require.NotEmpty(t, repo.SyncToken)
++	var row models.OutboxBuffer
++	require.NoError(t, te.db.First(&row, "did = ?", testActorDID).Error)
++	require.True(t, row.Live)
++	require.Contains(t, row.Data, `"type":"identity"`)
++	require.NotContains(t, row.Data, "handle")
++}
++
++func TestMalformedFullNetworkAccountDIDCannotReachDurableStorage(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{})
++	fp := newTestFirehoseProcessor(te, true)
++	err := fp.ProcessAccount(te.ctx, &comatproto.SyncSubscribeRepos_Account{
++		Did: "not-a-did-with-source-controlled-text", Active: true, Seq: 1,
++	})
++	require.Error(t, err)
++	var repoCount int64
++	require.NoError(t, te.db.Model(&models.Repo{}).Count(&repoCount).Error)
++	require.Zero(t, repoCount)
++	var outboxCount int64
++	require.NoError(t, te.db.Model(&models.OutboxBuffer{}).Count(&outboxCount).Error)
++	require.Zero(t, outboxCount)
++}
++
++func TestInactiveTransitionStopsAnOldSnapshotBeforeTrailingRows(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{outboxMode: OutboxModeWebsocketAck})
++	te.insertRepo(testActorDID, models.RepoStatePending, "", "", "")
++	r := newTestResyncer(te)
++	claim, found, err := r.claimResyncJob(te.ctx)
++	require.NoError(t, err)
++	require.True(t, found)
++
++	require.NoError(t, te.events.AddRecordEvents(te.ctx, []*RecordEvt{{
++		Did: testActorDID, Rev: testRevA, Collection: collectionActorProfile,
++		Rkey: "self", Action: "create", Cid: "bafy-profile",
++	}}, false, func(tx *gorm.DB) error { return guardResyncClaim(tx, claim) }))
++
++	fp := newTestFirehoseProcessor(te, false)
++	status := string(models.AccountStatusDeactivated)
++	require.NoError(t, fp.ProcessAccount(te.ctx, &comatproto.SyncSubscribeRepos_Account{
++		Did: testActorDID, Active: false, Status: &status, Seq: 1,
++	}))
++
++	err = te.events.AddRecordEvents(te.ctx, []*RecordEvt{{
++		Did: testActorDID, Rev: testRevA, Collection: collectionFeedPost,
++		Rkey: "late", Action: "create", Cid: "bafy-late", Record: map[string]any{"text": "late-content"},
++	}}, false, func(tx *gorm.DB) error { return guardResyncClaim(tx, claim) })
++	require.ErrorIs(t, err, errResyncClaimLost)
++
++	var rows []models.OutboxBuffer
++	require.NoError(t, te.db.Order("id ASC").Find(&rows).Error)
++	require.Len(t, rows, 2)
++	require.Contains(t, rows[0].Data, `"type":"record"`)
++	require.Contains(t, rows[1].Data, `"type":"identity"`)
++	require.NotContains(t, rows[1].Data, "late-content")
++}
++
++func TestDeleteRecreateCannotReuseAResyncClaim(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{outboxMode: OutboxModeWebsocketAck})
++	te.insertRepo(testActorDID, models.RepoStatePending, "", "", "")
++	r := newTestResyncer(te)
++	oldClaim, found, err := r.claimResyncJob(te.ctx)
++	require.NoError(t, err)
++	require.True(t, found)
++
++	fp := newTestFirehoseProcessor(te, true)
++	deleted := string(models.AccountStatusDeleted)
++	require.NoError(t, fp.ProcessAccount(te.ctx, &comatproto.SyncSubscribeRepos_Account{
++		Did: testActorDID, Active: false, Status: &deleted, Seq: 1,
++	}))
++	require.NoError(t, fp.ProcessAccount(te.ctx, &comatproto.SyncSubscribeRepos_Account{
++		Did: testActorDID, Active: true, Seq: 2,
++	}))
++	newClaim, found, err := r.claimResyncJob(te.ctx)
++	require.NoError(t, err)
++	require.True(t, found)
++	require.NotEqual(t, oldClaim.Token, newClaim.Token)
++
++	err = r.completeResyncCutover(te.ctx, oldClaim, testRevA, "bafy-stale")
++	require.ErrorIs(t, err, errResyncClaimLost)
++	var syncCount int64
++	require.NoError(t, te.db.Model(&models.OutboxBuffer{}).Where("data LIKE ?", `%"type":"repo_sync"%`).Count(&syncCount).Error)
++	require.Zero(t, syncCount)
++}
++
++func TestSnapshotSubsumedAndZeroOperationBufferedCommitsConverge(t *testing.T) {
++	te := newTestEnv(t, testEnvOpts{outboxMode: OutboxModeWebsocketAck})
++	te.insertRepo(testActorDID, models.RepoStateResyncing, testRevA, "bafy-a", "")
++	var repo models.Repo
++	require.NoError(t, te.db.First(&repo, "did = ?", testActorDID).Error)
++	claim := resyncClaim{Did: testActorDID, Token: repo.SyncToken}
++
++	subsumed, err := json.Marshal(&Commit{Did: testActorDID, Rev: testRevA, PrevData: "bafy-old", DataCid: "bafy-snapshot", Ops: []CommitOp{}})
++	require.NoError(t, err)
++	require.NoError(t, te.db.Create(&models.ResyncBuffer{Did: testActorDID, Data: string(subsumed)}).Error)
++	require.NoError(t, rFor(te).completeResyncCutover(te.ctx, claim, testRevB, "bafy-snapshot"))
++
++	zeroOp, err := json.Marshal(&Commit{Did: testActorDID, Rev: testRevC, PrevData: "bafy-snapshot", DataCid: "bafy-after", Ops: []CommitOp{}})
++	require.NoError(t, err)
++	require.NoError(t, te.db.Create(&models.ResyncBuffer{Did: testActorDID, Data: string(zeroOp)}).Error)
++	require.NoError(t, rFor(te).drainResyncBuffer(te.ctx, testActorDID, claim.Token))
++
++	var bufferCount int64
++	require.NoError(t, te.db.Model(&models.ResyncBuffer{}).Where("did = ?", testActorDID).Count(&bufferCount).Error)
++	require.Zero(t, bufferCount)
++	require.NoError(t, te.db.First(&repo, "did = ?", testActorDID).Error)
++	require.Equal(t, testRevC, repo.Rev)
++	require.Equal(t, "bafy-after", repo.PrevData)
++}
++
++func rFor(te *testEnv) *Resyncer {
++	return newTestResyncer(te)
++}
+diff --git a/cmd/tap/models/models.go b/cmd/tap/models/models.go
+index 7a4ce5bb479224b34b6f351f3653994737a450b7..4cab969856a5d75196cc14d5fa64ad48854d3393 100644
+--- a/cmd/tap/models/models.go
++++ b/cmd/tap/models/models.go
+@@ -27,14 +27,23 @@ type Repo struct {
+ 	Did        string        `gorm:"primaryKey"`
+ 	State      RepoState     `gorm:"not null;default:'pending';index:idx_repos_state_retry"`
+ 	Status     AccountStatus `gorm:"not null;default:'active'"`
+-	Handle     string        `gorm:"type:text"`
++	Handle     string        `gorm:"type:text"` // Legacy column; scrubbed and no longer populated.
+ 	Rev        string        `gorm:"type:text"`
+ 	PrevData   string        `gorm:"type:text"`
++	SyncToken  string        `gorm:"type:text;not null;default:''"`
+ 	ErrorMsg   string        `gorm:"type:text"`
+ 	RetryCount int           `gorm:"not null;default:0"`
+ 	RetryAfter int64         `gorm:"not null;default:0;index:idx_repos_state_retry"` // Unix timestamp (seconds)
+ }
+ 
++// MetadataOnlyOverlayState is a singleton compatibility marker and durable
++// delivery-ID high-water. Version changes are intentionally fail-closed.
++type MetadataOnlyOverlayState struct {
++	ID          uint   `gorm:"primaryKey"`
++	Version     uint   `gorm:"not null"`
++	LastEventID uint64 `gorm:"not null;default:0"`
++}
++
+ type OutboxBuffer struct {
+ 	ID   uint   `gorm:"primaryKey"`
+ 	Did  string `gorm:"not null"`
+diff --git a/cmd/tap/outbox_test.go b/cmd/tap/outbox_test.go
+index 43b26d9e1414d6935202007494026fe1898576bd..00c2a66e12d44b8b484d39f539d541e69fbe2d39 100644
+--- a/cmd/tap/outbox_test.go
++++ b/cmd/tap/outbox_test.go
+@@ -302,7 +302,7 @@ func TestIdentityEvent_Delivery(t *testing.T) {
+ 	assert.Equal(t, "identity", msg.Type)
+ 	assert.NotNil(t, msg.IdentityEvt)
+ 	assert.Equal(t, "did:example:identity", msg.IdentityEvt.Did)
+-	assert.Equal(t, "alice.bsky.social", msg.IdentityEvt.Handle)
+ 	assert.True(t, msg.IdentityEvt.IsActive)
+ 	assert.Equal(t, models.AccountStatusActive, msg.IdentityEvt.Status)
++	assert.NotContains(t, string(msgs[0].IdentityEvt.Did), "alice.bsky.social")
+ }
+diff --git a/cmd/tap/repo_manager.go b/cmd/tap/repo_manager.go
+index 8709ac590f30c3aa8a1a4f9224555745031d5ec5..8617aa4781942482e062c65e4c411962b3d48ae3 100644
+--- a/cmd/tap/repo_manager.go
++++ b/cmd/tap/repo_manager.go
+@@ -2,19 +2,29 @@ package main
+ 
+ import (
+ 	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"fmt"
++	"hash/fnv"
+ 	"log/slog"
++	"sync"
+ 
+ 	"github.com/bluesky-social/indigo/atproto/identity"
+ 	"github.com/bluesky-social/indigo/atproto/syntax"
+ 	"github.com/bluesky-social/indigo/cmd/tap/models"
+ 	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
+ )
+ 
++const repoCutoverLockCount = 4096
++
+ type RepoManager struct {
+ 	logger *slog.Logger
+ 	db     *gorm.DB
+ 	idDir  identity.Directory
+ 	events *EventManager
++
++	cutoverLocks [repoCutoverLockCount]sync.Mutex
+ }
+ 
+ func NewRepoManager(logger *slog.Logger, db *gorm.DB, events *EventManager, idDir identity.Directory) *RepoManager {
+@@ -52,49 +62,43 @@ func (rm *RepoManager) RefreshIdentity(ctx context.Context, did string) error {
+ 		rm.logger.Error("failed to purge identity cache", "did", did, "error", err)
+ 	}
+ 
+-	id, err := rm.idDir.LookupDID(ctx, syntax.DID(did))
++	_, err := rm.idDir.LookupDID(ctx, syntax.DID(did))
+ 	if err != nil {
+ 		return err
+ 	}
++	return nil
++}
+ 
+-	curr, err := rm.GetRepoState(ctx, did)
+-	if err != nil {
++func (rm *RepoManager) EnsureRepo(ctx context.Context, did string) error {
++	if err := validateDurableDID(did); err != nil {
+ 		return err
+-	} else if curr == nil {
+-		return nil
+ 	}
+-
+-	handleStr := id.Handle.String()
+-	if handleStr == curr.Handle {
+-		return nil
+-	}
+-
+-	identityEvt := &IdentityEvt{
+-		Did:      did,
+-		Handle:   handleStr,
+-		IsActive: curr.Status == models.AccountStatusActive,
+-		Status:   curr.Status,
+-	}
+-	if err := rm.events.AddIdentityEvent(ctx, identityEvt, func(tx *gorm.DB) error {
+-		return tx.Model(&models.Repo{}).
+-			Where("did = ?", did).
+-			Update("handle", handleStr).Error
+-	}); err != nil {
+-		rm.logger.Error("failed to update handle", "did", did, "handle", handleStr, "error", err)
++	token, err := newSyncToken()
++	if err != nil {
+ 		return err
+ 	}
+-
+-	return nil
+-}
+-
+-func (rm *RepoManager) EnsureRepo(ctx context.Context, did string) error {
+-	if err := rm.db.WithContext(ctx).Save(&models.Repo{
+-		Did:    did,
+-		State:  models.RepoStatePending,
+-		Status: models.AccountStatusActive,
++	if err := rm.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.Repo{
++		Did:       did,
++		State:     models.RepoStatePending,
++		Status:    models.AccountStatusActive,
++		SyncToken: token,
+ 	}).Error; err != nil {
+ 		rm.logger.Error("failed to auto-track repo", "did", did, "error", err)
+ 		return err
+ 	}
+ 	return nil
+ }
++
++func (rm *RepoManager) lockForDID(did string) *sync.Mutex {
++	hasher := fnv.New32a()
++	_, _ = hasher.Write([]byte(did))
++	return &rm.cutoverLocks[hasher.Sum32()%repoCutoverLockCount]
++}
++
++func newSyncToken() (string, error) {
++	var raw [16]byte
++	if _, err := rand.Read(raw[:]); err != nil {
++		return "", fmt.Errorf("create resync ownership token: %w", err)
++	}
++	return hex.EncodeToString(raw[:]), nil
++}
+diff --git a/cmd/tap/resyncer.go b/cmd/tap/resyncer.go
+index 1a548742c8335c12b54eaefd2b07ededef92a8e9..5c716ee75dbf16dec3ce020117302772bdb79003 100644
+--- a/cmd/tap/resyncer.go
++++ b/cmd/tap/resyncer.go
+@@ -4,9 +4,11 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"log/slog"
+ 	"net/http"
++	"sort"
+ 	"sync"
+ 	"time"
+ 
+@@ -21,6 +23,11 @@ import (
+ 	"gorm.io/gorm"
+ )
+ 
++type resyncClaim struct {
++	Did   string
++	Token string
++}
++
+ type Resyncer struct {
+ 	logger *slog.Logger
+ 	db     *gorm.DB
+@@ -59,131 +66,120 @@ func (r *Resyncer) run(ctx context.Context) {
+ 
+ func (r *Resyncer) runResyncWorker(ctx context.Context, workerID int) {
+ 	logger := r.logger.With("worker", workerID)
+-
+ 	for {
+ 		r.events.WaitForReady(ctx)
+-
+-		// Before calling claimResyncJob, check for context cancellation.
+-		// If the context is cancelled after this check, claimResyncJob will return an
+-		// error then sleep briefly before coming back to check the context again.
+-		// Checking here avoids tring to enumerate and classify all the errors that
+-		// claimResyncJob might return due to shutdown.
+ 		select {
+ 		case <-ctx.Done():
+ 			logger.Info("resync worker shutting down", "error", ctx.Err())
+ 			return
+ 		default:
+-			did, found, err := r.claimResyncJob(ctx)
+-			if err != nil {
+-				logger.Error("failed to claim resync job", "error", err)
+-				time.Sleep(time.Second)
+-				continue
+-			}
+-
+-			if !found {
+-				time.Sleep(time.Second)
+-				continue
+-			}
+-
+-			logger.Info("processing resync", "did", did)
+-			err = r.resyncDid(ctx, did)
+-			if err != nil {
+-				logger.Error("resync failed", "did", did, "error", err)
+-			}
++		}
++		claim, found, err := r.claimResyncJob(ctx)
++		if err != nil {
++			logger.Error("failed to claim resync job", "error", err)
++			time.Sleep(time.Second)
++			continue
++		}
++		if !found {
++			time.Sleep(time.Second)
++			continue
++		}
++		logger.Info("processing resync", "did", claim.Did)
++		if err := r.resyncDid(ctx, claim); err != nil {
++			logger.Error("resync failed", "did", claim.Did, "error", err)
+ 		}
+ 	}
+ }
+ 
+-func (r *Resyncer) claimResyncJob(ctx context.Context) (string, bool, error) {
++func (r *Resyncer) claimResyncJob(ctx context.Context) (resyncClaim, bool, error) {
+ 	r.claimJobMu.Lock()
+ 	defer r.claimJobMu.Unlock()
+-
+-	// prioritize pending repos first before moving on to desyncrhonized
+-	// only reprocess repos that errored after resyncing all other repos
+ 	for _, state := range []models.RepoState{models.RepoStatePending, models.RepoStateDesynchronized, models.RepoStateError} {
+-		did, found, err := r.claimResyncJobOfState(ctx, state)
++		claim, found, err := r.claimResyncJobOfState(ctx, state)
+ 		if err != nil {
+-			return "", false, err
++			return resyncClaim{}, false, err
+ 		}
+ 		if found {
+-			return did, true, nil
++			return claim, true, nil
+ 		}
+ 	}
+-	return "", false, nil
++	return resyncClaim{}, false, nil
+ }
+ 
+-func (r *Resyncer) claimResyncJobOfState(ctx context.Context, state models.RepoState) (string, bool, error) {
++func (r *Resyncer) claimResyncJobOfState(ctx context.Context, state models.RepoState) (resyncClaim, bool, error) {
++	token, err := newSyncToken()
++	if err != nil {
++		return resyncClaim{}, false, err
++	}
+ 	var did string
+ 	now := time.Now().Unix()
+ 	result := r.db.WithContext(ctx).Raw(`
+ 		UPDATE repos
+-		SET state = ?
++		SET state = ?, sync_token = ?
+ 		WHERE did = (
+ 			SELECT did FROM repos
+-			WHERE state = ?
++			WHERE state = ? AND status = ?
+ 			AND (retry_after = 0 OR retry_after < ?)
+ 			LIMIT 1
+ 		)
+-		RETURNING did
+-		`, models.RepoStateResyncing, state, now).Scan(&did)
++		AND state = ? AND status = ?
++		RETURNING did`,
++		models.RepoStateResyncing, token,
++		state, models.AccountStatusActive, now,
++		state, models.AccountStatusActive,
++	).Scan(&did)
+ 	if result.Error != nil {
+-		return "", false, result.Error
++		return resyncClaim{}, false, result.Error
+ 	}
+ 	if result.RowsAffected == 0 {
+-		return "", false, nil
++		return resyncClaim{}, false, nil
+ 	}
+-	return did, true, nil
++	return resyncClaim{Did: did, Token: token}, true, nil
+ }
+ 
+-func (r *Resyncer) resyncDid(ctx context.Context, did string) error {
++func (r *Resyncer) resyncDid(ctx context.Context, claim resyncClaim) error {
+ 	ctx, span := tracer.Start(ctx, "resyncDid")
+-	span.SetAttributes(attribute.String("did", did))
++	span.SetAttributes(attribute.String("did", claim.Did))
+ 	defer span.End()
+ 
+ 	resyncsStarted.Inc()
+-	startTime := time.Now()
++	started := time.Now()
++	r.logger.Info("starting resync", "did", claim.Did)
+ 
+-	r.logger.Info("starting resync", "did", did)
+-
+-	err := r.repos.RefreshIdentity(ctx, did)
+-	if err != nil {
+-		r.logger.Info("failed to refresh identity", "did", did, "error", err)
++	if err := r.ensureClaimCurrent(ctx, claim); err != nil {
++		return r.handleResyncError(ctx, claim, err)
++	}
++	if err := r.repos.RefreshIdentity(ctx, claim.Did); err != nil {
++		r.logger.Info("failed to refresh identity", "did", claim.Did, "error", err)
+ 	}
+ 
+-	success, err := r.doResync(ctx, did)
++	success, err := r.doResync(ctx, claim)
+ 	if !success {
+ 		resyncsFailed.Inc()
+-		resyncDuration.Observe(time.Since(startTime).Seconds())
+-		return r.handleResyncError(ctx, did, err)
++		resyncDuration.Observe(time.Since(started).Seconds())
++		return r.handleResyncError(ctx, claim, err)
+ 	}
+ 
+ 	resyncsCompleted.Inc()
+-	resyncDuration.Observe(time.Since(startTime).Seconds())
+-
+-	if err := r.drainResyncBuffer(ctx, did); err != nil {
+-		r.logger.Error("failed to drain resync buffer events", "did", did, "error", err)
+-	}
+-
++	resyncDuration.Observe(time.Since(started).Seconds())
+ 	return nil
+ }
+ 
+ const batchSize = 100
+ 
+-func (r *Resyncer) doResync(ctx context.Context, did string) (bool, error) {
++func (r *Resyncer) doResync(ctx context.Context, claim resyncClaim) (bool, error) {
+ 	ctx, span := tracer.Start(ctx, "doResync")
+-	span.SetAttributes(attribute.String("did", did))
++	span.SetAttributes(attribute.String("did", claim.Did))
+ 	defer span.End()
+ 
+-	ident, err := r.repos.idDir.LookupDID(ctx, syntax.DID(did))
++	ident, err := r.repos.idDir.LookupDID(ctx, syntax.DID(claim.Did))
+ 	if err != nil {
+ 		return false, fmt.Errorf("failed to resolve DID: %w", err)
+ 	}
+-
+ 	pdsURL := ident.PDSEndpoint()
+ 	if pdsURL == "" {
+-		return false, fmt.Errorf("no PDS endpoint for DID: %s", did)
++		return false, fmt.Errorf("no PDS endpoint for DID: %s", claim.Did)
+ 	}
+-
+ 	signingKey, err := ident.PublicKey()
+ 	if err != nil {
+ 		return false, fmt.Errorf("failed to get public key: %w", err)
+@@ -196,19 +192,14 @@ func (r *Resyncer) doResync(ctx context.Context, did string) (bool, error) {
+ 		return false, nil
+ 	}
+ 
+-	r.logger.Info("fetching repo from PDS", "did", did, "pds", pdsURL)
+-
+ 	client := atclient.NewAPIClient(pdsURL)
+ 	client.Headers.Set("User-Agent", userAgent())
+ 	timeout := r.repoFetchTimeout
+ 	if timeout <= 0 {
+ 		timeout = 30 * time.Second
+ 	}
+-	client.Client = &http.Client{
+-		Timeout: timeout,
+-	}
+-
+-	repoBytes, err := comatproto.SyncGetRepo(ctx, client, did, "")
++	client.Client = &http.Client{Timeout: timeout}
++	repoBytes, err := comatproto.SyncGetRepo(ctx, client, claim.Did, "")
+ 	if err != nil {
+ 		if isRateLimitError(err) {
+ 			r.pdsBackoffMu.Lock()
+@@ -219,210 +210,342 @@ func (r *Resyncer) doResync(ctx context.Context, did string) (bool, error) {
+ 		return false, fmt.Errorf("failed to get repo: %w", err)
+ 	}
+ 
+-	r.logger.Info("parsing repo CAR", "did", did, "size", len(repoBytes))
+-
+-	commit, repo, err := repolib.LoadRepoFromCAR(ctx, bytes.NewReader(repoBytes))
++	commit, loadedRepo, err := repolib.LoadRepoFromCAR(ctx, bytes.NewReader(repoBytes))
+ 	if err != nil {
+ 		return false, fmt.Errorf("failed to read repo from CAR: %w", err)
+ 	}
+-
+-	err = commit.VerifySignature(signingKey)
+-	if err != nil {
++	if err := commit.VerifySignature(signingKey); err != nil {
+ 		return false, fmt.Errorf("failed to verify signature: %w", err)
+ 	}
++	if commit.DID != claim.Did {
++		return false, errors.New("authoritative repository DID does not match resync claim")
++	}
++	if err := validateDurableRev(commit.Rev); err != nil {
++		return false, err
++	}
+ 
+-	rev := commit.Rev
+-	r.logger.Info("iterating repo records", "did", did, "rev", rev)
++	if err := r.emitAuthoritativeSnapshot(ctx, claim, commit.Rev, commit.Data.String(), loadedRepo); err != nil {
++		return false, err
++	}
++	return true, nil
++}
+ 
++func (r *Resyncer) emitAuthoritativeSnapshot(ctx context.Context, claim resyncClaim, rev string, dataCID string, loadedRepo *repolib.Repo) error {
++	if err := r.ensureClaimCurrent(ctx, claim); err != nil {
++		return err
++	}
+ 	var existingRecords []models.RepoRecord
+-	if err := r.db.WithContext(ctx).Find(&existingRecords, "did = ?", did).Error; err != nil {
+-		return false, fmt.Errorf("failed to load existing records: %w", err)
++	if err := r.db.WithContext(ctx).Find(&existingRecords, "did = ?", claim.Did).Error; err != nil {
++		return fmt.Errorf("failed to load existing records: %w", err)
+ 	}
+-
+-	existingCids := make(map[string]string, len(existingRecords))
+-	for _, rec := range existingRecords {
+-		key := rec.Collection + "/" + rec.Rkey
+-		existingCids[key] = rec.Cid
++	existing := make(map[string]models.RepoRecord, len(existingRecords))
++	for _, record := range existingRecords {
++		if isMetadataCollection(record.Collection) {
++			existing[record.Collection+"/"+record.Rkey] = record
++		}
+ 	}
+-	r.logger.Info("pre-loaded existing records", "did", did, "count", len(existingCids))
+ 
+-	evtBatch := make([]*RecordEvt, 0, batchSize)
++	batch := make([]*RecordEvt, 0, batchSize)
++	flush := func() error {
++		if len(batch) == 0 {
++			return nil
++		}
++		r.events.WaitForReady(ctx)
++		toSend := append([]*RecordEvt(nil), batch...)
++		batch = batch[:0]
++		return r.events.AddRecordEvents(ctx, toSend, false, func(tx *gorm.DB) error {
++			return guardResyncClaim(tx, claim)
++		})
++	}
+ 
+-	err = repo.MST.Walk(func(recPathBytes []byte, recCid cid.Cid) error {
++	err := loadedRepo.MST.Walk(func(pathBytes []byte, recordCID cid.Cid) error {
+ 		select {
+ 		case <-ctx.Done():
+ 			return ctx.Err()
+ 		default:
+ 		}
+-
+-		recPath := string(recPathBytes)
+-		collection, rkey, err := syntax.ParseRepoPath(recPath)
++		path := string(pathBytes)
++		collection, rkey, err := syntax.ParseRepoPath(path)
+ 		if err != nil {
+-			r.logger.Error("invalid record path", "path", recPath, "error", err)
+-			return nil
++			return fmt.Errorf("invalid authoritative record path %q: %w", path, err)
+ 		}
+-
+-		collStr := collection.String()
+-		rkeyStr := rkey.String()
+-		cidStr := recCid.String()
+-
+-		// Filter collections - only process if matches filters
+-		if !matchesCollection(collStr, r.collectionFilters) {
++		collectionText := collection.String()
++		if !isMetadataCollection(collectionText) || !matchesCollection(collectionText, r.collectionFilters) {
+ 			return nil
+ 		}
+-
+-		existingCid, exists := existingCids[recPath]
+-		if exists && existingCid == cidStr {
++		delete(existing, path)
++		cidText := recordCID.String()
++		if old, ok := findExisting(existingRecords, collectionText, rkey.String()); ok && old.Cid == cidText {
+ 			return nil
+ 		}
+ 
++		block, err := loadedRepo.RecordStore.Get(ctx, recordCID)
++		if err != nil {
++			return fmt.Errorf("authoritative record block %q is unavailable: %w", path, err)
++		}
++		record, err := atdata.UnmarshalCBOR(block.RawData())
++		if err != nil {
++			return fmt.Errorf("authoritative record %q is invalid: %w", path, err)
++		}
+ 		action := "create"
+-		if exists {
++		if _, ok := findExisting(existingRecords, collectionText, rkey.String()); ok {
+ 			action = "update"
+ 		}
+-
+-		blk, err := repo.RecordStore.Get(ctx, recCid)
+-		if err != nil {
+-			r.logger.Error("failed to get block", "path", recPath, "error", err)
+-			return nil
++		batch = append(batch, &RecordEvt{
++			Live: false, Did: claim.Did, Rev: rev, Collection: collectionText,
++			Rkey: rkey.String(), Action: action, Record: record, Cid: cidText,
++		})
++		if len(batch) >= batchSize {
++			return flush()
+ 		}
++		return nil
++	})
++	if err != nil {
++		return fmt.Errorf("failed to iterate authoritative repository: %w", err)
++	}
++	if err := flush(); err != nil {
++		return fmt.Errorf("failed to flush authoritative records: %w", err)
++	}
+ 
+-		rec, err := atdata.UnmarshalCBOR(blk.RawData())
+-		if err != nil {
+-			// do not fail here
+-			// we end up storing the CID but not passing the record along in the outbox
+-			r.logger.Error("failed to unmarshal record", "did", did, "path", recPath, "error", err)
+-		}
+-
+-		evt := &RecordEvt{
+-			Live:       false,
+-			Did:        did,
+-			Rev:        rev,
+-			Collection: collStr,
+-			Rkey:       rkeyStr,
+-			Action:     action,
+-			Record:     rec,
+-			Cid:        recCid.String(),
+-		}
+-		evtBatch = append(evtBatch, evt)
+-
+-		if len(evtBatch) >= batchSize {
+-			r.events.WaitForReady(ctx)
+-			if err := r.events.AddRecordEvents(ctx, evtBatch, false, func(tx *gorm.DB) error {
+-				return nil
+-			}); err != nil {
+-				r.logger.Error("failed to flush batch", "error", err, "did", did)
+-				return err
++	for _, evt := range sortedMissingDeleteEvents(claim.Did, rev, existing) {
++		batch = append(batch, evt)
++		if len(batch) >= batchSize {
++			if err := flush(); err != nil {
++				return fmt.Errorf("failed to flush authoritative deletes: %w", err)
+ 			}
+-			evtBatch = evtBatch[:0]
+ 		}
++	}
++	if err := flush(); err != nil {
++		return fmt.Errorf("failed to flush final authoritative deletes: %w", err)
++	}
++
++	lock := r.repos.lockForDID(claim.Did)
++	lock.Lock()
++	defer lock.Unlock()
++	if err := r.completeResyncCutover(ctx, claim, rev, dataCID); err != nil {
++		return err
++	}
++	if err := r.drainResyncBuffer(ctx, claim.Did, claim.Token); err != nil {
++		token, tokenErr := newSyncToken()
++		if tokenErr == nil {
++			_ = r.db.WithContext(ctx).Model(&models.Repo{}).
++				Where("did = ? AND state = ? AND sync_token = ?", claim.Did, models.RepoStateActive, claim.Token).
++				Updates(map[string]any{"state": models.RepoStateDesynchronized, "sync_token": token}).Error
++		}
++		return fmt.Errorf("failed to drain buffered live commits: %w", err)
++	}
++	return nil
++}
++
++func sortedMissingDeleteEvents(did string, rev string, existing map[string]models.RepoRecord) []*RecordEvt {
++	keys := make([]string, 0, len(existing))
++	for key := range existing {
++		keys = append(keys, key)
++	}
++	sort.Strings(keys)
++	result := make([]*RecordEvt, 0, len(keys))
++	for _, key := range keys {
++		record := existing[key]
++		result = append(result, &RecordEvt{
++			Live: false, Did: did, Rev: rev, Collection: record.Collection,
++			Rkey: record.Rkey, Action: "delete",
++		})
++	}
++	return result
++}
++
++func findExisting(records []models.RepoRecord, collection string, rkey string) (models.RepoRecord, bool) {
++	for i := range records {
++		if records[i].Collection == collection && records[i].Rkey == rkey {
++			return records[i], true
++		}
++	}
++	return models.RepoRecord{}, false
++}
+ 
++func (r *Resyncer) completeResyncCutover(ctx context.Context, claim resyncClaim, rev string, dataCID string) error {
++	evt := &RepoSyncEvt{Did: claim.Did, Rev: rev, Status: models.AccountStatusActive}
++	return r.events.AddRepoSyncEvent(ctx, evt, func(tx *gorm.DB) error {
++		if err := guardResyncClaim(tx, claim); err != nil {
++			return err
++		}
++		if err := validateAndTrimBufferedCommits(tx, claim.Did, rev, dataCID); err != nil {
++			return err
++		}
++		result := tx.Model(&models.Repo{}).
++			Where("did = ? AND state = ? AND status = ? AND sync_token = ?", claim.Did, models.RepoStateResyncing, models.AccountStatusActive, claim.Token).
++			Updates(map[string]any{
++				"state": models.RepoStateActive, "rev": rev, "prev_data": dataCID,
++				"error_msg": "", "retry_count": 0, "retry_after": 0,
++			})
++		if result.Error != nil {
++			return result.Error
++		}
++		if result.RowsAffected != 1 {
++			return errResyncClaimLost
++		}
+ 		return nil
+ 	})
++}
+ 
+-	if err != nil {
+-		return false, fmt.Errorf("failed to iterate repo: %w", err)
++func validateAndTrimBufferedCommits(tx *gorm.DB, did string, rev string, dataCID string) error {
++	var rows []models.ResyncBuffer
++	if err := tx.Where("did = ?", did).Order("id ASC").Find(&rows).Error; err != nil {
++		return err
+ 	}
++	currentRev := rev
++	currentData := dataCID
++	for _, row := range rows {
++		var commit Commit
++		if err := json.Unmarshal([]byte(row.Data), &commit); err != nil {
++			return fmt.Errorf("invalid buffered commit %d: %w", row.ID, err)
++		}
++		if commit.Did != did {
++			return fmt.Errorf("buffered commit %d has a mismatched DID", row.ID)
++		}
++		if err := validateDurableRev(commit.Rev); err != nil {
++			return err
++		}
++		if commit.Rev <= currentRev {
++			if err := tx.Delete(&models.ResyncBuffer{}, "id = ?", row.ID).Error; err != nil {
++				return err
++			}
++			continue
++		}
++		if commit.PrevData == "" || commit.PrevData != currentData {
++			return fmt.Errorf("buffered commit %d does not extend the authoritative snapshot", row.ID)
++		}
++		currentRev = commit.Rev
++		currentData = commit.DataCid
++	}
++	return nil
++}
+ 
+-	if err := r.events.AddRecordEvents(ctx, evtBatch, false, func(tx *gorm.DB) error {
+-		return nil
+-	}); err != nil {
+-		return false, fmt.Errorf("failed to flush final batch: %w", err)
++func guardResyncClaim(tx *gorm.DB, claim resyncClaim) error {
++	result := tx.Model(&models.Repo{}).
++		Where("did = ? AND state = ? AND status = ? AND sync_token = ?", claim.Did, models.RepoStateResyncing, models.AccountStatusActive, claim.Token).
++		UpdateColumn("sync_token", gorm.Expr("sync_token"))
++	if result.Error != nil {
++		return result.Error
++	}
++	if result.RowsAffected != 1 {
++		return errResyncClaimLost
+ 	}
++	return nil
++}
+ 
++func (r *Resyncer) ensureClaimCurrent(ctx context.Context, claim resyncClaim) error {
++	var count int64
+ 	if err := r.db.WithContext(ctx).Model(&models.Repo{}).
+-		Where("did = ?", did).
+-		Updates(map[string]any{
+-			"state":       models.RepoStateActive,
+-			"rev":         rev,
+-			"prev_data":   commit.Data.String(),
+-			"error_msg":   "",
+-			"retry_count": 0,
+-			"retry_after": 0,
+-		}).Error; err != nil {
+-		return false, fmt.Errorf("failed to update repo state to active %w", err)
++		Where("did = ? AND state = ? AND status = ? AND sync_token = ?", claim.Did, models.RepoStateResyncing, models.AccountStatusActive, claim.Token).
++		Count(&count).Error; err != nil {
++		return err
+ 	}
+-
+-	r.logger.Info("resync repo complete", "did", did, "rev", rev)
+-	return true, nil
++	if count != 1 {
++		return errResyncClaimLost
++	}
++	return nil
+ }
+ 
+-func (r *Resyncer) handleResyncError(ctx context.Context, did string, resyncErr error) error {
+-	var state models.RepoState
+-	var errMsg string
+-	if resyncErr == nil {
+-		state = models.RepoStateDesynchronized
+-		errMsg = ""
+-	} else {
++func (r *Resyncer) handleResyncError(ctx context.Context, claim resyncClaim, resyncErr error) error {
++	state := models.RepoStateDesynchronized
++	errMsg := ""
++	if resyncErr != nil {
+ 		state = models.RepoStateError
+ 		errMsg = resyncErr.Error()
+ 	}
+-
+-	repo, err := r.repos.GetRepoState(ctx, did)
++	var repo models.Repo
++	if err := r.db.WithContext(ctx).First(&repo, "did = ? AND state = ? AND status = ? AND sync_token = ?", claim.Did, models.RepoStateResyncing, models.AccountStatusActive, claim.Token).Error; err != nil {
++		if errors.Is(err, gorm.ErrRecordNotFound) {
++			return resyncErr
++		}
++		return err
++	}
++	token, err := newSyncToken()
+ 	if err != nil {
+ 		return err
+ 	}
+-
+-	// start a 1 min & go up to 1 hr between retries
+ 	retryAfter := time.Now().Add(backoff(repo.RetryCount, 60) * 60)
+-
+-	if err := r.db.WithContext(ctx).Model(&models.Repo{}).
+-		Where("did = ?", did).
++	result := r.db.WithContext(ctx).Model(&models.Repo{}).
++		Where("did = ? AND state = ? AND status = ? AND sync_token = ?", claim.Did, models.RepoStateResyncing, models.AccountStatusActive, claim.Token).
+ 		Updates(map[string]any{
+-			"state":       state,
+-			"error_msg":   errMsg,
+-			"retry_count": repo.RetryCount + 1,
+-			"retry_after": retryAfter.Unix(),
+-		}).Error; err != nil {
+-		return err
++			"state": state, "sync_token": token, "error_msg": errMsg,
++			"retry_count": repo.RetryCount + 1, "retry_after": retryAfter.Unix(),
++		})
++	if result.Error != nil {
++		return result.Error
+ 	}
+ 	return resyncErr
+-
+ }
+ 
+ func (r *Resyncer) resetPartiallyResynced(ctx context.Context) error {
+-	return r.db.WithContext(ctx).Model(&models.Repo{}).
+-		Where("state = ?", models.RepoStateResyncing).
+-		Update("state", models.RepoStateDesynchronized).Error
+-}
+-
+-func (r *Resyncer) drainResyncBuffer(ctx context.Context, did string) error {
+-	var bufferedEvts []models.ResyncBuffer
+-	if err := r.events.db.WithContext(ctx).Where("did = ?", did).Order("id ASC").Find(&bufferedEvts).Error; err != nil {
+-		return fmt.Errorf("failed to load buffered events: %w", err)
++	var repos []models.Repo
++	if err := r.db.WithContext(ctx).
++		Where("state = ? OR (state = ? AND EXISTS (SELECT 1 FROM resync_buffers WHERE resync_buffers.did = repos.did))", models.RepoStateResyncing, models.RepoStateActive).
++		Find(&repos).Error; err != nil {
++		return err
+ 	}
+-
+-	if len(bufferedEvts) == 0 {
+-		return nil
++	for _, repo := range repos {
++		token, err := newSyncToken()
++		if err != nil {
++			return err
++		}
++		if err := r.db.WithContext(ctx).Model(&models.Repo{}).
++			Where("did = ? AND sync_token = ?", repo.Did, repo.SyncToken).
++			Updates(map[string]any{"state": models.RepoStateDesynchronized, "sync_token": token}).Error; err != nil {
++			return err
++		}
+ 	}
++	return nil
++}
+ 
+-	curr, err := r.repos.GetRepoState(ctx, did)
+-	if err != nil {
+-		return fmt.Errorf("failed to get repo state: %w", err)
++func (r *Resyncer) drainResyncBuffer(ctx context.Context, did string, tokenValues ...string) error {
++	token := ""
++	if len(tokenValues) > 0 {
++		token = tokenValues[0]
++	} else {
++		var repo models.Repo
++		if err := r.db.WithContext(ctx).First(&repo, "did = ?", did).Error; err != nil {
++			return err
++		}
++		token = repo.SyncToken
+ 	}
+-
+-	prevData := curr.PrevData
+-
+-	for _, evt := range bufferedEvts {
++	var rows []models.ResyncBuffer
++	if err := r.db.WithContext(ctx).Where("did = ?", did).Order("id ASC").Find(&rows).Error; err != nil {
++		return fmt.Errorf("failed to load buffered events: %w", err)
++	}
++	for _, row := range rows {
++		var current models.Repo
++		if err := r.db.WithContext(ctx).First(&current, "did = ? AND state = ? AND status = ? AND sync_token = ?", did, models.RepoStateActive, models.AccountStatusActive, token).Error; err != nil {
++			return errResyncClaimLost
++		}
+ 		var commit Commit
+-		if err := json.Unmarshal([]byte(evt.Data), &commit); err != nil {
++		if err := json.Unmarshal([]byte(row.Data), &commit); err != nil {
+ 			return fmt.Errorf("failed to unmarshal buffered event: %w", err)
+ 		}
+-
+-		// if this commit doesn't stack neatly on current state of tracked repo then we skip
+-		// NOTE: the check against the empty string can be eliminated after we start refusing legacy commit events
+-		if commit.PrevData != "" && commit.PrevData != prevData {
++		if commit.Rev <= current.Rev {
++			if err := r.db.WithContext(ctx).Delete(&models.ResyncBuffer{}, "id = ?", row.ID).Error; err != nil {
++				return err
++			}
+ 			continue
+ 		}
+-
++		if commit.PrevData == "" || commit.PrevData != current.PrevData {
++			return fmt.Errorf("buffered commit %d does not extend current repo state", row.ID)
++		}
+ 		if err := r.events.AddCommit(ctx, &commit, func(tx *gorm.DB) error {
+-			return tx.Delete(&models.ResyncBuffer{}, "id = ?", evt.ID).Error
++			result := tx.Model(&models.Repo{}).
++				Where("did = ? AND state = ? AND status = ? AND sync_token = ?", did, models.RepoStateActive, models.AccountStatusActive, token).
++				UpdateColumn("sync_token", gorm.Expr("sync_token"))
++			if result.Error != nil {
++				return result.Error
++			}
++			if result.RowsAffected != 1 {
++				return errResyncClaimLost
++			}
++			return tx.Delete(&models.ResyncBuffer{}, "id = ?", row.ID).Error
+ 		}); err != nil {
+ 			return err
+ 		}
+-
+-		prevData = commit.DataCid
+ 	}
+-
+ 	return nil
+ }
+diff --git a/cmd/tap/resyncer_test.go b/cmd/tap/resyncer_test.go
+index 397e2f10edb8b73f07fbf9ec15324d4b4925a5a8..02f8232577af3ec3d7f2b82793287a4992032322 100644
+--- a/cmd/tap/resyncer_test.go
++++ b/cmd/tap/resyncer_test.go
+@@ -18,6 +18,20 @@ func newTestResyncer(te *testEnv) *Resyncer {
+ 	return NewResyncer(te.server.logger, te.db, te.repos, te.events, config)
+ }
+ 
++func testResyncClaim(te *testEnv, did string) resyncClaim {
++	te.t.Helper()
++	token, err := newSyncToken()
++	if err != nil {
++		te.t.Fatalf("failed to create claim token: %v", err)
++	}
++	if err := te.db.Model(&models.Repo{}).Where("did = ?", did).Updates(map[string]any{
++		"state": models.RepoStateResyncing, "status": models.AccountStatusActive, "sync_token": token,
++	}).Error; err != nil {
++		te.t.Fatalf("failed to establish test claim: %v", err)
++	}
++	return resyncClaim{Did: did, Token: token}
++}
++
+ // --- claimResyncJob tests ---
+ 
+ func TestClaimResyncJob_Priority(t *testing.T) {
+@@ -29,30 +43,30 @@ func TestClaimResyncJob_Priority(t *testing.T) {
+ 	te.insertRepo("did:example:errored", models.RepoStateError, "", "", "")
+ 
+ 	// First claim should get pending
+-	did1, found1, err := r.claimResyncJob(te.ctx)
++	claim1, found1, err := r.claimResyncJob(te.ctx)
+ 	if err != nil {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+-	if !found1 || did1 != "did:example:pending" {
+-		t.Fatalf("expected pending repo first, got did=%q found=%v", did1, found1)
++	if !found1 || claim1.Did != "did:example:pending" || claim1.Token == "" {
++		t.Fatalf("expected pending repo first, got claim=%+v found=%v", claim1, found1)
+ 	}
+ 
+ 	// Second claim should get desynchronized
+-	did2, found2, err := r.claimResyncJob(te.ctx)
++	claim2, found2, err := r.claimResyncJob(te.ctx)
+ 	if err != nil {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+-	if !found2 || did2 != "did:example:desynced" {
+-		t.Fatalf("expected desynchronized repo second, got did=%q found=%v", did2, found2)
++	if !found2 || claim2.Did != "did:example:desynced" || claim2.Token == "" {
++		t.Fatalf("expected desynchronized repo second, got claim=%+v found=%v", claim2, found2)
+ 	}
+ 
+ 	// Third claim should get error
+-	did3, found3, err := r.claimResyncJob(te.ctx)
++	claim3, found3, err := r.claimResyncJob(te.ctx)
+ 	if err != nil {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+-	if !found3 || did3 != "did:example:errored" {
+-		t.Fatalf("expected error repo third, got did=%q found=%v", did3, found3)
++	if !found3 || claim3.Did != "did:example:errored" || claim3.Token == "" {
++		t.Fatalf("expected error repo third, got claim=%+v found=%v", claim3, found3)
+ 	}
+ }
+ 
+@@ -85,8 +99,8 @@ func TestClaimResyncJob_RetryAfterRespected(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+-	if !found || got != did {
+-		t.Fatalf("expected errored repo to be claimable, got did=%q found=%v", got, found)
++	if !found || got.Did != did {
++		t.Fatalf("expected errored repo to be claimable, got claim=%+v found=%v", got, found)
+ 	}
+ }
+ 
+@@ -113,7 +127,7 @@ func TestHandleResyncError_WithError(t *testing.T) {
+ 	did := "did:example:resync-err"
+ 	te.insertRepo(did, models.RepoStateActive, "3jzfcijpj2z2a", "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454", "alice.test")
+ 
+-	err := r.handleResyncError(te.ctx, did, fmt.Errorf("something went wrong"))
++	err := r.handleResyncError(te.ctx, testResyncClaim(te, did), fmt.Errorf("something went wrong"))
+ 	if err == nil || err.Error() != "something went wrong" {
+ 		t.Fatalf("expected original error returned, got: %v", err)
+ 	}
+@@ -144,7 +158,7 @@ func TestHandleResyncError_WithNilError(t *testing.T) {
+ 	did := "did:example:resync-nil"
+ 	te.insertRepo(did, models.RepoStateActive, "3jzfcijpj2z2a", "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454", "")
+ 
+-	err := r.handleResyncError(te.ctx, did, nil)
++	err := r.handleResyncError(te.ctx, testResyncClaim(te, did), nil)
+ 	if err != nil {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+@@ -170,10 +184,8 @@ func TestHandleResyncError_ExponentialBackoff(t *testing.T) {
+ 	var prevRetryAfter int64
+ 
+ 	for i := range 4 {
+-		// Reset state to active so GetRepoState works for handleResyncError
+-		te.db.Model(&models.Repo{}).Where("did = ?", did).Update("state", models.RepoStateActive)
+-
+-		r.handleResyncError(te.ctx, did, fmt.Errorf("err"))
++		claim := testResyncClaim(te, did)
++		r.handleResyncError(te.ctx, claim, fmt.Errorf("err"))
+ 
+ 		var repo models.Repo
+ 		te.db.First(&repo, "did = ?", did)
+@@ -197,16 +209,19 @@ func TestResetPartiallyResynced(t *testing.T) {
+ 
+ 	te.insertRepo("did:example:resyncing-1", models.RepoStateResyncing, "", "", "")
+ 	te.insertRepo("did:example:resyncing-2", models.RepoStateResyncing, "", "", "")
+-	te.insertRepo("did:example:active-repo", models.RepoStateActive, "3jzfcijpj2z2a", "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454", "")
++	te.insertRepo("did:example:active-buffered", models.RepoStateActive, "3jzfcijpj2z2a", "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454", "")
++	te.insertRepo("did:example:active-clean", models.RepoStateActive, "3jzfcijpj2z2a", "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454", "")
++	te.db.Create(&models.ResyncBuffer{Did: "did:example:active-buffered", Data: `{}`})
+ 
+ 	if err := r.resetPartiallyResynced(te.ctx); err != nil {
+ 		t.Fatalf("unexpected error: %v", err)
+ 	}
+ 
+-	var r1, r2, r3 models.Repo
++	var r1, r2, r3, r4 models.Repo
+ 	te.db.First(&r1, "did = ?", "did:example:resyncing-1")
+ 	te.db.First(&r2, "did = ?", "did:example:resyncing-2")
+-	te.db.First(&r3, "did = ?", "did:example:active-repo")
++	te.db.First(&r3, "did = ?", "did:example:active-buffered")
++	te.db.First(&r4, "did = ?", "did:example:active-clean")
+ 
+ 	if r1.State != models.RepoStateDesynchronized {
+ 		t.Fatalf("expected resyncing1 state=desynchronized, got %s", r1.State)
+@@ -214,8 +229,11 @@ func TestResetPartiallyResynced(t *testing.T) {
+ 	if r2.State != models.RepoStateDesynchronized {
+ 		t.Fatalf("expected resyncing2 state=desynchronized, got %s", r2.State)
+ 	}
+-	if r3.State != models.RepoStateActive {
+-		t.Fatalf("expected active repo unchanged, got %s", r3.State)
++	if r3.State != models.RepoStateDesynchronized {
++		t.Fatalf("expected active repo with a buffered commit to be desynchronized, got %s", r3.State)
++	}
++	if r4.State != models.RepoStateActive {
++		t.Fatalf("expected clean active repo unchanged, got %s", r4.State)
+ 	}
+ }
+ 
+@@ -308,8 +326,8 @@ func TestDrainResyncBuffer_SkipsMismatchedPrevData(t *testing.T) {
+ 		Data: string(commitJSON),
+ 	})
+ 
+-	if err := r.drainResyncBuffer(te.ctx, did); err != nil {
+-		t.Fatalf("unexpected error: %v", err)
++	if err := r.drainResyncBuffer(te.ctx, did); err == nil {
++		t.Fatal("expected a mismatched buffered commit to fail closed")
+ 	}
+ 
+ 	// Buffer entry should still exist (not processed)
+diff --git a/cmd/tap/server.go b/cmd/tap/server.go
+index 1bab969c300313d67930c32d91b6e5f4307b935e..17fa47839cd2a2755e240e76efa782230f5727df 100644
+--- a/cmd/tap/server.go
++++ b/cmd/tap/server.go
+@@ -149,9 +149,16 @@ func (ts *TapServer) handleAddRepos(c echo.Context) error {
+ 
+ 	dids := make([]models.Repo, len(payload.DIDs))
+ 	for i, did := range payload.DIDs {
++		if err := validateDurableDID(did); err != nil {
++			return echo.NewHTTPError(http.StatusBadRequest, "improperly formatted DID")
++		}
++		token, err := newSyncToken()
++		if err != nil {
++			return echo.NewHTTPError(http.StatusInternalServerError)
++		}
+ 		dids[i] = models.Repo{
+-			Did:   did,
+-			State: models.RepoStatePending,
++			Did: did, State: models.RepoStatePending,
++			Status: models.AccountStatusActive, SyncToken: token,
+ 		}
+ 	}
+ 
+@@ -187,6 +194,9 @@ func (ts *TapServer) handleRemoveRepos(c echo.Context) error {
+ }
+ 
+ func (ts *TapServer) handleResolveDID(c echo.Context) error {
++	if ts.adminPassword == "" {
++		return echo.NewHTTPError(http.StatusForbidden, "DID resolution requires configured admin authentication")
++	}
+ 	didParam := c.Param("did")
+ 
+ 	did, err := syntax.ParseDID(didParam)
+@@ -222,7 +232,6 @@ func (ts *TapServer) handleInfoRepo(c echo.Context) error {
+ 
+ 	return c.JSON(http.StatusOK, map[string]any{
+ 		"did":     repo.Did,
+-		"handle":  repo.Handle,
+ 		"state":   repo.State,
+ 		"rev":     repo.Rev,
+ 		"error":   repo.ErrorMsg,
+diff --git a/cmd/tap/tap.go b/cmd/tap/tap.go
+index 670467721929ff7de2e0aeeda679a10f4c0a3284..c0ad83e5e98125c68e35676b4a70e5a04ab7376c 100644
+--- a/cmd/tap/tap.go
++++ b/cmd/tap/tap.go
+@@ -1,9 +1,14 @@
+ package main
+ 
+ import (
++	"bytes"
+ 	"context"
++	"encoding/json"
++	"errors"
+ 	"fmt"
++	"io"
+ 	"log/slog"
++	"reflect"
+ 	"strings"
+ 	"time"
+ 
+@@ -15,6 +20,8 @@ import (
+ 	"gorm.io/gorm/logger"
+ )
+ 
++const metadataOnlyOverlayVersion uint = 2
++
+ type Tap struct {
+ 	db     *gorm.DB
+ 	logger *slog.Logger
+@@ -173,9 +180,180 @@ func SetupDatabase(dbUrl string, maxConns int) (*gorm.DB, error) {
+ 
+ 	}
+ 
+-	if err := db.AutoMigrate(&models.Repo{}, &models.RepoRecord{}, &models.OutboxBuffer{}, &models.ResyncBuffer{}, &models.FirehoseCursor{}, &models.ListReposCursor{}, &models.CollectionCursor{}); err != nil {
++	if err := db.AutoMigrate(&models.Repo{}, &models.RepoRecord{}, &models.OutboxBuffer{}, &models.ResyncBuffer{}, &models.FirehoseCursor{}, &models.ListReposCursor{}, &models.CollectionCursor{}, &models.MetadataOnlyOverlayState{}); err != nil {
++		return nil, err
++	}
++	if err := initializeMetadataOnlyOverlay(db); err != nil {
+ 		return nil, err
+ 	}
+ 
+ 	return db, nil
+ }
++
++func initializeMetadataOnlyOverlay(db *gorm.DB) error {
++	return db.Transaction(func(tx *gorm.DB) error {
++		var state models.MetadataOnlyOverlayState
++		err := tx.First(&state, "id = ?", 1).Error
++		if errors.Is(err, gorm.ErrRecordNotFound) {
++			var outboxCount int64
++			if err := tx.Model(&models.OutboxBuffer{}).Count(&outboxCount).Error; err != nil {
++				return err
++			}
++			var resyncCount int64
++			if err := tx.Model(&models.ResyncBuffer{}).Count(&resyncCount).Error; err != nil {
++				return err
++			}
++			if outboxCount != 0 || resyncCount != 0 {
++				return fmt.Errorf("metadata-only TAP overlay refuses legacy durable buffers: outbox=%d resync=%d", outboxCount, resyncCount)
++			}
++			state = models.MetadataOnlyOverlayState{ID: 1, Version: metadataOnlyOverlayVersion}
++			if err := tx.Create(&state).Error; err != nil {
++				return err
++			}
++		} else if err != nil {
++			return err
++		} else if state.Version != metadataOnlyOverlayVersion {
++			return fmt.Errorf("unsupported metadata-only TAP overlay durable version %d", state.Version)
++		}
++
++		var maximumOutboxID uint64
++		if err := tx.Model(&models.OutboxBuffer{}).Select("COALESCE(MAX(id), 0)").Scan(&maximumOutboxID).Error; err != nil {
++			return err
++		}
++		if maximumOutboxID > state.LastEventID {
++			return fmt.Errorf("metadata-only TAP delivery high-water %d is below durable outbox ID %d", state.LastEventID, maximumOutboxID)
++		}
++		if err := validateDurableMetadataOnlyBuffers(tx); err != nil {
++			return err
++		}
++
++		// Indigo used to retain handles in this column. The overlay never needs
++		// them, so scrub any pre-marker value on every compatible startup.
++		if tx.Migrator().HasColumn(&models.Repo{}, "Handle") {
++			if err := tx.Model(&models.Repo{}).Where("handle <> ''").Update("handle", "").Error; err != nil {
++				return err
++			}
++		}
++		return nil
++	})
++}
++
++func validateDurableMetadataOnlyBuffers(tx *gorm.DB) error {
++	var outboxRows []models.OutboxBuffer
++	if err := tx.FindInBatches(&outboxRows, 500, func(_ *gorm.DB, _ int) error {
++		for i := range outboxRows {
++			if err := validateDurableOutboxRow(&outboxRows[i]); err != nil {
++				return fmt.Errorf("invalid metadata-only outbox row %d: %w", outboxRows[i].ID, err)
++			}
++		}
++		return nil
++	}).Error; err != nil {
++		return err
++	}
++
++	var resyncRows []models.ResyncBuffer
++	if err := tx.FindInBatches(&resyncRows, 500, func(_ *gorm.DB, _ int) error {
++		for i := range resyncRows {
++			var commit Commit
++			if err := decodeExactJSON([]byte(resyncRows[i].Data), &commit); err != nil {
++				return fmt.Errorf("invalid metadata-only resync row %d: %w", resyncRows[i].ID, err)
++			}
++			if commit.Did != resyncRows[i].Did {
++				return fmt.Errorf("invalid metadata-only resync row %d: DID mismatch", resyncRows[i].ID)
++			}
++			safe, err := sanitizeCommitForDurableStorage(&commit)
++			if err != nil {
++				return fmt.Errorf("invalid metadata-only resync row %d: %w", resyncRows[i].ID, err)
++			}
++			if !reflect.DeepEqual(safe, &commit) {
++				return fmt.Errorf("invalid metadata-only resync row %d: noncanonical commit", resyncRows[i].ID)
++			}
++			canonical, err := json.Marshal(safe)
++			if err != nil || !bytes.Equal(canonical, []byte(resyncRows[i].Data)) {
++				return fmt.Errorf("invalid metadata-only resync row %d: noncanonical JSON", resyncRows[i].ID)
++			}
++		}
++		return nil
++	}).Error; err != nil {
++		return err
++	}
++	return nil
++}
++
++func validateDurableOutboxRow(row *models.OutboxBuffer) error {
++	var event MarshallableEvt
++	if err := decodeExactJSON([]byte(row.Data), &event); err != nil {
++		return err
++	}
++	if event.ID != row.ID || event.ID == 0 {
++		return errors.New("delivery ID mismatch")
++	}
++	var canonical []byte
++	var err error
++	switch event.Type {
++	case "record":
++		if event.RecordEvt == nil || event.IdentityEvt != nil || event.RepoSyncEvt != nil {
++			return errors.New("record envelope shape is invalid")
++		}
++		safe, _, sanitizeErr := sanitizeRecordEvent(event.RecordEvt)
++		if sanitizeErr != nil {
++			return sanitizeErr
++		}
++		if !reflect.DeepEqual(safe, event.RecordEvt) {
++			return errors.New("record envelope is not canonical metadata-only data")
++		}
++		if row.Did != event.RecordEvt.Did || row.Live != event.RecordEvt.Live {
++			return errors.New("record durable columns do not match the envelope")
++		}
++		canonical, err = safe.MarshalWithId(event.ID)
++	case "identity":
++		if event.IdentityEvt == nil || event.RecordEvt != nil || event.RepoSyncEvt != nil {
++			return errors.New("identity envelope shape is invalid")
++		}
++		if err := validateIdentityEvent(event.IdentityEvt); err != nil {
++			return err
++		}
++		if row.Did != event.IdentityEvt.Did || !row.Live {
++			return errors.New("identity durable columns do not match the envelope")
++		}
++		canonical, err = event.IdentityEvt.MarshalWithId(event.ID)
++	case "repo_sync":
++		if event.RepoSyncEvt == nil || event.RecordEvt != nil || event.IdentityEvt != nil {
++			return errors.New("repo_sync envelope shape is invalid")
++		}
++		if err := validateDurableDID(event.RepoSyncEvt.Did); err != nil {
++			return err
++		}
++		if err := validateDurableRev(event.RepoSyncEvt.Rev); err != nil {
++			return err
++		}
++		if event.RepoSyncEvt.Status != models.AccountStatusActive || row.Did != event.RepoSyncEvt.Did || !row.Live {
++			return errors.New("repo_sync durable columns do not match the envelope")
++		}
++		canonical, err = event.RepoSyncEvt.MarshalWithId(event.ID)
++	default:
++		return errors.New("unknown outbox event type")
++	}
++	if err != nil {
++		return err
++	}
++	if !bytes.Equal(canonical, []byte(row.Data)) {
++		return errors.New("outbox JSON is not canonical")
++	}
++	return nil
++}
++
++func decodeExactJSON(data []byte, destination any) error {
++	decoder := json.NewDecoder(bytes.NewReader(data))
++	decoder.DisallowUnknownFields()
++	if err := decoder.Decode(destination); err != nil {
++		return err
++	}
++	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
++		if err == nil {
++			return errors.New("multiple JSON values")
++		}
++		return err
++	}
++	return nil
++}
+diff --git a/cmd/tap/tap_test_helpers_test.go b/cmd/tap/tap_test_helpers_test.go
+index 0a796516c119982ca5ea12fb71cf27530c011208..c92ccaf4722c566cd2792103e59fe3f0d3d7a6da 100644
+--- a/cmd/tap/tap_test_helpers_test.go
++++ b/cmd/tap/tap_test_helpers_test.go
+@@ -14,6 +14,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/bluesky-social/indigo/atproto/identity"
++	"github.com/bluesky-social/indigo/atproto/syntax"
+ 	"github.com/bluesky-social/indigo/cmd/tap/models"
+ 	"github.com/gorilla/websocket"
+ 	"gorm.io/gorm"
+@@ -171,7 +172,7 @@ func (te *testEnv) pushRecordEvents(did string, count int, live bool) []uint {
+ 		evts[i] = &RecordEvt{
+ 			Live:       live,
+ 			Did:        did,
+-			Rev:        fmt.Sprintf("rev-%d", i),
++			Rev:        syntax.NewTIDFromInteger(uint64(i + 1)).String(),
+ 			Collection: "app.bsky.feed.post",
+ 			Rkey:       fmt.Sprintf("rkey-%d-%d", time.Now().UnixNano(), i),
+ 			Action:     "create",
+@@ -204,7 +205,6 @@ func (te *testEnv) pushIdentityEvent(did, handle string, status models.AccountSt
+ 
+ 	evt := &IdentityEvt{
+ 		Did:      did,
+-		Handle:   handle,
+ 		IsActive: status == models.AccountStatusActive,
+ 		Status:   status,
+ 	}
+@@ -350,13 +350,18 @@ func (r *testWebhookReceiver) close() {
+ // insertRepo inserts a repo directly into the database with the given parameters.
+ func (te *testEnv) insertRepo(did string, state models.RepoState, rev string, prevData string, handle string) {
+ 	te.t.Helper()
++	token, err := newSyncToken()
++	if err != nil {
++		te.t.Fatalf("failed to create test sync token: %v", err)
++	}
+ 	repo := models.Repo{
+-		Did:      did,
+-		State:    state,
+-		Status:   models.AccountStatusActive,
+-		Rev:      rev,
+-		PrevData: prevData,
+-		Handle:   handle,
++		Did:       did,
++		State:     state,
++		Status:    models.AccountStatusActive,
++		Rev:       rev,
++		PrevData:  prevData,
++		Handle:    "",
++		SyncToken: token,
+ 	}
+ 	if err := te.db.Create(&repo).Error; err != nil {
+ 		te.t.Fatalf("failed to insert repo: %v", err)
+diff --git a/cmd/tap/types.go b/cmd/tap/types.go
+index 07741189a24d2ca217af1c09c431b13a90dbc663..c452b74bdb4e5ed0eeb5a3e6a62d0cd47cf28e54 100644
+--- a/cmd/tap/types.go
++++ b/cmd/tap/types.go
+@@ -23,22 +23,26 @@ type Commit struct {
+ }
+ 
+ type CommitOp struct {
+-	Collection string         `json:"collection"`
+-	Rkey       string         `json:"rkey"`
+-	Action     string         `json:"action"`
+-	Record     map[string]any `json:"record,omitempty"`
+-	Cid        string         `json:"cid,omitempty"`
++	Collection     string            `json:"collection"`
++	Rkey           string            `json:"rkey"`
++	Action         string            `json:"action"`
++	Record         map[string]any    `json:"-"`
++	Cid            string            `json:"cid,omitempty"`
++	MetadataStatus string            `json:"metadata_status,omitempty"`
++	Metadata       map[string]string `json:"metadata,omitempty"`
+ }
+ 
+ type RecordEvt struct {
+-	Live       bool           `json:"live"`
+-	Did        string         `json:"did"`
+-	Rev        string         `json:"rev"`
+-	Collection string         `json:"collection"`
+-	Rkey       string         `json:"rkey"`
+-	Action     string         `json:"action"`
+-	Record     map[string]any `json:"record,omitempty"`
+-	Cid        string         `json:"cid,omitempty"`
++	Live           bool              `json:"live"`
++	Did            string            `json:"did"`
++	Rev            string            `json:"rev"`
++	Collection     string            `json:"collection"`
++	Rkey           string            `json:"rkey"`
++	Action         string            `json:"action"`
++	Record         map[string]any    `json:"-"`
++	Cid            string            `json:"cid,omitempty"`
++	MetadataStatus string            `json:"metadata_status,omitempty"`
++	Metadata       map[string]string `json:"metadata,omitempty"`
+ }
+ 
+ func (e *RecordEvt) MarshalWithId(id uint) ([]byte, error) {
+@@ -51,7 +55,6 @@ func (e *RecordEvt) MarshalWithId(id uint) ([]byte, error) {
+ 
+ type IdentityEvt struct {
+ 	Did      string               `json:"did"`
+-	Handle   string               `json:"handle"`
+ 	IsActive bool                 `json:"is_active"`
+ 	Status   models.AccountStatus `json:"status"`
+ }
+@@ -64,11 +67,26 @@ func (e *IdentityEvt) MarshalWithId(id uint) ([]byte, error) {
+ 	})
+ }
+ 
++type RepoSyncEvt struct {
++	Did    string               `json:"did"`
++	Rev    string               `json:"rev"`
++	Status models.AccountStatus `json:"status"`
++}
++
++func (e *RepoSyncEvt) MarshalWithId(id uint) ([]byte, error) {
++	return json.Marshal(MarshallableEvt{
++		ID:          id,
++		Type:        "repo_sync",
++		RepoSyncEvt: e,
++	})
++}
++
+ type MarshallableEvt struct {
+ 	ID          uint         `json:"id"`
+ 	Type        string       `json:"type"`
+ 	RecordEvt   *RecordEvt   `json:"record,omitempty"`
+ 	IdentityEvt *IdentityEvt `json:"identity,omitempty"`
++	RepoSyncEvt *RepoSyncEvt `json:"repo_sync,omitempty"`
+ }
+ 
+ type OutboxEvt struct {
