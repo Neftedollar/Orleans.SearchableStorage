@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!indigo-52c38ce3-skypulse-metadata.patch
+!qualification-startup-hardening.patch
+!qualification-privacy-logging.patch

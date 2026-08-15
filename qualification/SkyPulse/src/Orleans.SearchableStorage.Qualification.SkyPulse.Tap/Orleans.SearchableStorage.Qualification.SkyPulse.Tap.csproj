@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Orleans.SearchableStorage.Qualification.SkyPulse.Tap</AssemblyName>
+    <RootNamespace>Orleans.SearchableStorage.Qualification.SkyPulse.Tap</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Orleans.SearchableStorage.Qualification.SkyPulse.Tap.Tests" />
+  </ItemGroup>
+</Project>

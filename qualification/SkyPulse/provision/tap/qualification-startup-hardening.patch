@@ -1,0 +1,90 @@
+diff --git a/cmd/tap/qualification_startup_test.go b/cmd/tap/qualification_startup_test.go
+new file mode 100644
+--- /dev/null
++++ b/cmd/tap/qualification_startup_test.go
+@@ -0,0 +1,47 @@
++package main
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestValidateQualificationStartup(t *testing.T) {
++	valid := TapConfig{AdminPassword: "qualification-secret"}
++	if err := validateQualificationStartup(&valid); err != nil {
++		t.Fatalf("valid qualification configuration was rejected: %v", err)
++	}
++
++	tests := []struct {
++		name   string
++		config TapConfig
++		want   string
++	}{
++		{name: "missing password", config: TapConfig{}, want: "admin password"},
++		{name: "blank password", config: TapConfig{AdminPassword: "  "}, want: "admin password"},
++		{name: "line break", config: TapConfig{AdminPassword: "secret\nother"}, want: "admin password"},
++		{name: "acks disabled", config: TapConfig{AdminPassword: "secret", DisableAcks: true}, want: "WebSocket acknowledgement"},
++		{name: "webhook", config: TapConfig{AdminPassword: "secret", WebhookURL: "https://example.test/events"}, want: "WebSocket acknowledgement"},
++		{name: "full network", config: TapConfig{AdminPassword: "secret", FullNetworkMode: true}, want: "explicit repository set"},
++		{name: "signal collection", config: TapConfig{AdminPassword: "secret", SignalCollection: "app.bsky.feed.post"}, want: "explicit repository set"},
++		{name: "no replay", config: TapConfig{AdminPassword: "secret", NoReplay: true}, want: "source replay"},
++		{name: "collection subset", config: TapConfig{AdminPassword: "secret", CollectionFilters: []string{"app.bsky.feed.post"}}, want: "all reviewed metadata collections"},
++	}
++
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			err := validateQualificationStartup(&test.config)
++			if err == nil || !strings.Contains(err.Error(), test.want) {
++				t.Fatalf("expected an error containing %q, got %v", test.want, err)
++			}
++		})
++	}
++}
++
++func TestNewTapChecksQualificationConfigurationBeforeOpeningDatabase(t *testing.T) {
++	_, err := NewTap(TapConfig{
++		DatabaseURL: "this database URL must never be opened",
++	})
++	if err == nil || !strings.Contains(err.Error(), "admin password") {
++		t.Fatalf("expected startup authentication failure, got %v", err)
++	}
++}
+diff --git a/cmd/tap/tap.go b/cmd/tap/tap.go
+--- a/cmd/tap/tap.go
++++ b/cmd/tap/tap.go
+@@ -61,7 +61,34 @@ type TapConfig struct {
+ 	RetryTimeout               time.Duration
+ }
+ 
++func validateQualificationStartup(config *TapConfig) error {
++	if config == nil {
++		return errors.New("qualification TAP configuration is required")
++	}
++	if len(config.AdminPassword) > 4096 || strings.TrimSpace(config.AdminPassword) == "" || strings.ContainsAny(config.AdminPassword, "\r\n") {
++		return errors.New("qualification TAP requires a non-empty bounded admin password without line breaks")
++	}
++	if config.DisableAcks || config.WebhookURL != "" {
++		return errors.New("qualification TAP requires WebSocket acknowledgement mode")
++	}
++	if config.FullNetworkMode || strings.TrimSpace(config.SignalCollection) != "" {
++		return errors.New("qualification TAP requires an explicit repository set")
++	}
++	if config.NoReplay {
++		return errors.New("qualification TAP requires source replay")
++	}
++	if len(config.CollectionFilters) != 0 {
++		return errors.New("qualification TAP requires all reviewed metadata collections")
++	}
++	return nil
++}
++
+ func NewTap(config TapConfig) (*Tap, error) {
++	// Validate the security and delivery boundary before opening or migrating a database.
++	if err := validateQualificationStartup(&config); err != nil {
++		return nil, err
++	}
++
+ 	db, err := SetupDatabase(config.DatabaseURL, config.DBMaxConns)
+ 	if err != nil {
+ 		return nil, err

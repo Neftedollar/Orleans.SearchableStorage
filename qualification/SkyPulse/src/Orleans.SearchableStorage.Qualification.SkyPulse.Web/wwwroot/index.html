@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyPulse Index Explorer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Orleans.SearchableStorage qualification</p>
+        <h1>SkyPulse Index Explorer</h1>
+        <p class="lede">Run a bounded snapshot query, then watch metadata changes for its current page.</p>
+      </div>
+      <div id="stream-state" class="state state-offline">Disconnected</div>
+    </header>
+
+    <section class="panel">
+      <form id="query-form">
+        <div class="fields">
+          <label>Page size <input id="page-size" type="number" min="1" max="100" value="50"></label>
+          <label>Active since <input id="active-since" type="datetime-local"></label>
+          <label>Minimum current posts <input id="posts-min" type="number" min="0"></label>
+          <label>Minimum followers from selected accounts <input id="followers-min" type="number" min="0"></label>
+          <label>Minimum following <input id="following-min" type="number" min="0"></label>
+          <label>Minimum post creates (1 day) <input id="post-creates-min" type="number" min="0"></label>
+          <label>Minimum engagement from selected accounts (30 days) <input id="engagement-min" type="number" min="0"></label>
+        </div>
+        <div class="actions">
+          <button type="submit">Run query</button>
+          <button id="refresh" type="button" class="secondary" disabled>Refresh membership</button>
+          <button id="next" type="button" class="secondary" disabled>Next page</button>
+        </div>
+      </form>
+      <p class="note">Live updates change values only for the current page. Page membership is re-queried explicitly every 15 seconds.</p>
+      <p class="note"><strong>Completeness:</strong> inbound follower and received-engagement totals cover only source actors in the selected corpus. They are not qualification-grade until every selected repository has completed bootstrap and reconciliation; they are never global-network totals.</p>
+      <p id="status" role="status">No query has run yet. The application does not generate sample records.</p>
+    </section>
+
+    <section id="capacity-panel" class="panel" hidden>
+      <h2>Runtime corpus capacity</h2>
+      <p id="capacity-status" class="note" role="status">Loading durable corpus state…</p>
+      <div class="fields">
+        <label>Reviewed target
+          <select id="capacity-target"></select>
+        </label>
+        <label>Administrative token
+          <input id="capacity-token" type="password" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="actions">
+        <button id="capacity-grow" type="button" disabled>Increase corpus cap</button>
+      </div>
+      <p class="note">Only a larger prefix already frozen in the deployment catalog can be selected. Queries remain available while PostgreSQL and TAP add the suffix.</p>
+    </section>
+
+    <section class="results" aria-live="polite">
+      <table>
+        <thead>
+          <tr>
+            <th>Grain ID</th>
+            <th>Last activity</th>
+            <th>Posts</th>
+            <th>Followers from selected accounts</th>
+            <th>Following</th>
+            <th>Post creates 1d</th>
+            <th>Selected-account engagement 30d</th>
+            <th>Creates / updates / deletes 30d</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

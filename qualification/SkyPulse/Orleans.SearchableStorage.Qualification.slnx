@@ -1,0 +1,27 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusAcquisition/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusAcquisition.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusBuilder/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusBuilder.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.Core/Orleans.SearchableStorage.Qualification.SkyPulse.Core.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.DurableIngestion/Orleans.SearchableStorage.Qualification.SkyPulse.DurableIngestion.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.Ingestion/Orleans.SearchableStorage.Qualification.SkyPulse.Ingestion.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.Runtime/Orleans.SearchableStorage.Qualification.SkyPulse.Runtime.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.Tap/Orleans.SearchableStorage.Qualification.SkyPulse.Tap.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning/Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning.csproj" />
+    <Project Path="src/Orleans.SearchableStorage.Qualification.SkyPulse.Web/Orleans.SearchableStorage.Qualification.SkyPulse.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusAcquisition.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusAcquisition.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusBuilder.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.CorpusBuilder.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.Core.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.Core.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.DurableIngestion.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.DurableIngestion.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.Ingestion.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.Ingestion.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.IntegrationTests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.IntegrationTests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.Runtime.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.Runtime.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.Tap.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.Tap.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.TransitionPlanning.Tests.csproj" />
+    <Project Path="tests/Orleans.SearchableStorage.Qualification.SkyPulse.Web.Tests/Orleans.SearchableStorage.Qualification.SkyPulse.Web.Tests.csproj" />
+  </Folder>
+</Solution>

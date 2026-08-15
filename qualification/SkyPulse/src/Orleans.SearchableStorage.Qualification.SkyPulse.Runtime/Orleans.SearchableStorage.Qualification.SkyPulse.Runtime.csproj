@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Orleans.SearchableStorage.Qualification.SkyPulse.Runtime</AssemblyName>
+    <RootNamespace>Orleans.SearchableStorage.Qualification.SkyPulse.Runtime</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Orleans.SearchableStorage.Qualification.SkyPulse.Core/Orleans.SearchableStorage.Qualification.SkyPulse.Core.csproj" />
+    <ProjectReference Include="../Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.csproj" />
+  </ItemGroup>
+</Project>
