@@ -17,8 +17,12 @@ require_command tar
 load_deploy_env
 require_digest_ref DOTNET_SDK_IMAGE
 require_digest_ref DOTNET_ASPNET_IMAGE
-[[ "$DOTNET_SDK_IMAGE" == mcr.microsoft.com/dotnet/sdk:10.0.303-noble@sha256:* ]] \
-    || die 'DOTNET_SDK_IMAGE must be the reviewed 10.0.303 noble image'
+# MCR publishes no 10.0.303 SDK image (its image line jumps 10.0.302 to
+# 10.0.400). The pinned 10.0.302-noble image supplies only the OS layer;
+# Dockerfile.app installs the exact checksum-pinned 10.0.303 SDK tarball and
+# asserts its version, keeping global.json roll-forward=disable satisfied.
+[[ "$DOTNET_SDK_IMAGE" == mcr.microsoft.com/dotnet/sdk:10.0.302-noble@sha256:* ]] \
+    || die 'DOTNET_SDK_IMAGE must be the reviewed 10.0.302 noble base image'
 [[ "$DOTNET_ASPNET_IMAGE" == mcr.microsoft.com/dotnet/aspnet:10.0.11-noble@sha256:* ]] \
     || die 'DOTNET_ASPNET_IMAGE must be the reviewed 10.0.11 noble image'
 
