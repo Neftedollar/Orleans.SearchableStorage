@@ -23,8 +23,9 @@ require_digest_ref DOTNET_ASPNET_IMAGE
     || die 'DOTNET_ASPNET_IMAGE must be the reviewed 10.0.11 noble image'
 
 # Current buildx releases (verified with v0.36.1) have no `inspect --format`;
-# parse the stable text field instead.
-buildx_driver=$(docker buildx inspect --bootstrap | awk '/^Driver:/ { print $2; exit }')
+# parse the stable text field instead. awk must consume the whole stream: an
+# early exit closes the pipe and fails the pipeline under pipefail via SIGPIPE.
+buildx_driver=$(docker buildx inspect --bootstrap | awk '/^Driver:/ && !seen { print $2; seen=1 }')
 [[ "$buildx_driver" == docker ]] \
     || die "the TAP wrapper requires the buildx docker driver (found $buildx_driver)"
 
