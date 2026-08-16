@@ -3,7 +3,7 @@
 This directory contains operator-owned deployment material. It is deliberately
 separate from the SkyPulse runtime and qualification code.
 
-- [`hetzner-cx53/`](hetzner-cx53/) is the initial two-host calibration bundle:
+- [`hetzner-cx53/`](hetzner-cx53/README.md) is the initial two-host calibration bundle:
   one application host and one PostgreSQL host.
 
 The bundle is fail-closed and contains no credentials, private routes, corpus
