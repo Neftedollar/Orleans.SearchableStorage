@@ -2,6 +2,18 @@ ARG DOTNET_SDK_IMAGE
 ARG DOTNET_ASPNET_IMAGE
 
 FROM ${DOTNET_SDK_IMAGE} AS build
+# MCR ships no 10.0.303 SDK image while global.json requires exactly 10.0.303
+# with roll-forward disabled. The pinned base image supplies the OS layer; the
+# exact SDK comes from the official release tarball, checksum-pinned here and
+# published with the same sha512 in the .NET 10.0 release metadata.
+ADD --checksum=sha256:ec0833a374ccd6c4baf32600e3348d96b3a9499b6c7e518d4bf46fb385c6a4fd \
+    https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.303/dotnet-sdk-10.0.303-linux-x64.tar.gz \
+    /tmp/dotnet-sdk-10.0.303.tar.gz
+RUN install -d -m 0755 /usr/share/dotnet-10.0.303 \
+    && tar -xzf /tmp/dotnet-sdk-10.0.303.tar.gz -C /usr/share/dotnet-10.0.303 \
+    && rm /tmp/dotnet-sdk-10.0.303.tar.gz
+ENV DOTNET_ROOT=/usr/share/dotnet-10.0.303 \
+    PATH=/usr/share/dotnet-10.0.303:${PATH}
 WORKDIR /src
 
 COPY global.json NuGet.Config Directory.Build.props Directory.Packages.props \
