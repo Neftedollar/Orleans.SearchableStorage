@@ -196,7 +196,13 @@ public sealed class PostgreSqlPersistenceIntegrationTests
             await database.ScalarAsync<int>(
                 "SELECT count(*) FROM skypulse.semantic_event WHERE semantic_digest = @digest;",
                 new NpgsqlParameter("digest", NpgsqlDbType.Bytea) { Value = Convert.FromHexString(envelope.SemanticDigest) }));
-        Assert.Equal(0, await database.ScalarAsync<int>("SELECT count(*) FROM skypulse.record_state;"));
+        // The two seed commits each persisted their default record; only the rolled-back
+        // transition's record must be absent.
+        Assert.Equal(
+            0,
+            await database.ScalarAsync<int>(
+                "SELECT count(*) FROM skypulse.record_state WHERE record_key = 'rolled-back-record';"));
+        Assert.Equal(2, await database.ScalarAsync<int>("SELECT count(*) FROM skypulse.record_state;"));
         Assert.Equal(0, await database.ScalarAsync<int>("SELECT count(*) FROM skypulse.activity_minute_bucket;"));
         Assert.Equal(0, await database.ScalarAsync<int>("SELECT count(*) FROM skypulse.desired_projection;"));
         Assert.Equal(0, await database.ScalarAsync<int>("SELECT count(*) FROM skypulse.projection_outbox;"));

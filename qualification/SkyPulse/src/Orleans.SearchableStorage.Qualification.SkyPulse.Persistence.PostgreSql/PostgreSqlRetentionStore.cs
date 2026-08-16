@@ -488,7 +488,7 @@ public sealed class PostgreSqlRetentionStore
         """;
 
     internal const string DeleteCompletedDeliveriesSql = """
-        WITH authorization AS MATERIALIZED (
+        WITH authorized AS MATERIALIZED (
             SELECT 1
             FROM skypulse.source_delivery_retention_watermark
             WHERE source_instance_id = @source_instance_id
@@ -496,7 +496,7 @@ public sealed class PostgreSqlRetentionStore
         ), candidates AS MATERIALIZED (
             SELECT delivery.ctid
             FROM skypulse.tap_delivery AS delivery
-            CROSS JOIN authorization
+            CROSS JOIN authorized
             WHERE delivery.source_instance_id = @source_instance_id
               AND delivery.delivery_id <= @safe_delivery_id_inclusive
               AND delivery.outcome <> 0
@@ -515,12 +515,12 @@ public sealed class PostgreSqlRetentionStore
             WHERE delivery.ctid = candidates.ctid
             RETURNING 1
         )
-        SELECT EXISTS (SELECT 1 FROM authorization), COUNT(*)::integer
+        SELECT EXISTS (SELECT 1 FROM authorized), COUNT(*)::integer
         FROM deleted;
         """;
 
     internal const string DeleteQuarantineSql = """
-        WITH authorization AS MATERIALIZED (
+        WITH authorized AS MATERIALIZED (
             SELECT 1
             FROM skypulse.source_delivery_retention_watermark
             WHERE source_instance_id = @source_instance_id
@@ -531,7 +531,7 @@ public sealed class PostgreSqlRetentionStore
             JOIN skypulse.tap_delivery AS delivery
               ON delivery.source_instance_id = quarantine.source_instance_id
              AND delivery.delivery_id = quarantine.delivery_id
-            CROSS JOIN authorization
+            CROSS JOIN authorized
             WHERE quarantine.source_instance_id = @source_instance_id
               AND quarantine.delivery_id <= @safe_delivery_id_inclusive
               AND quarantine.quarantined_at_utc < @quarantined_before_utc
@@ -546,12 +546,12 @@ public sealed class PostgreSqlRetentionStore
             WHERE quarantine.ctid = candidates.ctid
             RETURNING 1
         )
-        SELECT EXISTS (SELECT 1 FROM authorization), COUNT(*)::integer
+        SELECT EXISTS (SELECT 1 FROM authorized), COUNT(*)::integer
         FROM deleted;
         """;
 
     internal const string DeleteSemanticEventsSql = """
-        WITH authorization AS MATERIALIZED (
+        WITH authorized AS MATERIALIZED (
             SELECT 1
             FROM skypulse.semantic_event_retention_watermark
             WHERE watermark_id = 1
@@ -559,7 +559,7 @@ public sealed class PostgreSqlRetentionStore
         ), candidates AS MATERIALIZED (
             SELECT event.ctid
             FROM skypulse.semantic_event AS event
-            CROSS JOIN authorization
+            CROSS JOIN authorized
             WHERE event.observed_at_minute_utc <= @safe_observed_minute_utc
               AND event.applied_at_utc < @applied_before_utc
             ORDER BY event.observed_at_minute_utc, event.applied_at_utc, event.account_key,
@@ -572,7 +572,7 @@ public sealed class PostgreSqlRetentionStore
             WHERE event.ctid = candidates.ctid
             RETURNING 1
         )
-        SELECT EXISTS (SELECT 1 FROM authorization), COUNT(*)::integer
+        SELECT EXISTS (SELECT 1 FROM authorized), COUNT(*)::integer
         FROM deleted;
         """;
 
@@ -603,7 +603,7 @@ public sealed class PostgreSqlRetentionStore
         """;
 
     internal const string DeleteExpiredActivitySql = """
-        WITH authorization AS MATERIALIZED (
+        WITH authorized AS MATERIALIZED (
             SELECT 1
             FROM skypulse.activity_retention_watermark
             WHERE watermark_id = 1
@@ -617,7 +617,7 @@ public sealed class PostgreSqlRetentionStore
             JOIN skypulse.desired_projection AS projection
               ON projection.account_key = bucket.account_key
              AND projection.projection_version = account.state_version
-            CROSS JOIN authorization
+            CROSS JOIN authorized
             WHERE bucket.minute_utc <= @safe_minute_utc
               AND bucket.minute_utc < @expired_before_minute_utc
               AND projection.projection_cut_minute_utc >= @longest_window_minutes
@@ -631,7 +631,7 @@ public sealed class PostgreSqlRetentionStore
             WHERE bucket.ctid = candidates.ctid
             RETURNING 1
         )
-        SELECT EXISTS (SELECT 1 FROM authorization), COUNT(*)::integer
+        SELECT EXISTS (SELECT 1 FROM authorized), COUNT(*)::integer
         FROM deleted;
         """;
 

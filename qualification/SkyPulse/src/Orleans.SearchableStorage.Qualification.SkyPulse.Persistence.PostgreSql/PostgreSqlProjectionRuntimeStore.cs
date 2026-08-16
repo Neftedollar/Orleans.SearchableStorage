@@ -12,6 +12,7 @@ public sealed class PostgreSqlProjectionRuntimeStore
     internal const long DispatcherAdvisoryLockKey = 1_561_301_132_475_359_920L;
     internal const int MaximumPageSize = 1_000;
     internal const string TryAcquireDispatcherSql = "SELECT pg_try_advisory_lock(@lock_key);";
+    internal const string ReleaseDispatcherSql = "SELECT pg_advisory_unlock(@lock_key);";
     internal const string IsDispatcherLockHeldSql = """
         SELECT EXISTS (
             SELECT 1
@@ -252,7 +253,30 @@ public sealed class PostgreSqlDispatcherIncarnationLock : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         var connection = Interlocked.Exchange(ref _connection, null);
-        if (connection is not null)
+        if (connection is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // A session advisory lock survives returning the pooled physical connection; Npgsql
+            // resets it only when that physical connection is next reused. Release explicitly so
+            // a successor incarnation can acquire the lock immediately after disposal.
+            await using var command = connection.CreateCommand();
+            command.CommandText = PostgreSqlProjectionRuntimeStore.ReleaseDispatcherSql;
+            command.Parameters.AddWithValue(
+                "lock_key",
+                NpgsqlDbType.Bigint,
+                PostgreSqlProjectionRuntimeStore.DispatcherAdvisoryLockKey);
+            _ = await command.ExecuteScalarAsync().ConfigureAwait(false);
+        }
+        catch (NpgsqlException)
+        {
+            // A broken session cannot be returned to the pool; closing its physical connection
+            // releases the advisory lock at the server.
+        }
+        finally
         {
             await connection.DisposeAsync().ConfigureAwait(false);
         }
