@@ -11,11 +11,14 @@ export SKYPULSE_POSTGRES_CONNECTION_STRING='Host=localhost;Port=5432;Database=sk
 dotnet test tests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.IntegrationTests
 ```
 
-Without the environment variable, local integration facts are reported as skipped. Before any
-qualification run, CI must gain a separate required job backed by a digest-pinned PostgreSQL
-service which always sets the variable and rejects every skipped result in its TRX report. That
-workflow is not present yet. An ordinary build, or local discovery which reports skipped tests,
-is not evidence that the PostgreSQL integration suite ran.
+Without the environment variable, local integration facts are reported as skipped. The
+`Qualification` workflow (`.github/workflows/qualification.yml`) provides the CI half of this
+gate: its `qualification-postgres-integration` job starts the digest-pinned PostgreSQL container
+from `tests/backends.compose.yml`, always sets the variable, and validates the TRX report with
+`eng/validate-trx.sh`, which rejects every skipped, missing, or extra result against the exact
+expected count. Making that job a required status check remains a repository setting, and CI
+green is still not a qualification verdict. An ordinary build, or local discovery which reports
+skipped tests, is not evidence that the PostgreSQL integration suite ran.
 
 The suite covers migration reapplication and catalog-drift detection, delivery and semantic
 deduplication, whole-transaction rollback, ordered exclusive leases, the required projection
