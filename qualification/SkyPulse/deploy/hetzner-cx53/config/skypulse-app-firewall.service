@@ -1,0 +1,16 @@
+[Unit]
+Description=SkyPulse application-host private-network firewall
+Wants=network-online.target
+After=network-online.target
+Before=docker.service ssh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/libexec/skypulse-firewall-interface-check /etc/skypulse-app-firewall.interface
+ExecStart=/usr/sbin/nft -f /etc/skypulse-app-firewall.nft
+ExecReload=/usr/local/libexec/skypulse-firewall-interface-check /etc/skypulse-app-firewall.interface
+ExecReload=/usr/sbin/nft -f /etc/skypulse-app-firewall.nft
+
+[Install]
+WantedBy=multi-user.target

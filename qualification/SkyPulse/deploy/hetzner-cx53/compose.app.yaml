@@ -1,0 +1,138 @@
+name: skypulse-app
+
+services:
+  tap:
+    image: ${SKYPULSE_TAP_IMAGE:?run scripts/build-images.sh first}
+    container_name: skypulse-tap
+    pull_policy: never
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    environment:
+      TAP_BIND: 127.0.0.1:2480
+      TAP_ENV: production
+      TAP_PG_HOST: ${POSTGRES_PRIVATE_DNS:?}
+      TAP_PG_PORT: "5432"
+      TAP_PG_DATABASE: skypulse_tap
+      TAP_PG_USERNAME: skypulse_tap
+      TAP_MAX_DB_CONNS: "32"
+      TAP_PG_PASSWORD_FILE: /run/secrets/postgres-password
+      TAP_ADMIN_PASSWORD_FILE: /run/secrets/tap-admin-password
+    extra_hosts:
+      - "${POSTGRES_PRIVATE_DNS:?}:${POSTGRES_PRIVATE_IP:?}"
+    volumes:
+      - type: bind
+        source: ${TAP_SECRET_DIR:?}/postgres-password
+        target: /run/secrets/postgres-password
+        read_only: true
+      - type: bind
+        source: ${TAP_SECRET_DIR:?}/tap-admin-password
+        target: /run/secrets/tap-admin-password
+        read_only: true
+      - type: bind
+        source: ${APP_PG_CA_CERT:?}
+        target: /run/tls/pg-ca.crt
+        read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    logging:
+      driver: journald
+      options:
+        tag: skypulse-tap
+
+  app:
+    image: ${SKYPULSE_APP_IMAGE:?run scripts/build-images.sh first}
+    container_name: skypulse-app
+    pull_policy: never
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 90s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1g
+    env_file:
+      - ./runtime/app.env
+    environment:
+      SKYPULSE_PG_PASSWORD_FILE: /run/secrets/postgres-password
+      SKYPULSE_TAP_ADMIN_PASSWORD_FILE: /run/secrets/tap-admin-password
+      SKYPULSE_GROWTH_ADMIN_TOKEN_FILE: /run/secrets/corpus-growth-admin-token
+    extra_hosts:
+      - "${POSTGRES_PRIVATE_DNS:?}:${POSTGRES_PRIVATE_IP:?}"
+    volumes:
+      - type: bind
+        source: ${APP_SECRET_DIR:?}/postgres-password
+        target: /run/secrets/postgres-password
+        read_only: true
+      - type: bind
+        source: ${APP_SECRET_DIR:?}/tap-admin-password
+        target: /run/secrets/tap-admin-password
+        read_only: true
+      - type: bind
+        source: ${APP_SECRET_DIR:?}/corpus-growth-admin-token
+        target: /run/secrets/corpus-growth-admin-token
+        read_only: true
+      - type: bind
+        source: ${APP_PG_CA_CERT:?}
+        target: /run/tls/pg-ca.crt
+        read_only: true
+      - type: bind
+        source: ${PUBLIC_CORPUS_DIR:?}
+        target: /var/lib/skypulse/corpus
+        read_only: true
+      - type: bind
+        source: ${PRIVATE_ROUTING_ROOT:?}
+        target: /var/lib/skypulse/routes-root
+        read_only: true
+    depends_on:
+      tap:
+        condition: service_started
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    logging:
+      driver: journald
+      options:
+        tag: skypulse-app
+
+  caddy:
+    profiles: [public]
+    image: ${CADDY_IMAGE:?}
+    container_name: skypulse-caddy
+    pull_policy: never
+    network_mode: host
+    # Deliberately operator-started after readiness. A reboot must not reopen
+    # public traffic while PostgreSQL migration/index recovery is in progress.
+    restart: "no"
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+    volumes:
+      - type: bind
+        source: ${CADDYFILE_PATH:?}
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - type: bind
+        source: ${CADDY_DATA_DIR:?}
+        target: /data
+      - type: bind
+        source: ${CADDY_CONFIG_DIR:?}
+        target: /config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    logging:
+      driver: journald
+      options:
+        tag: skypulse-caddy

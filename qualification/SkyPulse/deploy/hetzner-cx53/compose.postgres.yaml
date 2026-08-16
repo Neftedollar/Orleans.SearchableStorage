@@ -1,0 +1,82 @@
+name: skypulse-postgres
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?}
+    container_name: skypulse-postgres
+    pull_policy: never
+    network_mode: host
+    # Deliberately operator-started. A restored cluster must never bypass the
+    # .skypulse-restore-pending semantic gate after a daemon/host restart.
+    restart: "no"
+    stop_grace_period: 120s
+    shm_size: 8gb
+    env_file:
+      - ./runtime/postgres.env
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/admin-password
+    command:
+      - postgres
+      - -c
+      - "listen_addresses=${POSTGRES_PRIVATE_IP:?}"
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    volumes:
+      - type: bind
+        source: ${POSTGRES_DATA_DIR:?}
+        target: /var/lib/postgresql/data
+      - type: bind
+        source: ${POSTGRES_BACKUP_DIR:?}
+        target: /var/lib/postgresql/backups
+      - type: bind
+        source: ./config/postgresql.conf
+        target: /etc/postgresql/postgresql.conf
+        read_only: true
+      - type: bind
+        source: ./runtime/pg_hba.conf
+        target: /etc/postgresql/pg_hba.conf
+        read_only: true
+      - type: bind
+        source: ${POSTGRES_TLS_DIR:?}/server.crt
+        target: /run/tls/server.crt
+        read_only: true
+      - type: bind
+        source: ${POSTGRES_TLS_DIR:?}/server.key
+        target: /run/tls/server.key
+        read_only: true
+      - type: bind
+        source: ${POSTGRES_TLS_DIR:?}/ca.crt
+        target: /run/tls/ca.crt
+        read_only: true
+      - type: bind
+        source: ${POSTGRES_SECRET_DIR:?}/admin-password
+        target: /run/secrets/admin-password
+        read_only: true
+      - type: bind
+        source: ${POSTGRES_SECRET_DIR:?}/app-password
+        target: /run/secrets/app-password
+        read_only: true
+      - type: bind
+        source: ${POSTGRES_SECRET_DIR:?}/tap-password
+        target: /run/secrets/tap-password
+        read_only: true
+      - type: bind
+        source: ./postgres/initdb/10-create-databases.sh
+        target: /docker-entrypoint-initdb.d/10-create-databases.sh
+        read_only: true
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h /var/run/postgresql -U "$${POSTGRES_USER}" -d postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    logging:
+      driver: journald
+      options:
+        tag: skypulse-postgres

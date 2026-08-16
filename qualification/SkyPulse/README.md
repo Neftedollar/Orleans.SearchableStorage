@@ -172,3 +172,16 @@ The PostgreSQL suite is opt-in locally and must not be counted when skipped. See
 [docs/postgresql-integration-tests.md](docs/postgresql-integration-tests.md). The latest local,
 non-qualification checkpoint is recorded in
 [docs/local-verification-2026-08-15.md](docs/local-verification-2026-08-15.md).
+
+## Deployment handoff
+
+The conditional two-host calibration bundle is in
+[deploy/](deploy/README.md). A local operator should start with the Russian
+[handoff checklist](deploy/hetzner-cx53/HANDOFF.ru.md) and the detailed
+[runbook](deploy/hetzner-cx53/README.md).
+
+It is intentionally fail-closed: the reviewed OpenTofu provider lock, exact
+external image digests, encrypted-at-rest storage, encrypted off-host recovery,
+real corpus/routes, secrets, target-host checks, PostgreSQL integration suite
+and restore drill remain local release gates. It is not a one-command
+production deploy and does not claim qualification evidence.

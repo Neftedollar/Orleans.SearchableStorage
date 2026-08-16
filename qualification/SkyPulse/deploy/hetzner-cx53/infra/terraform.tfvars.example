@@ -1,0 +1,21 @@
+# This file intentionally contains no token or other secret. Export HCLOUD_TOKEN
+# in the invoking shell instead.
+
+name_prefix = "skypulse"
+location    = "nbg1"
+
+# This key must already exist in the selected Hetzner project.
+ssh_key_name = "replace-with-existing-hcloud-key-name"
+
+# Replace the documentation-only address with the actual fixed administrator
+# address or VPN range before planning. /0 is deliberately rejected.
+admin_ssh_cidrs = [
+  "203.0.113.10/32",
+]
+
+# Empty is the safest default: access the UI through an SSH tunnel. To operate a
+# public Caddy endpoint, list the intended source networks explicitly. Public
+# ACME validation may require ["0.0.0.0/0", "::/0"].
+public_ui_cidrs = []
+
+enable_backups = true
