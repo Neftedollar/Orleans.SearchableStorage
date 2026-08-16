@@ -1,0 +1,165 @@
+name: Qualification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  # The complete PostgreSQL integration suite; validate-trx.sh rejects any
+  # other executed/passed count and every skipped result.
+  SKYPULSE_POSTGRES_INTEGRATION_TEST_COUNT: "34"
+
+jobs:
+  qualification-build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: qualification/SkyPulse
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: qualification/SkyPulse/global.json
+
+      - name: Restore with the locked package graph
+        run: dotnet restore Orleans.SearchableStorage.Qualification.slnx --locked-mode
+
+      - name: Build
+        run: >-
+          dotnet build Orleans.SearchableStorage.Qualification.slnx
+          --configuration Release
+          --no-restore
+
+      - name: Run unit and contract tests
+        # PostgreSQL integration facts report skipped here by design; the
+        # dedicated job below executes them against a live server and rejects
+        # every skipped result.
+        run: >-
+          dotnet test Orleans.SearchableStorage.Qualification.slnx
+          --configuration Release
+          --no-build
+          --no-restore
+
+  qualification-postgres-integration:
+    needs: qualification-build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SKYPULSE_POSTGRES_CONNECTION_STRING: >-
+        Host=127.0.0.1;Port=5432;Database=skypulse_qualification;Username=postgres;Password=postgres;SSL Mode=Disable
+
+    defaults:
+      run:
+        working-directory: qualification/SkyPulse
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: qualification/SkyPulse/global.json
+
+      - name: Start the digest-pinned PostgreSQL backend
+        run: docker compose --file tests/backends.compose.yml up --detach --wait
+
+      - name: Restore with the locked package graph
+        run: >-
+          dotnet restore
+          tests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.IntegrationTests
+          --locked-mode
+
+      - name: Build the integration suite
+        run: >-
+          dotnet build
+          tests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.IntegrationTests
+          --configuration Release
+          --no-restore
+
+      - name: Run the PostgreSQL integration suite
+        run: >-
+          dotnet test
+          tests/Orleans.SearchableStorage.Qualification.SkyPulse.Persistence.PostgreSql.IntegrationTests
+          --configuration Release
+          --no-build
+          --no-restore
+          --logger "trx;LogFileName=skypulse-postgres-integration.trx"
+          --results-directory artifacts/integration-test-results
+
+      - name: Reject skipped or missing integration results
+        run: >-
+          bash ../../eng/validate-trx.sh
+          artifacts/integration-test-results/skypulse-postgres-integration.trx
+          "$SKYPULSE_POSTGRES_INTEGRATION_TEST_COUNT"
+
+      - name: Stop the PostgreSQL backend
+        if: always()
+        run: docker compose --file tests/backends.compose.yml down --volumes
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: skypulse-postgres-integration-results
+          path: qualification/SkyPulse/artifacts/integration-test-results
+          if-no-files-found: ignore
+
+  deployment-bundle-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: qualification/SkyPulse/deploy/hetzner-cx53
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Bash syntax
+        run: find . -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+      - name: ShellCheck
+        run: |
+          shellcheck --version
+          find . -name '*.sh' -print0 | xargs -0 shellcheck --external-sources --source-path=scripts
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/profile-artifacts.py scripts/validate-runtime-env.py
+
+      - name: Compose file validation
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import yaml
+
+          for name in ("compose.app.yaml", "compose.postgres.yaml", "../../tests/backends.compose.yml"):
+              parsed = yaml.safe_load(pathlib.Path(name).read_text(encoding="utf-8"))
+              assert parsed.get("services"), f"{name} declares no services"
+              print(f"parsed {name}: {sorted(parsed['services'])}")
+          PY
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.5
+
+      - name: OpenTofu format
+        run: tofu -chdir=infra fmt -check -diff
+
+      - name: OpenTofu validate
+        run: |
+          tofu -chdir=infra init -backend=false -input=false
+          tofu -chdir=infra validate
