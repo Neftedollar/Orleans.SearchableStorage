@@ -267,7 +267,10 @@ configure_classic_ssh() {
     rm -f /etc/systemd/system/ssh.socket.d/90-skypulse-firewall.conf
     systemctl daemon-reload
     systemctl enable ssh.service
-    systemctl start ssh.service
+    # A socket-activated sshd instance from the pre-conversion socket can still
+    # hold port 22 and make a plain start fail. ssh.service uses KillMode=process,
+    # so restart re-execs only the listener and keeps established sessions.
+    systemctl restart ssh.service
     [[ $(systemctl is-enabled ssh.socket 2>/dev/null || true) == masked ]] \
         || die 'failed to mask ssh.socket'
     systemctl is-active --quiet ssh.socket \

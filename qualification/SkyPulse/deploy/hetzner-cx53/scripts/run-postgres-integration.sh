@@ -15,6 +15,10 @@ require_command python3
 require_rootful_docker
 load_deploy_env
 require_postgres_17_11_image
+# load_deploy_env exports PLATFORM=linux/amd64, and MSBuild lifts environment
+# variables into global build properties, which turns the solution configuration
+# into the invalid "Release|linux/amd64". This script never needs that value.
+unset PLATFORM
 [[ "$(dotnet --version)" == 10.0.303 ]] || die 'exact .NET SDK 10.0.303 is required'
 [[ ${SKYPULSE_ALLOW_DESTRUCTIVE_POSTGRES_TESTS:-} == I_UNDERSTAND_THIS_USES_A_DISPOSABLE_CONTAINER ]] \
     || die 'set the exact disposable-container test confirmation'
