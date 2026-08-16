@@ -75,7 +75,11 @@ docker buildx build --platform "$PLATFORM" --load \
     --tag "$tap_base_image" "$build_context/provision/tap"
 
 tap_sha=$(docker run --rm --entrypoint sha256sum "$tap_base_image" /usr/local/bin/tap | awk '{print $1}')
-[[ "$tap_sha" == 0142caff15f321cdabe68761f2cbf5e9f85cfbb8f8eb21787b72987666a368f2 ]] \
+# Reference produced by two independent native linux/amd64 hosts building the
+# digest-pinned golang:1.26.1-bookworm context byte-identically (2026-08-16).
+# The earlier 0142caff… value from the single-machine local-verification
+# checkpoint does not reproduce on native amd64 builders.
+[[ "$tap_sha" == bbd79aa016269d066253e69c04f5f17abcc3ae6a572bb09302bd5c3101b10009 ]] \
     || die "unexpected TAP binary SHA-256: $tap_sha"
 
 docker buildx build --platform "$PLATFORM" --load \
