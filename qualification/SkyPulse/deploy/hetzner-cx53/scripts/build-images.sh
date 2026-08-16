@@ -22,7 +22,9 @@ require_digest_ref DOTNET_ASPNET_IMAGE
 [[ "$DOTNET_ASPNET_IMAGE" == mcr.microsoft.com/dotnet/aspnet:10.0.11-noble@sha256:* ]] \
     || die 'DOTNET_ASPNET_IMAGE must be the reviewed 10.0.11 noble image'
 
-buildx_driver=$(docker buildx inspect --bootstrap --format '{{.Driver}}')
+# Current buildx releases (verified with v0.36.1) have no `inspect --format`;
+# parse the stable text field instead.
+buildx_driver=$(docker buildx inspect --bootstrap | awk '/^Driver:/ { print $2; exit }')
 [[ "$buildx_driver" == docker ]] \
     || die "the TAP wrapper requires the buildx docker driver (found $buildx_driver)"
 
