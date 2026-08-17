@@ -98,6 +98,11 @@ load_deploy_env() {
     # shellcheck disable=SC1091
     source "$DEPLOY_DIR/.env"
     set +a
+    # MSBuild lifts exported environment variables into global build
+    # properties, so an exported PLATFORM=linux/amd64 breaks every dotnet
+    # invocation with the invalid solution configuration "Release|linux/amd64".
+    # Keep it as an unexported shell variable for docker buildx arguments.
+    export -n PLATFORM 2>/dev/null || true
 }
 
 require_rootful_docker() {
